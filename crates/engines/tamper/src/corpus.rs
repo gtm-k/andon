@@ -225,14 +225,24 @@ fn load_case(id: &str, family: Family, dir: &Path) -> Result<Case, CorpusError> 
         });
     }
 
-    let base = read_tree(&dir.join("base"))?;
-    let head = read_tree(&dir.join("head"))?;
     Ok(Case {
         id: id.to_string(),
         family,
-        change: assemble(&manifest, base, head),
+        change: change_from_trees(dir, &manifest)?,
         manifest,
     })
+}
+
+/// Build a change view from a directory holding `base/` and `head/` trees.
+///
+/// The corpus loader's own path, made public because the cross-OS matrix
+/// specimen (`fixtures/matrix/all-seven`) uses the same two-directory layout
+/// without being a scored case — it is engineered to fire everything at once,
+/// which makes it a fine determinism control and a useless precision one.
+pub fn change_from_trees(dir: &Path, manifest: &CaseManifest) -> Result<ChangeView, CorpusError> {
+    let base = read_tree(&dir.join("base"))?;
+    let head = read_tree(&dir.join("head"))?;
+    Ok(assemble(manifest, base, head))
 }
 
 /// Turn two file trees and the declared renames into a change.

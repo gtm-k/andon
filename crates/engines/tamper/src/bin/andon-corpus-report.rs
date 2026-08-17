@@ -1,7 +1,8 @@
 //! Measure the tamper suite against the frozen corpus, and print the table.
 //!
 //! ```text
-//! andon-corpus-report [--repo <PATH>] [--check-floors] [--check-freeze] [--markdown]
+//! andon-corpus-report [--repo <PATH>] [--check-floors] [--check-freeze]
+//!                     [--check-refresh-due <TODAY>] [--markdown]
 //! andon-corpus-report freeze --frozen <DATE> --refresh-due <DATE> [--repo <PATH>]
 //! ```
 //!
@@ -30,7 +31,8 @@ use andon_engine_tamper::corpus::{self, FreezeMarker, Report, PRECISION_FLOOR, R
 use andon_engine_tamper::detectors;
 
 const USAGE: &str = "\
-usage: andon-corpus-report [--repo <PATH>] [--check-floors] [--check-freeze] [--markdown]
+usage: andon-corpus-report [--repo <PATH>] [--check-floors] [--check-freeze]
+                          [--check-refresh-due <TODAY>] [--markdown]
        andon-corpus-report freeze --frozen <DATE> --refresh-due <DATE> [--repo <PATH>]";
 
 fn main() -> ExitCode {
@@ -76,6 +78,34 @@ fn run() -> Result<ExitCode, String> {
         print!("{}", markdown(&report, marker.as_ref()));
     } else {
         print!("{}", plain(&report, marker.as_ref()));
+    }
+
+    // PREMORTEM S1: a corpus that never changes becomes the evasion training
+    // set for whoever reads it, and this one is public. The date comparison is
+    // lexicographic, which is correct for ISO 8601 and wrong for nothing else
+    // the marker is allowed to contain.
+    if let Some(today) = value(&args, "--check-refresh-due") {
+        let marker = marker
+            .as_ref()
+            .ok_or("--check-refresh-due needs a readable freeze marker")?;
+        if today > marker.refresh_due.as_str() {
+            eprintln!(
+                "
+CORPUS REFRESH OVERDUE: due {}, today is {today}.
+                 PREMORTEM S1 — an adversarial corpus that never changes becomes the evasion
+                 training set for anyone who reads it, and this one is public. The refresh
+                 protocol is in fixtures/adversarial/README.md: add what the ledger's
+                 threshold-clustering shows, add the evasions found since, replace the cases
+                 every detector now aces, then re-freeze and re-measure in that order.",
+                marker.refresh_due
+            );
+            return Ok(ExitCode::from(1));
+        }
+        println!(
+            "
+refresh due {} — not yet ({today})",
+            marker.refresh_due
+        );
     }
 
     if args.iter().any(|a| a == "--check-floors") {

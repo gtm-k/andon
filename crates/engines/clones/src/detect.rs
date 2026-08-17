@@ -197,24 +197,49 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
         }
     }
 
-    // A longer clone subsumes the shorter one starting at the same place: both
-    // are true, only the longer is worth reporting, and counting both would
-    // double the group count for one duplication.
+    // Longest first, and nothing overlapping anything already kept.
+    //
+    // # Why overlap has to be excluded rather than merely deduplicated
+    //
+    // Periodic content — a table of `[n, m]` rows, a long `switch`, a list of
+    // similar guard clauses — normalizes to one repeating token pattern. Every
+    // *lag* through it produces a genuinely distinct maximal match: rows one
+    // apart, two apart, three apart. Each is a real repetition, and reporting
+    // all of them turned a thirty-row table into eight clone groups on the
+    // matrix specimen, which is a true answer to a question nobody asked. A
+    // reader wants to know that a region is duplicated, once.
+    //
+    // So the selection is greedy over disjoint regions: take the longest group,
+    // mark its tokens covered, and skip any later group that would report a
+    // token twice. The order is fully determined by `(length, sequence hash,
+    // placements)`, all of which come out of `BTreeMap`s, so two machines make
+    // the same choices — which matters more here than usual, because these
+    // groups are what the cross-OS digests are taken over.
+    let mut ordered: Vec<(GroupKey, BTreeSet<Placement>)> = groups.into_iter().collect();
+    ordered.sort_by(|(a_key, a_members), (b_key, b_members)| {
+        b_key
+            .0
+            .cmp(&a_key.0)
+            .then_with(|| a_members.cmp(b_members))
+            .then_with(|| a_key.1.cmp(&b_key.1))
+    });
+
+    let mut claimed: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
     let mut kept: Vec<(GroupKey, BTreeSet<Placement>)> = Vec::new();
-    for (key, members) in groups.into_iter().rev() {
-        let subsumed = kept.iter().any(|(other_key, other_members)| {
-            other_key.0 >= key.0
-                && members.iter().all(|(file, window)| {
-                    other_members.iter().any(|(other_file, other_window)| {
-                        other_file == file
-                            && *other_window <= *window
-                            && *window + key.0 <= *other_window + other_key.0
-                    })
-                })
+    for (key, members) in ordered {
+        let overlaps = members.iter().any(|(file, window)| {
+            claimed.get(file).is_some_and(|tokens| {
+                (*window..window + key.0).any(|token| tokens.contains(&token))
+            })
         });
-        if !subsumed {
-            kept.push((key, members));
+        if overlaps {
+            continue;
         }
+        for (file, window) in &members {
+            let tokens = claimed.entry(*file).or_default();
+            tokens.extend(*window..window + key.0);
+        }
+        kept.push((key, members));
     }
 
     let mut covered: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
@@ -395,6 +420,43 @@ mod tests {
         let mut backward = forward.clone();
         backward.reverse();
         assert_eq!(detect(&index, &forward), detect(&index, &backward));
+    }
+
+    #[test]
+    fn periodic_content_is_one_group_and_not_one_per_lag() {
+        // A table of `[n, m]` rows normalizes to one repeating pattern, and
+        // every lag through it is a genuinely distinct maximal match. Reporting
+        // all of them turned a thirty-row table into eight groups on the matrix
+        // specimen: a set of true statements adding up to a useless report.
+        let rows: Vec<String> = (0..30).map(|i| format!("  [{i}, {}]", i * i)).collect();
+        let source = format!(
+            "export function rate(x: number): number {{\n  const t = [\n{}\n  ];\n  return t[x][1];\n}}\n",
+            rows.join(",\n")
+        );
+        let report = run(&[input("a.ts", &source)]);
+        assert_eq!(report.groups.len(), 1, "{:#?}", report.groups);
+    }
+
+    #[test]
+    fn a_real_clone_survives_beside_periodic_content() {
+        let rows: Vec<String> = (0..30).map(|i| format!("  [{i}, {}]", i * i)).collect();
+        let table = format!(
+            "export function rate(x: number): number {{\n  const t = [\n{}\n  ];\n  return t[x][1];\n}}\n",
+            rows.join(",\n")
+        );
+        let report = run(&[
+            input("table.ts", &table),
+            input("a.ts", &block("one")),
+            input("b.ts", &block("two")),
+        ]);
+        assert_eq!(report.groups.len(), 2, "{:#?}", report.groups);
+        assert!(
+            report
+                .groups
+                .iter()
+                .any(|g| g.fragments.len() == 2 && g.fragments[0].path != g.fragments[1].path),
+            "the cross-file clone must not be crowded out by the table"
+        );
     }
 
     #[test]

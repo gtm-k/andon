@@ -26,3 +26,10 @@ tree-sitter-typescript = "=0.23.2"
 [[bin]]
 name = "andon-corpus-report"
 path = "src/bin/andon-corpus-report.rs"
+
+# The matrix probe, and the builder for the specimen it measures. Same reason as
+# the clone engine's: the cross-OS gate compares records written on three
+# runners.
+[[bin]]
+name = "andon-tamper-probe"
+path = "src/bin/andon-tamper-probe.rs"

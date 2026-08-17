@@ -1,0 +1,107 @@
+# The quarterly corpus refresh, as a job rather than as a paragraph (PREMORTEM S1).
+#
+# WHAT GOES WRONG WITHOUT IT
+#
+# An adversarial corpus that never changes becomes the evasion training set for
+# anyone who reads it, and Andon's is public. Every case in
+# `fixtures/adversarial/` is a published statement of what the detectors catch,
+# and the complement of that list is the answer key. The corpus therefore has a
+# shelf life, and PLAN.md P3 requires the refresh to be "a recurring scheduled
+# CI job, not prose" — because prose about a quarterly obligation is a
+# quarterly obligation nobody meets.
+#
+# WHAT THIS JOB ACTUALLY DOES
+#
+# It cannot write cases. What it can do is make an overdue corpus impossible to
+# not notice, and make silent drift impossible:
+#
+#   1. the freeze digest still matches, so no case has been edited since the
+#      corpus was frozen without a deliberate re-freeze;
+#   2. `refresh_due` in `fixtures/adversarial/CORPUS-v1.toml` has not passed;
+#   3. every detector still clears its ex-ante precision and recall floors —
+#      which catches the case nobody thinks about, where a grammar bump or a
+#      dependency update moves the numbers while no detector was touched.
+#
+# WHY MONTHLY WHEN THE REFRESH IS QUARTERLY
+#
+# The refresh is quarterly; the *check* is monthly, so an overdue corpus is
+# noticed within about thirty days rather than within about ninety. Twelve
+# ubuntu-runner minutes a year is not a number the Actions conserve rule is
+# about, and the alternative — aligning the cron to quarter boundaries — puts
+# up to six weeks between a `refresh_due` date and the run that notices it.
+#
+# TWO THINGS GITHUB DOES THAT ARE WORTH KNOWING
+#
+#   - `schedule` only ever runs on the default branch, so this workflow does
+#     nothing on the phase branch and starts working when it merges.
+#   - GitHub disables scheduled workflows in a repository with no activity for
+#     60 days, and emails the owner. A silently disabled cron is exactly the
+#     failure this job exists to prevent, so the manual trigger below is not
+#     decoration: the pre-flip checklist should dispatch it once.
+
+name: corpus-refresh
+
+on:
+  schedule:
+    # 07:00 UTC on the first of each month.
+    - cron: '0 7 1 * *'
+  workflow_dispatch:
+  # Also on any push that touches the corpus or the detectors, so a case edited
+  # without a re-freeze is caught in the pull request rather than up to a month
+  # later. Cheap, Linux-only, and consistent with D2: this is not one of the
+  # expensive cross-OS legs.
+  push:
+    paths:
+      - 'fixtures/adversarial/**'
+      - 'fixtures/honest/corpus/**'
+      - 'crates/engines/tamper/**'
+      - '.github/workflows/corpus-refresh.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  corpus:
+    name: freeze, floors, and the refresh date
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned by commit SHA with the tag in a comment, never by the tag — a tag
+      # is a mutable pointer, and this repository's product is trust.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+
+      # `--check-freeze` fails if any case file has changed since the corpus was
+      # frozen. `--check-floors` fails if any detector has fallen below the
+      # ex-ante 0.80 precision / 0.70 recall. `--check-refresh-due` fails once
+      # the date in the marker has passed. Three independent ways for the corpus
+      # to have stopped being evidence, each with its own exit.
+      - name: Corpus report
+        run: |
+          set -euo pipefail
+          cargo run --locked -p andon-engine-tamper --bin andon-corpus-report -- \
+            --check-freeze \
+            --check-floors \
+            --check-refresh-due "$(date -u +%Y-%m-%d)"
+
+      # The same numbers the README publishes, into the job summary, so an
+      # overdue-corpus notification arrives with the table attached rather than
+      # with a link to go and find it.
+      - name: Publish the table to the run summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Tamper corpus v1"
+            echo
+            cargo run --locked -q -p andon-engine-tamper --bin andon-corpus-report -- --markdown
+            echo
+            echo "Refresh protocol: \`fixtures/adversarial/README.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"

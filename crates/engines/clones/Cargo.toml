@@ -21,3 +21,10 @@ tree-sitter-typescript = "=0.23.2"
 
 [dev-dependencies]
 proptest = "1"
+
+# The matrix probe. A binary rather than a test because the cross-OS gate runs
+# it on three runners and compares the records it writes; a test would compare
+# nothing across machines.
+[[bin]]
+name = "andon-clones-probe"
+path = "src/bin/andon-clones-probe.rs"

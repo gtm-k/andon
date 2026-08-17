@@ -1,0 +1,7 @@
+[run]
+branch = True
+source = src
+omit =
+    tests/*
+    src/rates.ts
+    src/adapter.ts
