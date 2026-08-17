@@ -18,6 +18,13 @@
 //!    this step means both sides measured the same change with the same tooling,
 //!    so a disagreement is a real one.
 //!
+//! Passing all three is necessary but not sufficient. Every check above is
+//! phrased over the results the two sides have *in common*, so a self-report
+//! that has nothing in common with the recompute passes all of them vacuously.
+//! `confirmed` therefore also requires that a comparison actually happened and
+//! that the verifier's own deterministic results were all witnessed — see
+//! [`classify`]'s step 4.
+//!
 //! P1.5 and P9 implement the git and CI sides against this function rather than
 //! re-deriving the order from prose. What they supply that this module cannot
 //! compute is [`BaseRelation`] — ancestry is a git question.
@@ -159,10 +166,40 @@ pub fn classify(
     matched.sort();
     mismatched.sort();
 
-    let attestation = if mismatched.is_empty() {
-        Attestation::Confirmed
-    } else {
+    // Step 4 — a confirmation has to be earned, and there are two ways to reach
+    // this line having earned nothing.
+    //
+    // The first is a self-report that pairs *nothing*: empty, or scoped so that
+    // no `(metric_id, scope)` meets the recompute. Every check above is written
+    // over `pairs`, so with no pairs the regime `.all()` is vacuously true and
+    // `mismatched` is empty because nothing was ever compared — a forged record
+    // could name a scope the verifier never measures and collect a `confirmed`
+    // for it.
+    //
+    // The second is a self-report that pairs some results while omitting others
+    // the verifier deterministically produced. Those results are recomputed but
+    // unwitnessed; treating the record as confirmed would extend the pass to
+    // ground nobody attested.
+    //
+    // Both demote to `unwitnessed` and never to `divergent`. Unpaired results
+    // have honest causes — an async lane still running, `completeness: partial`
+    // — so the bar is to withhold the pass, not to make an accusation
+    // (PREMORTEM T1). A digest that was actually compared and disagreed is
+    // evidence of a different kind, and still outranks both.
+    let recompute_result_unwitnessed = recompute.results.iter().any(|recomputed| {
+        recomputed.deterministic
+            && !report
+                .results
+                .iter()
+                .any(|r| r.metric_id == recomputed.metric_id && r.scope == recomputed.scope)
+    });
+
+    let attestation = if !mismatched.is_empty() {
         Attestation::Divergent
+    } else if pairs.is_empty() || recompute_result_unwitnessed {
+        Attestation::Unwitnessed
+    } else {
+        Attestation::Confirmed
     };
     Classification {
         attestation,
@@ -318,6 +355,135 @@ mod tests {
         assert_eq!(
             classify(None, &recompute, fork).attestation,
             Attestation::ConfirmedStatic
+        );
+    }
+
+    /// Give a result a scope the other side will not match, so it cannot pair.
+    fn make_unpairable(result: &mut MeasurementResult) {
+        result.scope.path = Some("src/never-measured.ts".to_string());
+        result.scope.symbol = Some("ghost".to_string());
+    }
+
+    /// A second, distinct result the recompute produces and the report may omit.
+    fn second_result() -> MeasurementResult {
+        let mut result = crate::testing::sample_result();
+        result.metric_id = "static.cyclomatic-complexity".to_string();
+        result
+    }
+
+    #[test]
+    fn an_empty_self_report_cannot_confirm() {
+        let mut report = sample_record();
+        report.results.clear();
+        let recompute = sample_record();
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(
+            out.attestation,
+            Attestation::Unwitnessed,
+            "a report with nothing in it compares nothing and confirms nothing"
+        );
+        assert!(
+            out.tamper_signals.is_empty(),
+            "silence is not an accusation"
+        );
+        assert!(!out.attestation.counts_downstream());
+    }
+
+    #[test]
+    fn a_report_that_pairs_nothing_cannot_confirm() {
+        // Unpairable scope *and* a wrong digest: with the compare phrased over
+        // pairs alone, both go unnoticed and the record collects a `confirmed`.
+        let mut report = sample_record();
+        make_unpairable(&mut report.results[0]);
+        report.results[0].digest = "0".repeat(64);
+        let recompute = sample_record();
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(out.attestation, Attestation::Unwitnessed);
+        assert!(out.tamper_signals.is_empty());
+        let compare = out.compare.expect("a demotion still reports what it saw");
+        assert!(compare.matched.is_empty() && compare.mismatched.is_empty());
+        assert!(
+            !compare.unpaired.is_empty(),
+            "the unpaired ids are the evidence for the demotion"
+        );
+    }
+
+    #[test]
+    fn a_forged_regime_on_an_unpairable_scope_cannot_confirm() {
+        // The regime check is also phrased over pairs, so an unpairable scope
+        // makes a fabricated regime vacuously equal too.
+        let mut report = sample_record();
+        make_unpairable(&mut report.results[0]);
+        if let crate::schema::regime::MeasurementRegime::Static { engine_version, .. } =
+            &mut report.results[0].measurement_regime
+        {
+            *engine_version = "99.99.99-forged".to_string();
+        }
+        let recompute = sample_record();
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_ne!(out.attestation, Attestation::Confirmed);
+        assert_eq!(out.attestation, Attestation::Unwitnessed);
+    }
+
+    #[test]
+    fn a_recompute_result_the_report_omits_blocks_confirmation() {
+        // The report attests one metric honestly and simply never mentions the
+        // second. The first pairs and matches; the second is measured by the
+        // verifier and witnessed by nobody.
+        let report = sample_record();
+        let mut recompute = sample_record();
+        recompute.results.push(second_result());
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(out.attestation, Attestation::Unwitnessed);
+        assert!(
+            out.tamper_signals.is_empty(),
+            "an omission is not tampering"
+        );
+        let compare = out.compare.expect("compare detail survives the demotion");
+        assert_eq!(compare.matched, vec!["static.cognitive-complexity"]);
+        assert_eq!(compare.unpaired, vec!["static.cyclomatic-complexity"]);
+    }
+
+    #[test]
+    fn a_non_deterministic_recompute_result_does_not_block_confirmation() {
+        // The mirror image: a result outside the compare set by design is not
+        // something a self-report can be expected to have witnessed.
+        let report = sample_record();
+        let mut recompute = sample_record();
+        let mut extra = second_result();
+        extra.deterministic = false;
+        recompute.results.push(extra);
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(out.attestation, Attestation::Confirmed);
+    }
+
+    #[test]
+    fn a_real_mismatch_outranks_an_unpaired_result() {
+        // Divergence is evidence of disagreement; unpaired is absence of
+        // evidence. When both are present the accusation is the true one.
+        let report = sample_record();
+        let mut recompute = sample_record();
+        recompute.results[0].digest = "0".repeat(64);
+        recompute.results.push(second_result());
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(out.attestation, Attestation::Divergent);
+    }
+
+    #[test]
+    fn an_empty_report_on_a_fork_is_still_unwitnessed() {
+        // The fork carve-out is for a report that never arrived, not for one
+        // that arrived empty: an empty report is a claim, and it compares
+        // nothing.
+        let mut report = sample_record();
+        report.results.clear();
+        let recompute = sample_record();
+        let fork = CompareInputs {
+            fork_tier: true,
+            ..inputs(BaseRelation::Equal)
+        };
+        assert_eq!(
+            classify(Some(&report), &recompute, fork).attestation,
+            Attestation::Unwitnessed
         );
     }
 
