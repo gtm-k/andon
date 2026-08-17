@@ -1,0 +1,55 @@
+# Evidence registry for the artifacts engine (PLAN P4).
+#
+# ONE METRIC, ONE CLAIM, AND A TIER THAT IS DOING WORK
+#
+# Tier C is not a hedge here, it is a control. The default policy caps a C-tier
+# claim at `Severity::Low` (`severity.max_severity_for_c_tier`), so this metric
+# can advise and can never block — which is exactly what PLAN P4 means by
+# "negative signal only" and what `docs/metric-families.csv` means by "use as a
+# NEGATIVE signal only, never as a score". The claim's tier and the policy's cap
+# are the mechanism; this comment is only the explanation.
+#
+# The metric is `diff-actionable`, and it is the only diff-actionable metric in
+# this phase: an agent can write a test for a line it just wrote. Actionable and
+# advisory is a coherent pair. Actionable and blocking, on a metric a single
+# assertion-free test can satisfy, is PREMORTEM A4's uninstall loop with a
+# gaming path attached.
+#
+# The DOI below was resolved and its title, first author, and year read back
+# before this entry was written.
+
+schema_version = 1
+engine = "artifacts"
+family = "artifacts"
+
+[[metric]]
+metric_id = "artifacts.uncovered-changed-lines"
+claim_id = "andon.artifacts.diff-coverage@1|any|test-gap"
+class = "diff-actionable"
+# A coverage report is an untracked build output. No verifier can reproduce one
+# without running the suite, so this metric is excluded from the digest compare
+# set — the CI-authoritative side of `docs/trust-boundary.md`.
+deterministic = false
+
+[[claim]]
+claim_id = "andon.artifacts.diff-coverage@1|any|test-gap"
+implementation = "andon.artifacts.diff-coverage"
+implementation_version = "1"
+language = "any"
+# Not `defect-proneness`, and not `test-effectiveness`. The outcome this number
+# speaks to is narrow and literal: there is a gap where a test could be.
+outcome = "test-gap"
+tier = "C"
+citation = "Inozemtseva & Holmes, 'Coverage is not strongly correlated with test suite effectiveness', ICSE 2014"
+citation_ref = "https://doi.org/10.1145/2568225.2568271"
+population = "31,000 test suites generated from five large Java programs"
+effect = "coverage is only weakly correlated with suite effectiveness once suite size is controlled; the authors conclude it should not be used as a quality target. This engine therefore reports gaps and never a coverage figure."
+does_not_predict = [
+    "test quality — a line executed by a test with no assertion counts as covered",
+    "defect density, or that covered code is correct",
+    "that the uncovered lines are the risky ones; the report says what ran, not what mattered",
+    "anything about lines the coverage tool does not instrument, such as comments and declarations, which are not counted as gaps",
+    "anything at all when no report is present — that case reports `unwitnessed`, never zero gaps",
+]
+owner = "gtm-k"
+expiry = "2027-10-11"

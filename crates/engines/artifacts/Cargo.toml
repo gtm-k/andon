@@ -1,0 +1,31 @@
+# The artifacts family: coverage-report parsing (PLAN P4).
+#
+# Picked up by the root manifest's `crates/engines/*` member glob, so the root
+# Cargo.toml is untouched (PLAN R2-2).
+#
+# ONE NEW DEPENDENCY, AND WHY
+#
+# `roxmltree` is the only crate this phase adds to the lockfile. Cobertura and
+# coverage.py both emit XML, and hand-rolling an XML reader in a project whose
+# product is trust is the wrong trade: the parser would be the one place in the
+# workspace with a bespoke, unaudited grammar, facing a file that a hostile
+# repository controls. Version 0.20 has **zero transitive dependencies**, is
+# dual MIT/Apache-2.0 — both on deny.toml's allow-list — and comes from
+# crates.io, so `cargo deny check licenses bans sources` is satisfied without a
+# new exception. The version is a caret range on a pinned lockfile entry, never
+# a wildcard, which [bans] would reject.
+[package]
+name = "andon-engine-artifacts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Andon artifacts engine: lcov, cobertura, and coverage.py XML parsing for diff-coverage gaps. Parse only, never executing."
+
+[dependencies]
+andon-core.workspace = true
+roxmltree = "0.20"
+serde.workspace = true
+thiserror.workspace = true
