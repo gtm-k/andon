@@ -1,0 +1,184 @@
+# Evidence registry for the process engine (PLAN P4).
+#
+# WHAT A CLAIM HERE IS AND IS NOT
+#
+# A claim is scoped to an implementation at a version, a language, and one
+# predicted outcome (PRE-DECISIONS: claim-scoped, never family-wide). "Process
+# metrics predict defects" is not a claim this file can express. What it can say
+# is that *this* churn implementation, at version 1, over any language, stands on
+# a named study with a named population and a named effect — and, in
+# `does_not_predict`, what that study does not license anyone to conclude.
+#
+# TIERS FOLLOW THE COMMITTED CATALOGUE, EXCEPT DOWNWARDS
+#
+# `docs/metric-families.csv` is the project's graded catalogue and the source
+# PLAN P4 points at. Its "Process / evolutionary metrics" row is tier A and its
+# "Hotspots & change coupling" row is tier B, and those gradings are used here.
+# One claim — code age — is graded *below* the catalogue, because the catalogue
+# grades the family and the studies rank a specific metric suite that this
+# particular formulation is not part of. Grading down on that kind of gap is a
+# judgement the registry should record; grading up on one would be the failure
+# mode the whole file exists to prevent.
+#
+# EVERY DOI BELOW WAS RESOLVED BEFORE IT WAS WRITTEN
+#
+# Titles, first authors, and years were read back from doi.org's metadata, and
+# the population and effect fields quote abstracts retrieved the same way. Two
+# entries say in their own text that a population was not quoted at primary
+# source; that is deliberate and is what the field is for. The P10a registry-PR
+# gate automates this check for contributors (PREMORTEM S5).
+
+schema_version = 1
+engine = "process"
+family = "process"
+
+# --------------------------------------------------------------------- metrics
+
+[[metric]]
+metric_id = "process.churn-commits"
+claim_id = "andon.process.churn@1|any|defect-proneness"
+# No edit inside a diff changes how many times a file has been changed. Every
+# metric in this engine is context, not a bar to clear (PREMORTEM A4).
+class = "context-informational"
+deterministic = true
+
+[[metric]]
+metric_id = "process.churn-lines"
+claim_id = "andon.process.churn@1|any|defect-proneness"
+class = "context-informational"
+deterministic = true
+
+[[metric]]
+metric_id = "process.code-age-days"
+claim_id = "andon.process.code-age@1|any|defect-proneness"
+class = "context-informational"
+deterministic = true
+
+[[metric]]
+metric_id = "process.ownership-entropy"
+claim_id = "andon.process.ownership@1|any|defect-proneness"
+class = "context-informational"
+deterministic = true
+
+[[metric]]
+metric_id = "process.hotspot"
+claim_id = "andon.process.hotspot@1|any|risk-prioritisation"
+class = "context-informational"
+deterministic = true
+
+[[metric]]
+metric_id = "process.change-coupling"
+claim_id = "andon.process.change-coupling@1|any|co-change-risk"
+class = "context-informational"
+deterministic = true
+
+# ---------------------------------------------------------------------- claims
+
+# Two metrics cite this one claim, and deliberately: commit counts and
+# added-plus-deleted lines are two readings of the same instrument, and both are
+# in the metric suite the cited studies ranked. Splitting them would spend two of
+# twenty-four claim tuples to say one thing twice.
+[[claim]]
+claim_id = "andon.process.churn@1|any|defect-proneness"
+implementation = "andon.process.churn"
+implementation_version = "1"
+language = "any"
+outcome = "defect-proneness"
+tier = "A"
+citation = "Rahman & Devanbu, 'How, and why, process metrics are better', ICSE 2013; replicated at scale by Majumder, Mody & Menzies, 'Revisiting process versus product metrics: a large scale analysis', Empirical Software Engineering (online 2021, issue 2022)"
+citation_ref = "https://doi.org/10.1109/ICSE.2013.6606589"
+population = "85 releases of 12 large open-source projects (Rahman & Devanbu 2013); 722,471 commits from 700 GitHub projects (Majumder et al.)"
+effect = "process metrics outperform product metrics for defect prediction; best process/product learners reached median recalls of 98%/44% and AUCs of 95%/54% (Majumder et al.)"
+does_not_predict = [
+    "that this file will fail — the studies rank metric families for prediction, not individual files for outcomes",
+    "that a high-churn file is badly written; churn is often a property of the requirements, not the code",
+    "anything about a file's history before the window, which this implementation does not read",
+    "churn across a rename — the walk runs with rename detection off, so a renamed file's history starts at its new path",
+]
+owner = "gtm-k"
+expiry = "2027-01-11"
+
+[[claim]]
+claim_id = "andon.process.code-age@1|any|defect-proneness"
+implementation = "andon.process.code-age"
+implementation_version = "1"
+language = "any"
+outcome = "defect-proneness"
+# Graded below the catalogue's A on purpose. The catalogue's A covers the
+# process family as ranked by the studies below; "days since the last commit
+# inside the window" is a formulation those studies did not themselves evaluate,
+# and the gap belongs in the tier rather than only in the prose.
+tier = "B"
+citation = "Moser, Pedrycz & Succi, 'A comparative analysis of the efficiency of change metrics and static code attributes for defect prediction', ICSE 2008 (origin of the AGE change metric); family evidence from Rahman & Devanbu, ICSE 2013"
+citation_ref = "https://doi.org/10.1145/1368088.1368114"
+population = "not quoted at primary source for this entry: the DOI, title, first author, and year were resolved and verified, the abstract was not retrievable. Family-level population is Rahman & Devanbu's 85 releases of 12 open-source projects."
+effect = "change metrics including age outperformed static code attributes for defect prediction in the cited study; the effect size was not verified at primary source for this entry"
+does_not_predict = [
+    "that recently changed code is defective — recency is a risk indicator, not a fault",
+    "the age of code the window did not see; a path with no commit inside the window reports `unwitnessed`, never a capped age",
+    "anything about a file's age before a rename, which resets the path this engine measures",
+]
+owner = "gtm-k"
+expiry = "2027-02-08"
+
+[[claim]]
+claim_id = "andon.process.ownership@1|any|defect-proneness"
+implementation = "andon.process.ownership"
+implementation_version = "1"
+language = "any"
+outcome = "defect-proneness"
+tier = "A"
+citation = "Rahman & Devanbu, ICSE 2013 (ownership metrics OWN/MINOR/MAJOR in the ranked suite); Bird, Nagappan, Murphy, Gall & Devanbu, 'Don't touch my code! Examining the effects of ownership on software quality', ESEC/FSE 2011"
+citation_ref = "https://doi.org/10.1145/2025113.2025119"
+population = "Windows Vista and Windows 7 (Bird et al. 2011); 85 releases of 12 large open-source projects (Rahman & Devanbu 2013)"
+effect = "ownership measures — the number of low-expertise developers and the proportion held by the top owner — relate to both pre-release faults and post-release failures (Bird et al.)"
+does_not_predict = [
+    "that diffused ownership caused anything; the studies report association, not causation",
+    "that a specific contributor is a risk — the identity distribution is hashed and never reported",
+    "the same quantity the studies ranked: they measured top-owner proportion and low-expertise contributor counts, while this metric reports Shannon entropy of the commit distribution, a different formulation of the same concept",
+    "ownership of code the window did not see",
+]
+owner = "gtm-k"
+expiry = "2027-04-12"
+
+[[claim]]
+claim_id = "andon.process.hotspot@1|any|risk-prioritisation"
+implementation = "andon.process.hotspot"
+implementation_version = "1"
+language = "any"
+# Deliberately not `defect-proneness`. A hotspot is a ranking device — where
+# should attention go first — and claiming it predicts defects would be claiming
+# more than the product of two factors supports.
+outcome = "risk-prioritisation"
+tier = "B"
+citation = "Tornhill, 'Your Code as a Crime Scene' (Pragmatic Bookshelf, 2015) for the churn-x-complexity formulation; the change half is evidenced by Rahman & Devanbu, ICSE 2013"
+citation_ref = "https://doi.org/10.1109/ICSE.2013.6606589"
+population = "no study evaluates this product directly. Each factor separately: 85 releases of 12 open-source projects (Rahman & Devanbu 2013) for the change half; the complexity half is supplied by another engine and carries its own claim."
+effect = "prioritisation only: files high in both factors are where attention pays off first. No effect size is claimed for the product, because none has been measured."
+does_not_predict = [
+    "defect density, or any outcome — the product of two indicators is not itself a validated predictor",
+    "that a file is too complex, or too often changed; the ranking says where to look, not what is wrong",
+    "anything at all when no complexity input exists — the result is then `unwitnessed`, never churn wearing a hotspot's name",
+]
+owner = "gtm-k"
+expiry = "2027-06-14"
+
+[[claim]]
+claim_id = "andon.process.change-coupling@1|any|co-change-risk"
+implementation = "andon.process.change-coupling"
+implementation_version = "1"
+language = "any"
+outcome = "co-change-risk"
+tier = "B"
+citation = "D'Ambros, Lanza & Robbes, 'On the Relationship Between Change Coupling and Software Defects', WCRE 2009"
+citation_ref = "https://doi.org/10.1109/WCRE.2009.19"
+population = "not quoted at primary source for this entry: the DOI, title, first authors, and year were resolved and verified, the abstract was not retrievable."
+effect = "the cited study reports a relationship between change coupling and defects. This implementation reports a count of habitual co-change partners absent from the change under measurement — a derived heuristic, not the study's measure."
+does_not_predict = [
+    "that the absent files should have been changed; co-change history is not a specification",
+    "coupling below the support floor of 3 co-changes or the ratio floor of one half, which are counting policy in this engine and not findings",
+    "anything from commits touching more than 25 paths, which are excluded as sweeping changes",
+    "architectural dependency — files can co-change without referencing each other, and reference each other without co-changing",
+]
+owner = "gtm-k"
+expiry = "2027-09-13"

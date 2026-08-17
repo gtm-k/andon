@@ -1,0 +1,31 @@
+# The process family: git-history signals (PLAN P4).
+#
+# Picked up by the root manifest's `crates/engines/*` member glob, so the root
+# Cargo.toml is untouched (PLAN R2-2). Every dependency comes from
+# `[workspace.dependencies]` — nothing new enters the lockfile from this crate,
+# so `cargo deny check licenses bans sources` is unmoved by it.
+[package]
+name = "andon-engine-process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Andon process engine: churn, code age, ownership entropy, hotspots, and change coupling over a windowed git history."
+
+[dependencies]
+andon-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+# The cross-OS matrix probe. The matrix workflow is P2's to edit this wave
+# (PLAN P1.5 decision (g)), so P4's join ships as a documented patch — and a
+# patch that pastes twenty lines of shell into a YAML file is a patch nobody can
+# review. This binary is the whole of the process-side matrix work; the patch
+# contains only the step that invokes it. See docs/patches/p4-spike-matrix-join.md.
+[[bin]]
+name = "andon-p4-probe"
+path = "src/bin/andon-p4-probe.rs"
