@@ -61,6 +61,23 @@
 //! by heap, and the pin tests measure two-thousand-level nesting and check the
 //! process is still alive to report it.
 //!
+//! # Language exceptions
+//!
+//! Appendix A of the specification carries language-specific exceptions and
+//! Appendix B makes them normative. This crate implements the **Python
+//! decorator** exception (see [`decorator_exempt`]) and does **not** implement
+//! the JavaScript declarative-outer one, under which a function whose body is
+//! wholly a nested declaration likewise adds no level. A JavaScript module
+//! wrapper therefore reads one nesting level worse here than the model says,
+//! and the registry claims for `javascript` and `typescript` carry that as a
+//! stated caveat rather than leaving it for a reader to discover by disagreeing
+//! with another tool.
+//!
+//! The deviation is disclosed rather than fixed because the Python idiom is
+//! ubiquitous and the JavaScript one is not: the module-wrapper shape is largely
+//! historical, and implementing an exception on a guess about which shapes
+//! qualify would trade a known, bounded overcount for an unknown undercount.
+//!
 //! # What is deliberately not counted
 //!
 //! Type-level conditionals (`T extends U ? X : Y`) and other type expressions
@@ -82,6 +99,7 @@ pub fn complexity(parsed: &Parsed<'_>, function: Node<'_>) -> u64 {
     Walker {
         parsed,
         own_name: crate::functions::simple_name(parsed, function),
+        decorator_exempt: decorator_exempt(parsed, function),
     }
     .run(function)
 }
@@ -93,6 +111,9 @@ struct Walker<'a, 'b> {
     parsed: &'a Parsed<'b>,
     /// Unqualified name of the function being measured, for recursion.
     own_name: Option<String>,
+    /// The nested function a decorator-shaped body exempts from adding a
+    /// nesting level. See [`decorator_exempt`].
+    decorator_exempt: Option<usize>,
 }
 
 impl Walker<'_, '_> {
@@ -131,6 +152,16 @@ impl Walker<'_, '_> {
             // No parser, no tree. Asserted in tests so the arm cannot be
             // removed and turn a future Rust tree into a silent JavaScript walk.
             Language::Rust => 0,
+        }
+    }
+
+    /// One more nesting level for what is inside a nested function — unless the
+    /// decorator exception applies to this one.
+    fn nested_function_level(&self, node: Node<'_>, nesting: u32) -> u32 {
+        if self.decorator_exempt == Some(node.id()) {
+            nesting
+        } else {
+            nesting + 1
         }
     }
 
@@ -206,7 +237,7 @@ impl Walker<'_, '_> {
             kind if is_function(self.parsed.language, kind) => {
                 // A container, not a branch: no increment, one more level for
                 // everything inside.
-                push_children(node, nesting + 1, stack);
+                push_children(node, self.nested_function_level(node, nesting), stack);
                 0
             }
             _ => {
@@ -284,7 +315,7 @@ impl Walker<'_, '_> {
                 0
             }
             kind if is_function(self.parsed.language, kind) => {
-                push_children(node, nesting + 1, stack);
+                push_children(node, self.nested_function_level(node, nesting), stack);
                 0
             }
             _ => {
@@ -419,6 +450,60 @@ fn push_field<'t>(node: Node<'t>, name: &str, nesting: u32, stack: &mut Vec<Pend
     if let Some(child) = node.child_by_field_name(name) {
         stack.push((child, nesting));
     }
+}
+
+/// The nested function a Python decorator body exempts from adding a nesting
+/// level, if this function is decorator-shaped.
+///
+/// Specification Appendix A carries language-specific exceptions, and Appendix B
+/// makes them normative — its increments are "subject to the exceptions". The
+/// Python one matters more than its size suggests, because the decorator is the
+/// single most common shape in which a Python function's whole body is another
+/// function. Without the exception every decorator in a codebase reads one
+/// nesting level worse than it is, and the penalty lands on the most idiomatic
+/// code rather than on the worst.
+///
+/// The eligibility test is deliberately narrow: the body is *exactly* a nested
+/// definition and a `return` of that definition's own name.
+///
+/// ```text
+/// def decorator(function):
+///     def wrapper(*args, **kwargs):
+///         if condition:      # +1, not +2
+///             ...
+///     return wrapper
+/// ```
+///
+/// `@functools.wraps` is admitted because it is part of the same idiom and
+/// changes only the node kind. Anything else — two nested functions, a statement
+/// before the definition, a `return` of something else — is not the shape the
+/// exception is about, and widening the test would start excusing nesting the
+/// model means to charge for.
+fn decorator_exempt(parsed: &Parsed<'_>, function: Node<'_>) -> Option<usize> {
+    if parsed.language != Language::Python {
+        return None;
+    }
+    let body = function.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let statements: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
+    let [definition, returned] = statements.as_slice() else {
+        return None;
+    };
+    let inner = match definition.kind() {
+        "function_definition" => *definition,
+        "decorated_definition" => definition
+            .child_by_field_name("definition")
+            .filter(|d| d.kind() == "function_definition")?,
+        _ => return None,
+    };
+    if returned.kind() != "return_statement" {
+        return None;
+    }
+    let value = returned
+        .named_child(0)
+        .filter(|v| v.kind() == "identifier")?;
+    let name = inner.child_by_field_name("name")?;
+    (node_text(parsed, Some(value)) == node_text(parsed, Some(name))).then(|| inner.id())
 }
 
 /// The source text of a node, when it has one.
@@ -770,6 +855,90 @@ mod tests {
                 "function f<T>(x: T) { type R = T extends string ? 1 : 2; return x }"
             ),
             0
+        );
+    }
+
+    #[test]
+    fn the_python_decorator_exception_spares_the_wrapper_a_nesting_level() {
+        // Appendix A's Python exception, and the specification's own worked
+        // shape: the `if` inside the wrapper is +1, not +2, because the wrapper
+        // is the decorator's whole body rather than a nested branch.
+        assert_eq!(
+            first(
+                Language::Python,
+                "def decorator(function):
+                     def wrapper(*args, **kwargs):
+                         if condition:
+                             pass
+                         return function(*args, **kwargs)
+                     return wrapper
+"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn functools_wraps_is_still_the_decorator_idiom() {
+        assert_eq!(
+            first(
+                Language::Python,
+                "def decorator(function):
+                     @functools.wraps(function)
+                     def wrapper(*args, **kwargs):
+                         if condition:
+                             pass
+                     return wrapper
+"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn a_body_that_merely_contains_a_nested_function_is_not_a_decorator() {
+        // The eligibility test is narrow on purpose. A statement before the
+        // definition, or a return of something else, is not the shape the
+        // exception is about — and the nesting level is charged as usual.
+        assert_eq!(
+            first(
+                Language::Python,
+                "def outer(function):
+                     log()
+                     def wrapper():
+                         if condition:
+                             pass
+                     return wrapper
+"
+            ),
+            2
+        );
+        assert_eq!(
+            first(
+                Language::Python,
+                "def outer(function):
+                     def wrapper():
+                         if condition:
+                             pass
+                     return other
+"
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn the_exception_is_pythons_alone() {
+        // The JavaScript declarative-outer exception is documented as a
+        // deviation rather than implemented, so the equivalent shape still
+        // charges its level. Asserted so the deviation cannot drift out of the
+        // docs without a test noticing.
+        assert_eq!(
+            first(
+                Language::JavaScript,
+                "function decorator(fn) { function wrapper() { if (c) { g() } } return wrapper }"
+            ),
+            2
         );
     }
 
