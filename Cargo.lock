@@ -17,6 +17,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "andon-ledger-min"
+version = "0.1.0"
+dependencies = [
+ "andon-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "andon-registry-lint"
 version = "0.1.0"
 dependencies = [

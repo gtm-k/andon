@@ -1,0 +1,41 @@
+# The P1.5 trust spike: the smallest thing that is a real measure -> self-report
+# -> recompute -> attest loop, end to end, on real git.
+#
+# Picked up by the root manifest's `crates/andon-*` member glob, so the root
+# Cargo.toml is untouched (PLAN R2-2). Every dependency comes from
+# `[workspace.dependencies]` — nothing new enters the lockfile, so the
+# `cargo deny check licenses bans sources` gate is unmoved by this phase.
+[package]
+name = "andon-ledger-min"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "P1.5 trust spike: minimal measure/attest ledger over git notes."
+
+[dependencies]
+andon-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+
+# Two binaries, and the split is a property rather than tidiness.
+#
+# `andon-spike` measures and verifies. It holds no code that can produce a
+# record whose numbers disagree with what it measured — `crates/andon-ledger-min/tests/binary_separation.rs`
+# asserts that the forge module is unreachable from it.
+#
+# `andon-spike-forge` is the adversary: the deliberately-forging binary the
+# two-channel design exists to catch. The gamed fixtures are built with it, so
+# "a gamed self-report" in this repository means bytes a *different* binary
+# wrote, not a flag the honest one carries.
+[[bin]]
+name = "andon-spike"
+path = "src/bin/andon-spike.rs"
+
+[[bin]]
+name = "andon-spike-forge"
+path = "src/bin/andon-spike-forge.rs"

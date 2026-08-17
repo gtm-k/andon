@@ -1,0 +1,100 @@
+# Evidence registry for the P1.5 spike engine.
+#
+# WHY THIS FILE IS NOT IN THE REPOSITORY-ROOT `registry/`
+# ------------------------------------------------------
+# The root `registry/` is the *shipped* evidence registry, and its claim tuples
+# are counted against the enforced budget of 24 (PREMORTEM S2, policy
+# `registry.claim_budget`). These three claims are instrument scaffolding: they
+# exist so the trust kernel has real metrics to digest-compare before any engine
+# with an evidence story has been built, and P2's `registry/static.toml` replaces
+# them. Putting them in the root registry would spend an eighth of a budget whose
+# whole point is that it is small, on claims that predict nothing.
+#
+# So the file lives beside the crate that emits the metrics, and the crate's own
+# test lints it and runs the `Registry::check_engine` drift check against the
+# engine's compiled descriptors. It is held to the same schema — every field
+# required, `claim_id` canonical, `does_not_predict` populated — because a spike
+# that skipped the evidence contract would not be exercising the thing it exists
+# to exercise. See `docs/trust-boundary.md`.
+#
+# Tier N throughout, and the `effect` fields say so in words: these numbers are
+# byte counts. They are here to be *reproduced*, not to be believed.
+
+schema_version = 1
+engine = "spike-size"
+family = "static"
+
+[[metric]]
+metric_id = "spike.changed-files"
+claim_id = "andon.spike.changed-files@1|any|change-size"
+class = "context-informational"
+deterministic = true
+
+[[metric]]
+metric_id = "spike.file-bytes"
+claim_id = "andon.spike.file-bytes@1|any|change-size"
+class = "context-informational"
+deterministic = true
+
+[[metric]]
+metric_id = "spike.file-lines"
+claim_id = "andon.spike.file-lines@1|any|change-size"
+class = "context-informational"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.spike.changed-files@1|any|change-size"
+implementation = "andon.spike.changed-files"
+implementation_version = "1"
+language = "any"
+outcome = "change-size"
+tier = "N"
+citation = "None. Instrument scaffolding for the P1.5 trust spike."
+population = "none — no study underlies this number"
+effect = "none claimed; the count of paths in the enumerated change"
+does_not_predict = [
+    "defect density",
+    "maintainability",
+    "review effort",
+    "anything at all about quality",
+]
+owner = "gtm-k"
+expiry = "2027-03-01"
+
+[[claim]]
+claim_id = "andon.spike.file-bytes@1|any|change-size"
+implementation = "andon.spike.file-bytes"
+implementation_version = "1"
+language = "any"
+outcome = "change-size"
+tier = "N"
+citation = "None. Instrument scaffolding for the P1.5 trust spike."
+population = "none — no study underlies this number"
+effect = "none claimed; the byte length of a git blob"
+does_not_predict = [
+    "defect density",
+    "maintainability",
+    "review effort",
+    "anything at all about quality",
+]
+owner = "gtm-k"
+expiry = "2027-05-03"
+
+[[claim]]
+claim_id = "andon.spike.file-lines@1|any|change-size"
+implementation = "andon.spike.file-lines"
+implementation_version = "1"
+language = "any"
+outcome = "change-size"
+tier = "N"
+citation = "None. Instrument scaffolding for the P1.5 trust spike."
+population = "none — no study underlies this number"
+effect = "none claimed; the count of LF bytes in a git blob"
+does_not_predict = [
+    "defect density",
+    "maintainability",
+    "review effort",
+    "anything at all about quality",
+]
+owner = "gtm-k"
+expiry = "2027-07-05"
