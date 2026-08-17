@@ -21,11 +21,31 @@
 //! A `.rs` or `.go` file has no parse-error count here because it has no parse.
 //! Counting it as zero would be a fabricated measurement; counting it as
 //! degraded would fire on every polyglot repository.
+//!
+//! # A delta alone can be walked around, so state is watched too
+//!
+//! Park the parse errors in one commit; add the evasive code to the same file in
+//! the next. The fault count does not move, the delta reads zero, and the new
+//! code is inside a region no static engine reads. P2's adversarial lens found
+//! this shape and it applies here unchanged.
+//!
+//! So there is a second arm: a **changed** file that is degraded at all fires,
+//! at `Low`, even when the delta is zero. It is a weaker claim and says so —
+//! an honest legacy file with an old syntax error and a deliberately parked one
+//! are the same bytes, and no static rule separates them. What the arm buys is
+//! that the blind spot is *visible* on every change that touches it, rather
+//! than visible only on the commit that created it.
+//!
+//! The two arms are distinguishable without a new signal: the hard arm reports
+//! `magnitude > 0`, the soft arm reports `magnitude <= 0` with a finding that
+//! says so. `TamperSignal` is P0-owned schema, and an eighth value for a
+//! second strength of the same observation would be a schema change for a
+//! severity.
 
 use crate::change::ChangeView;
 use crate::detectors::{Detector, Finding, Outcome};
 use crate::syntax::Parsed;
-use andon_core::schema::enums::TamperSignal;
+use andon_core::schema::enums::{Severity, TamperSignal};
 
 /// The detector.
 pub struct ParseErrorDelta;
@@ -70,9 +90,31 @@ impl Detector for ParseErrorDelta {
             }
         }
         if delta > 0 {
-            Outcome::fired(delta, findings)
-        } else {
+            return Outcome::fired(delta, findings);
+        }
+
+        // The delta did not rise. A changed file that is *already* degraded is
+        // still a blind spot, and the pre-seeded evasion lives exactly here.
+        let degraded: Vec<Finding> = change
+            .files
+            .iter()
+            .filter(|file| !file.content_unchanged() && file.head.is_some())
+            .filter_map(|file| {
+                let faults = faults(&file.path, file.head_bytes())?;
+                (faults > 0).then(|| {
+                    Finding::in_file(
+                        &file.path,
+                        format!(
+                            "changed file is parse-degraded: {faults} parse fault(s) present,                              no rise in this change — the region is unreadable to every static                              engine either way"
+                        ),
+                    )
+                })
+            })
+            .collect();
+        if degraded.is_empty() {
             Outcome::quiet(delta)
+        } else {
+            Outcome::fired_at(Severity::Low, delta, degraded)
         }
     }
 }
@@ -135,9 +177,29 @@ mod tests {
     }
 
     #[test]
-    fn pre_existing_errors_left_alone_do_not_fire() {
+    fn pre_existing_errors_in_a_touched_file_fire_softly_rather_than_not_at_all() {
+        // This test asserted the opposite until the state arm existed, and the
+        // change of answer is the point rather than a regression. A file that is
+        // degraded and gets edited is a blind spot the change is working inside,
+        // and Andon cannot tell an old syntax error from a parked one. The
+        // honest reporting is "yes, and weakly" — not silence, and not an
+        // accusation.
         let head = format!("{BROKEN}\n");
         let view = ChangeView::new(vec![FileChange::modified("src/a.ts", BROKEN, &head)]);
+        let outcome = ParseErrorDelta.run(&view);
+        assert!(outcome.fired);
+        assert_eq!(outcome.severity, Some(Severity::Low));
+        assert!(outcome.magnitude <= 0, "nothing got worse: {outcome:?}");
+    }
+
+    #[test]
+    fn an_untouched_degraded_file_is_not_this_changes_business() {
+        // Only *changed* files reach the state arm. A repository full of legacy
+        // parse errors must not make every change a finding.
+        let view = ChangeView::new(vec![
+            FileChange::modified("src/a.ts", BROKEN, BROKEN),
+            FileChange::modified("src/b.ts", CLEAN, CLEAN),
+        ]);
         assert!(!ParseErrorDelta.run(&view).fired);
     }
 

@@ -83,6 +83,16 @@ pub struct Outcome {
     pub magnitude: i64,
     /// What was seen, sorted.
     pub findings: Vec<Finding>,
+    /// Severity for *this* firing, where it differs from the detector's
+    /// default.
+    ///
+    /// One detector needs two strengths. `parse-error-delta` fires hard when
+    /// faults rose in this change and softly when a changed file was already
+    /// degraded and stayed that way — the second is a real signal and a weak
+    /// accusation, because an honest legacy file and a parked-error evasion are
+    /// the same bytes. Keeping both under one signal rather than inventing an
+    /// eighth is deliberate: `TamperSignal` is P0-owned schema.
+    pub severity: Option<Severity>,
 }
 
 impl Outcome {
@@ -92,16 +102,29 @@ impl Outcome {
             fired: false,
             magnitude,
             findings: Vec::new(),
+            severity: None,
         }
     }
 
-    /// A detector that fired.
+    /// A detector that fired, at its default severity.
     pub fn fired(magnitude: i64, mut findings: Vec<Finding>) -> Outcome {
         findings.sort();
         Outcome {
             fired: true,
             magnitude,
             findings,
+            severity: None,
+        }
+    }
+
+    /// A detector that fired at a severity other than its default.
+    pub fn fired_at(severity: Severity, magnitude: i64, mut findings: Vec<Finding>) -> Outcome {
+        findings.sort();
+        Outcome {
+            fired: true,
+            magnitude,
+            findings,
+            severity: Some(severity),
         }
     }
 }

@@ -240,7 +240,11 @@ impl MeasureEngine for TamperEngine {
         let mut results = Vec::with_capacity(14);
         for (detector, outcome) in self.outcomes() {
             let severity = if outcome.fired {
-                detector.severity_when_fired()
+                // A detector may report this firing at a different strength than
+                // its default — see `Outcome::severity`.
+                outcome
+                    .severity
+                    .unwrap_or_else(|| detector.severity_when_fired())
             } else {
                 Severity::Info
             };
