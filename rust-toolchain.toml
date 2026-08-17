@@ -1,0 +1,7 @@
+# Pinned so local runs, CI legs, and the CI verifier share one compiler.
+# A toolchain drift between the agent-side measurement and the CI recompute is a
+# `measurement_regime` mismatch (PREMORTEM S4), not a tamper signal — pinning
+# keeps that path cold.
+[toolchain]
+channel = "1.94.0"
+components = ["rustfmt", "clippy"]

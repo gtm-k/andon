@@ -1,0 +1,53 @@
+# Andon workspace root.
+#
+# WORKSPACE MEMBERSHIP CONVENTION (P0-owned; later phases MUST NOT edit this file)
+# ------------------------------------------------------------------------------
+# Two member globs cover every crate the plan calls for, so no phase after P0 ever
+# needs to touch the root manifest (PLAN.md R2-2 "Cargo rule"):
+#
+#   crates/andon-*    every top-level crate. Directory names carry the `andon-`
+#                     prefix. e.g. crates/andon-core, crates/andon-ledger-min.
+#   crates/engines/*  every engine crate. e.g. crates/engines/static-metrics.
+#
+# Why not the literal `crates/*` the plan sketched: `crates/*` matches the
+# non-crate `crates/engines` parent directory and cargo hard-errors on it. The
+# plan's suggested remedy (`exclude = ["crates/engines"]`) was verified and is
+# WRONG: cargo's `exclude` is path-prefix based, so excluding the parent also
+# excludes every engine crate beneath it. The `andon-*` prefix glob cannot
+# collide with `engines` by construction. See docs/self-measure.md and
+# schemas/README.md; the empirical findings are recorded in the P0 phase notes.
+#
+# `crates/engines/README.md` must stay committed: a members glob that expands to
+# nothing falls back to the literal path and errors. Cargo skips non-directory
+# glob matches, so a lone file there keeps the glob valid until the first engine
+# crate lands in P2.
+#
+# A crate directory that matches neither glob would be silently omitted from the
+# workspace, so `andon-core`'s `workspace_membership` test fails loudly on one.
+[workspace]
+resolver = "2"
+members = ["crates/andon-*", "crates/engines/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "Apache-2.0"
+repository = "https://github.com/gtm-k/andon"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# `preserve_order` is deliberate: it makes serde_json::Map insertion-ordered so
+# the canonicalizer is the only thing that sorts keys. Without it serde_json's
+# BTreeMap would sort for us and the key-order property test would be vacuous.
+serde_json = { version = "1", features = ["preserve_order"] }
+schemars = "0.8"
+sha2 = "0.10"
+toml = "0.8"
+thiserror = "2"
+andon-core = { path = "crates/andon-core" }
+
+[profile.release]
+# Determinism-relevant: no incremental codegen in release artifacts.
+incremental = false
