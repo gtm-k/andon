@@ -92,6 +92,16 @@ class = "context-informational"
 deterministic = true
 
 [[metric]]
+metric_id = "static.unmeasured-file"
+claim_id = "andon.static.parse-health@1|any|parse-completeness"
+# Diff-actionable, unlike the change-scope count above: this one names a
+# specific file in the change, and a file the change made unreadable is the
+# change's to fix. Without it a file can leave measurement entirely and the only
+# trace is a counter going up — which is PREMORTEM T3 in its purest form.
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
 metric_id = "static.cyclomatic-complexity.typescript"
 claim_id = "andon.static.cyclomatic@1|typescript|minimum-test-paths"
 class = "diff-actionable"

@@ -18,9 +18,9 @@
 //!
 //! Size and parse health are not suffixed. Both are language-agnostic by
 //! construction — a source line is a line, and an ERROR node is an ERROR node —
-//! and both cite a `language = "any"` claim. Three metrics share the parse-health
-//! claim, which the lint permits and which is correct here: they are three views
-//! of one instrument, not three predictions.
+//! and both cite a `language = "any"` claim. Four metrics share the parse-health
+//! claim, which the lint permits and which is correct here: they are four views
+//! of one instrument, not four predictions.
 
 use andon_core::engine::MetricDescriptor;
 use andon_core::schema::enums::MetricClass;
@@ -39,6 +39,8 @@ pub const METRIC_PARSE_ERRORS: &str = "static.parse-errors";
 pub const METRIC_PARSE_MISSING: &str = "static.parse-missing";
 /// Changed files the static family should have measured and could not.
 pub const METRIC_UNMEASURED_FILES: &str = "static.unmeasured-files";
+/// One named file the static family should have measured and could not.
+pub const METRIC_UNMEASURED_FILE: &str = "static.unmeasured-file";
 
 /// Claim behind [`METRIC_SLOC`].
 pub const CLAIM_SLOC: &str = "andon.static.sloc@1|any|maintenance-effort";
@@ -123,6 +125,15 @@ pub fn descriptors() -> Vec<MetricDescriptor> {
             class: MetricClass::ContextInformational,
             deterministic: true,
         },
+        MetricDescriptor {
+            metric_id: METRIC_UNMEASURED_FILE.to_string(),
+            claim_id: CLAIM_PARSE_HEALTH.to_string(),
+            // Diff-actionable, unlike the change-scope count beside it: this one
+            // names a specific file in the change, and a file the change made
+            // unreadable is the change's to fix.
+            class: MetricClass::DiffActionable,
+            deterministic: true,
+        },
     ];
     for language in complexity_languages() {
         descriptors.push(MetricDescriptor {
@@ -176,7 +187,7 @@ mod tests {
             .into_iter()
             .filter(|d| d.claim_id == CLAIM_PARSE_HEALTH)
             .count();
-        assert_eq!(sharing, 3);
+        assert_eq!(sharing, 4);
     }
 
     #[test]

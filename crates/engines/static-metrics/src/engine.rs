@@ -74,6 +74,12 @@ use crate::sloc::{sloc, sloc_range};
 /// checkout could have moved. Binding it at build time removes the question.
 const REGISTRY_TOML: &str = include_str!("../../../../registry/static.toml");
 
+/// The measured change has this path on its head side and the bytes behind it
+/// are not in the object database — the uncommitted working-tree case.
+pub const UNMEASURED_NO_BLOB: &str = "no-readable-blob";
+/// The bytes were read and are not source this engine can parse: not UTF-8.
+pub const UNMEASURED_NOT_SOURCE: &str = "not-utf8";
+
 /// The engine could not read what it was asked to measure.
 #[derive(Debug, thiserror::Error)]
 pub enum StaticError {
@@ -179,7 +185,14 @@ struct FileMeasurement {
 pub struct StaticMetricsEngine {
     version: String,
     files: Vec<FileMeasurement>,
-    unmeasured_files: u64,
+    unmeasured: Vec<UnmeasuredFile>,
+}
+
+/// A changed file the static family should have measured and could not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnmeasuredFile {
+    path: String,
+    reason: &'static str,
 }
 
 impl StaticMetricsEngine {
@@ -201,25 +214,31 @@ impl StaticMetricsEngine {
             .collect();
 
         let mut files = Vec::new();
-        let mut unmeasured_files = 0u64;
+        let mut unmeasured: Vec<UnmeasuredFile> = Vec::new();
 
         if !candidates.is_empty() {
             let mut batch = BlobBatch::open(git).map_err(BlobError::from)?;
             for (entry, language) in candidates {
                 let Some(oid) = entry.readable_blob() else {
                     // Present in the change, and its bytes are not in the object
-                    // database — the uncommitted working-tree case. Counted, not
+                    // database — the uncommitted working-tree case. Named, not
                     // guessed at.
-                    unmeasured_files += 1;
+                    unmeasured.push(UnmeasuredFile {
+                        path: entry.path.clone(),
+                        reason: UNMEASURED_NO_BLOB,
+                    });
                     continue;
                 };
                 let head_bytes = batch.read(oid)?;
                 let head = match measure_blob(language, head_bytes.bytes()) {
                     Ok(facts) => facts,
-                    // Not source this engine can read. Visible as a count rather
-                    // than as an absence.
+                    // Not source this engine can read. Named, per path, so that
+                    // removing a file from measurement always leaves a trace.
                     Err(_) => {
-                        unmeasured_files += 1;
+                        unmeasured.push(UnmeasuredFile {
+                            path: entry.path.clone(),
+                            reason: UNMEASURED_NOT_SOURCE,
+                        });
                         continue;
                     }
                 };
@@ -251,17 +270,18 @@ impl StaticMetricsEngine {
         // diffs are unreadable, and unreadable diffs are where a real change
         // hides.
         files.sort_by(|a, b| a.path.cmp(&b.path));
+        unmeasured.sort_by(|a, b| a.path.cmp(&b.path));
 
         Ok(StaticMetricsEngine {
             version: engine_version.to_string(),
             files,
-            unmeasured_files,
+            unmeasured,
         })
     }
 
     /// How many changed files produced no measurement.
     pub fn unmeasured_files(&self) -> u64 {
-        self.unmeasured_files
+        self.unmeasured.len() as u64
     }
 }
 
@@ -380,10 +400,42 @@ impl MeasureEngine for StaticMetricsEngine {
                 symbol: None,
                 line_span: None,
             },
-            MetricValue::Count(self.unmeasured_files),
+            MetricValue::Count(self.unmeasured.len() as u64),
             None,
             evidence_of(metrics::METRIC_UNMEASURED_FILES)?,
         ));
+
+        // One marker per file, naming it. The change-scope count above says how
+        // many files went unmeasured; only these say WHICH, and without them a
+        // file can be removed from measurement entirely and leave a number that
+        // looks like any other number (PREMORTEM T3).
+        for file in &self.unmeasured {
+            let mut result = self.result(
+                metrics::METRIC_UNMEASURED_FILE,
+                ResultScope {
+                    kind: ScopeKind::File,
+                    path: Some(file.path.clone()),
+                    // No blob: either there is none, or the bytes behind it are
+                    // not source. Naming one would imply it had been read.
+                    blob_oid: None,
+                    symbol: None,
+                    line_span: None,
+                },
+                // The reason is the value, so it is inside the per-result digest
+                // and both sides must agree on why a file was skipped.
+                MetricValue::Text(file.reason.to_string()),
+                None,
+                evidence_of(metrics::METRIC_UNMEASURED_FILE)?,
+            );
+            // `unwitnessed` rather than `parse-degraded`: nothing was measured
+            // here at all. It is the weakest completeness there is, so a record
+            // that skipped a file cannot claim to be complete.
+            result.completeness = Completeness::Unwitnessed;
+            result.severity = result
+                .severity
+                .min(health::severity_ceiling(Completeness::Unwitnessed));
+            results.push(result);
+        }
 
         for file in &self.files {
             let file_scope = || ResultScope {
@@ -550,7 +602,7 @@ mod tests {
         let engine = StaticMetricsEngine {
             version: "0.1.0".to_string(),
             files: Vec::new(),
-            unmeasured_files: 0,
+            unmeasured: Vec::new(),
         };
         Registry::check_engine(registry_file().expect("parses"), &engine)
             .expect("the engine and its registry file must not drift");
@@ -561,7 +613,7 @@ mod tests {
         let engine = StaticMetricsEngine {
             version: "0.1.0".to_string(),
             files: Vec::new(),
-            unmeasured_files: 0,
+            unmeasured: Vec::new(),
         };
         match engine.regime() {
             MeasurementRegime::Static {
@@ -586,7 +638,7 @@ mod tests {
         let engine = StaticMetricsEngine {
             version: "0.1.0".to_string(),
             files: Vec::new(),
-            unmeasured_files: 0,
+            unmeasured: Vec::new(),
         };
         let json = serde_json::to_string(&engine.regime()).expect("regimes serialize");
         assert!(!json.contains("git_version"), "{json}");
