@@ -232,6 +232,18 @@ impl ArtifactsEngine {
             // Reporting zero uncovered lines for it would be true and useless;
             // reporting it at all would put a coverage result on a file that is
             // gone.
+            //
+            // This is the one place in P4 that reads `ChangeStatus`, and it is
+            // worth naming because of P1's P2-entry note: for the `INDEX`
+            // sentinel, a path staged and then deleted from disk derives its
+            // status from the worktree side rather than the index side, so it
+            // arrives here as `Deleted` when the measured state — the index —
+            // still holds it. The consequence is bounded to this filter: one
+            // staged-then-deleted file goes unreported in an index-scoped
+            // coverage run. It is advisory-lane, it produces no wrong number and
+            // no accusation, and the fix belongs to whoever owns
+            // `ChangedSet`. The process engine reads `entry.path` and nothing
+            // else, so the compared lane is untouched by the note entirely.
             .filter(|entry| entry.status != ChangeStatus::Deleted)
             .map(|entry| {
                 let touched = lines.for_path(&entry.path);
