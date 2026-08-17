@@ -1,0 +1,90 @@
+# Measure where the numbers look good, then claim you measured somewhere else.
+#
+# PLAN R2-4 splits the tuple mismatch in two, and this fixture is the half that
+# is an accusation. A claimed base that is an **ancestor** of the trusted branch
+# is a stale measurement or a rebase — explainable, demoted, never accused (see
+# `fixtures/honest/rebased-pr`). A claimed base that is **not an ancestor**, or
+# that the repository has never heard of, is not a thing an honest agent can
+# produce: it means the record is pointing at a comparison that was never the
+# one under review.
+#
+# So this scenario builds a side branch that never lands on main, and the forge
+# rewrites the self-report's `base_oid` to a commit on it — then re-seals, so the
+# record is self-consistent about a base that is not the PR's. The verifier
+# resolves the base for itself, finds the claim is not an ancestor of main, and
+# raises `base-fabrication`, which forces `divergent`.
+#
+# `expect_tamper = ["base-fabrication"]` is the assertion that matters. Without
+# the signal this would be indistinguishable from the rebase case, and the
+# demote-do-not-accuse rule would have quietly swallowed a real attack.
+
+schema_version = 1
+name = "fabricated-base"
+title = "A self-report claiming a base that never was the base"
+trusted_branch = "main"
+rationale = """
+Should-fail with a named tamper signal. The gentler outcome exists for stale
+bases, and an attacker who can reach it by fabricating a base has been handed
+the demotion as a hiding place — which is why ancestry, not mere inequality,
+decides which of the two an unequal tuple earns.
+"""
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "base"
+message = "base"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\n"
+
+# A branch that never lands. Its commits exist and are not ancestors of main —
+# which is exactly the property the verifier tests.
+[[step]]
+kind = "branch"
+name = "side"
+from = "base"
+
+[[step]]
+kind = "commit"
+branch = "side"
+label = "sidetrack"
+message = "side: a commit that never lands on main"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const side = true;\n"
+
+[[step]]
+kind = "branch"
+name = "feature"
+from = "base"
+
+[[step]]
+kind = "commit"
+branch = "feature"
+label = "head"
+message = "feature: change a"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const b = 2;\n"
+
+[[step]]
+kind = "measure"
+head = "head"
+base = "merge-base"
+
+[[step]]
+kind = "forge"
+commit = "head"
+op = "fabricate-base"
+base_label = "sidetrack"
+
+[verify]
+head = "head"
+expect = "divergent"
+expect_tamper = ["base-fabrication"]
+expect_mismatches = false
+expect_flag_disagreements = false

@@ -59,9 +59,7 @@ use andon_core::engine::{
 };
 use andon_core::git::{BlobBatch, BlobError, ChangedEntry, ChangedSet, Git};
 use andon_core::registry::{lint, parse_file, EngineRegistryFile, Registry};
-use andon_core::schema::enums::{
-    Completeness, EngineClass, EngineFamily, MetricClass, Severity,
-};
+use andon_core::schema::enums::{Completeness, EngineClass, EngineFamily, MetricClass, Severity};
 use andon_core::schema::payload::{
     CacheState, Freshness, MeasurementResult, MetricValue, ResultScope, ScopeKind,
 };
@@ -152,7 +150,11 @@ pub fn registry_file() -> Result<&'static EngineRegistryFile, SpikeError> {
 pub fn registry(as_of: Date) -> Result<Registry, SpikeError> {
     let file = registry_file()?;
     let files = vec![("spike.toml".to_string(), file.clone())];
-    let (registry, report) = lint(&files, &andon_core::policy::RegistryPolicy::default(), as_of);
+    let (registry, report) = lint(
+        &files,
+        &andon_core::policy::RegistryPolicy::default(),
+        as_of,
+    );
     if report.failed() {
         let messages: Vec<String> = report
             .errors()
@@ -376,22 +378,26 @@ impl MeasureEngine for SpikeEngine {
                 symbol: None,
                 line_span: None,
             };
-            results.push(self.result(
-                METRIC_FILE_BYTES,
-                scope(()),
-                MetricValue::Count(file.bytes),
-                file.base
-                    .map(|(bytes, _)| MetricValue::Integer(file.bytes as i64 - bytes as i64)),
-                evidence_for(METRIC_FILE_BYTES),
-            ));
-            results.push(self.result(
-                METRIC_FILE_LINES,
-                scope(()),
-                MetricValue::Count(file.lines),
-                file.base
-                    .map(|(_, lines)| MetricValue::Integer(file.lines as i64 - lines as i64)),
-                evidence_for(METRIC_FILE_LINES),
-            ));
+            results.push(
+                self.result(
+                    METRIC_FILE_BYTES,
+                    scope(()),
+                    MetricValue::Count(file.bytes),
+                    file.base
+                        .map(|(bytes, _)| MetricValue::Integer(file.bytes as i64 - bytes as i64)),
+                    evidence_for(METRIC_FILE_BYTES),
+                ),
+            );
+            results.push(
+                self.result(
+                    METRIC_FILE_LINES,
+                    scope(()),
+                    MetricValue::Count(file.lines),
+                    file.base
+                        .map(|(_, lines)| MetricValue::Integer(file.lines as i64 - lines as i64)),
+                    evidence_for(METRIC_FILE_LINES),
+                ),
+            );
         }
         Ok(results)
     }

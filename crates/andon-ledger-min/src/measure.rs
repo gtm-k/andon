@@ -20,9 +20,7 @@
 use andon_core::engine::{run_engine, EngineError, MeasureContext};
 use andon_core::git::{ChangedSet, Git, ResolveError, ResolvedRange, Revision};
 use andon_core::policy::{Policy, PolicyError};
-use andon_core::schema::enums::{
-    Completeness, InvocationSource, RecordKind, Severity, Verdict,
-};
+use andon_core::schema::enums::{Completeness, InvocationSource, RecordKind, Severity, Verdict};
 use andon_core::schema::payload::{
     AttestationBlock, CompareContext, Invocation, IterationState, MeasurementRecord, Reserved,
     ToolIdentity, VerdictSummary, SCHEMA_VERSION,

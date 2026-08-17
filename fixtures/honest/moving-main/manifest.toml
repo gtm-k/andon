@@ -1,0 +1,71 @@
+# Main advances while the PR sits. The verdict must not move.
+#
+# The whole scenario is one line of the verifier: the base is
+# `merge-base(trusted_branch, head)`, not the trusted branch's tip. Commits
+# landing on main after a measurement change the tip and leave the fork point
+# exactly where it was, so tuple equality still holds and the digests still
+# compare.
+#
+# Resolving the base as the tip instead would be an easy and invisible mistake:
+# every scenario in this suite except this one would still pass, and in
+# production every PR would turn `unwitnessed-base-mismatch` the moment anything
+# else merged. PLAN R2-5 lists it as a should-pass fixture for that reason.
+
+schema_version = 1
+name = "moving-main"
+title = "Main advances after the measurement; the merge base does not"
+trusted_branch = "main"
+rationale = """
+Should-pass. A red here means the verifier is resolving the trusted branch's
+tip rather than the fork point, which would make every PR in a busy repository
+a mismatch — the loudest possible false negative on the tool's headline
+promise.
+"""
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "base"
+message = "base"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\n"
+
+[[step]]
+kind = "branch"
+name = "feature"
+from = "base"
+
+[[step]]
+kind = "commit"
+branch = "feature"
+label = "head"
+message = "feature: change a"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const b = 2;\n"
+
+[[step]]
+kind = "measure"
+head = "head"
+base = "merge-base"
+
+# Somebody else's work lands. Nothing about the PR has changed.
+[[step]]
+kind = "commit"
+branch = "main"
+label = "advance"
+message = "main: an unrelated change lands"
+
+[[step.file]]
+path = "src/unrelated.ts"
+text = "export const unrelated = true;\n"
+
+[verify]
+head = "head"
+expect = "confirmed"
+expect_tamper = []
+expect_mismatches = false
+expect_flag_disagreements = false

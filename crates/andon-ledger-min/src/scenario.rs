@@ -389,9 +389,7 @@ pub fn check(manifest: &Manifest, attestation: &AttestationBlock) -> Vec<String>
     match &attestation.compare {
         None => {
             if expected.expect_mismatches || expected.expect_flag_disagreements {
-                problems.push(
-                    "expected compare detail, but no compare was attempted".to_string(),
-                );
+                problems.push("expected compare detail, but no compare was attempted".to_string());
             }
         }
         Some(compare) => {

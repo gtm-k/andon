@@ -209,8 +209,8 @@ pub fn compare(legs: &[(String, MeasurementRecord)]) -> Result<CrossCompare, Rec
             })
             .collect();
         let present: Vec<&String> = digests.iter().flatten().collect();
-        let agreed = present.len() == legs.len()
-            && present.windows(2).all(|pair| pair[0] == pair[1]);
+        let agreed =
+            present.len() == legs.len() && present.windows(2).all(|pair| pair[0] == pair[1]);
         if !agreed {
             problems.push(format!(
                 "{metric_id} {scope}: {}",
@@ -301,8 +301,7 @@ mod tests {
 
     #[test]
     fn one_record_is_not_a_comparison() {
-        let compared =
-            compare(&[("linux".to_string(), sample_record())]).expect("records compare");
+        let compared = compare(&[("linux".to_string(), sample_record())]).expect("records compare");
         assert!(!compared.agreed(), "a single leg proves nothing");
     }
 }

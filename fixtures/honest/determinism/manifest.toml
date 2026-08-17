@@ -1,0 +1,125 @@
+# The honest scenario, and the cross-OS matrix subject.
+#
+# One fixture doing both jobs on purpose: "honest -> confirmed on every matrix
+# leg" (PLAN B5) and "byte-identical per-result digests across Win/macOS/Linux"
+# (PLAN B4) are the same claim asked two ways, and asking them of the same bytes
+# is what makes a green matrix mean something. The bytes are chosen to be the
+# hardest ones PREMORTEM Story 1 names.
+#
+# WHAT IS IN HERE AND WHY
+#
+#   src/lf.ts        pure LF, the control.
+#   src/crlf.ts      pure CRLF. On a default Git-for-Windows clone the worktree
+#                    and the blob agree; on Linux they do not. The blob is what
+#                    is measured, so the digest is the same on both.
+#   src/mixed.ts     LF, CRLF and a lone CR in one file. Nothing normalizes it,
+#                    which is the point: `spike.file-lines` counts LF bytes, so
+#                    the lone CR is content and stays counted in `file-bytes`.
+#   src/no-eol.ts    no final newline. The unterminated-final-line rule is the
+#                    one place the line count is not simply a byte tally.
+#   src/文件.ts      a non-ASCII path. Han characters, deliberately: they have
+#                    no NFD form. `ResultScope::path` is inside the per-result
+#                    digest and macOS filesystems normalize names, so an accented
+#                    Latin path would arrive decomposed on the mac leg and
+#                    diverge from Linux — a red matrix on a fixture nobody
+#                    tampered with. If Andon ever promises NFC/NFD stability
+#                    that is a designed feature; it is not something to find out
+#                    from a matrix failure.
+#   src/目录/子目录/文件二.ts   non-ASCII directory components too, with CRLF
+#                    content, so the path and the bytes are hard at once.
+#   README.md        an ordinary file, so the fixture is not all corner.
+#
+# THERE IS NO .gitattributes IN THIS FIXTURE, ON PURPOSE.
+#
+# A matrix leg clones this repository with its runner's own git config. On
+# Windows that means `core.autocrlf=true` and a working tree full of CRLF that
+# nobody committed — PREMORTEM Story 1's setup, reproduced. Normalizing the
+# fixture would make the matrix pass for the wrong reason. Construction is
+# pinned (`Git::cmd` forces `core.autocrlf=false`), so what is written here is
+# what reaches the object database on every platform.
+
+schema_version = 1
+name = "determinism"
+title = "An honest change over CRLF, mixed endings and non-ASCII paths"
+trusted_branch = "main"
+rationale = """
+The should-pass case (PLAN B5). If this scenario ever produces anything but
+`confirmed`, the tool accuses honest work of tampering and there is no second
+chance — PREMORTEM Story 1 is exactly this failure reaching users. The
+expectation is committed here rather than asserted in test code so that
+relaxing it is an edit a reviewer sees.
+"""
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "base"
+message = "base: the byte zoo"
+
+[[step.file]]
+path = "src/lf.ts"
+text = "export const a = 1;\nexport const b = 2;\nexport const c = 3;\n"
+
+[[step.file]]
+path = "src/crlf.ts"
+text = "export const d = 4;\r\nexport const e = 5;\r\n"
+
+[[step.file]]
+path = "src/mixed.ts"
+text = "one\r\ntwo\nthree\rfour\r\nfive\n"
+
+[[step.file]]
+path = "src/no-eol.ts"
+text = "export const f = 6;"
+
+[[step.file]]
+path = "src/文件.ts"
+text = "export const 名前 = '值';\nexport const 数 = 7;\n"
+
+[[step.file]]
+path = "src/目录/子目录/文件二.ts"
+text = "export const 二 = 2;\r\nexport const 三 = 3;\r\n"
+
+[[step.file]]
+path = "README.md"
+text = "# byte zoo\n\nEvery line-ending shape in one tree.\n"
+
+[[step]]
+kind = "branch"
+name = "feature"
+from = "base"
+
+[[step]]
+kind = "commit"
+branch = "feature"
+label = "head"
+message = "feature: edit across the zoo"
+remove = ["src/no-eol.ts"]
+
+[[step.file]]
+path = "src/lf.ts"
+text = "export const a = 1;\nexport const b = 22;\nexport const c = 3;\nexport const g = 8;\n"
+
+[[step.file]]
+path = "src/crlf.ts"
+text = "export const d = 44;\r\nexport const e = 5;\r\nexport const h = 9;\r\n"
+
+[[step.file]]
+path = "src/文件.ts"
+text = "export const 名前 = '新值';\nexport const 数 = 77;\nexport const 追加 = true;\n"
+
+[[step.file]]
+path = "src/新增.ts"
+text = "export const 新 = 1;\r\nexport const 增 = 2;\n"
+
+[[step]]
+kind = "measure"
+head = "head"
+base = "merge-base"
+
+[verify]
+head = "head"
+expect = "confirmed"
+expect_tamper = []
+expect_mismatches = false
+expect_flag_disagreements = false

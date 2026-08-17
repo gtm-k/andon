@@ -109,7 +109,8 @@ impl Flags {
     }
 
     fn require(&self, name: &str) -> Result<&str, String> {
-        self.get(name).ok_or_else(|| format!("--{name} is required"))
+        self.get(name)
+            .ok_or_else(|| format!("--{name} is required"))
     }
 
     fn on(&self, name: &str) -> bool {
@@ -262,8 +263,9 @@ fn cmd_scenario(flags: &Flags) -> Result<ExitCode, String> {
     match action.as_str() {
         "prepare" => {
             let dest = PathBuf::from(flags.require("dest")?);
-            let prepared = scenario::prepare(&manifest, &dest, &scenario::PrepareOptions::default())
-                .map_err(|e| e.to_string())?;
+            let prepared =
+                scenario::prepare(&manifest, &dest, &scenario::PrepareOptions::default())
+                    .map_err(|e| e.to_string())?;
             let json = serde_json::to_string_pretty(&prepared).map_err(|e| e.to_string())?;
             if let Some(out) = flags.get("json") {
                 std::fs::write(out, format!("{json}\n")).map_err(|e| e.to_string())?;
@@ -288,7 +290,10 @@ fn cmd_scenario(flags: &Flags) -> Result<ExitCode, String> {
             };
             let problems = scenario::check(&manifest, &record.attestation);
             if problems.is_empty() {
-                println!("{}: {:?} as expected", manifest.name, record.attestation.value);
+                println!(
+                    "{}: {:?} as expected",
+                    manifest.name, record.attestation.value
+                );
                 Ok(ExitCode::SUCCESS)
             } else {
                 for problem in &problems {

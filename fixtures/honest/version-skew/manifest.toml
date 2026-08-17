@@ -1,0 +1,64 @@
+# A local binary older than the verifier's. Not tampering.
+#
+# PREMORTEM S4: local/CI version skew poisons the digest compare. Two honest
+# binaries at different engine versions legitimately produce different numbers,
+# and a verifier that called that `divergent` would accuse every developer who
+# had not upgraded yet — the same false-tamper wound as PREMORTEM Story 1,
+# arriving through the release cycle instead of through line endings.
+#
+# The regime carries the engine version, the compare checks regime equality
+# before it looks at a single digest, and the answer is
+# `unwitnessed-version-skew`: no pass, no accusation, and an upgrade hint the
+# workflow can render (PLAN P9's mapping makes it a yellow non-blocking check).
+#
+# The skew is staged with the engine-version override rather than by building a
+# second binary, so it travels through exactly the regime field a real version
+# difference would.
+
+schema_version = 1
+name = "version-skew"
+title = "The agent measured with an older engine than the verifier runs"
+trusted_branch = "main"
+rationale = """
+The one non-tamper explanation that costs nothing to get wrong and everything
+to get wrong loudly. If this ever returns `divergent`, every release of Andon
+becomes an accusation against everyone who has not upgraded.
+"""
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "base"
+message = "base"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\n"
+
+[[step]]
+kind = "branch"
+name = "feature"
+from = "base"
+
+[[step]]
+kind = "commit"
+branch = "feature"
+label = "head"
+message = "feature: change a"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const b = 2;\n"
+
+[[step]]
+kind = "measure"
+head = "head"
+base = "merge-base"
+engine_version = "0.0.1-pre-history"
+
+[verify]
+head = "head"
+expect = "unwitnessed-version-skew"
+expect_tamper = []
+expect_mismatches = false
+expect_flag_disagreements = false

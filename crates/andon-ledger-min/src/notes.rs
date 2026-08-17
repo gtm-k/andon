@@ -299,7 +299,9 @@ impl<'a> Notes<'a> {
                 }
             }
         }
-        Err(NotesError::Git(last.expect("at least one attempt was made")))
+        Err(NotesError::Git(
+            last.expect("at least one attempt was made"),
+        ))
     }
 
     fn ref_flag(&self) -> String {

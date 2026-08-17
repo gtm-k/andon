@@ -1,0 +1,101 @@
+# A measurement taken before a rebase, reused after it.
+#
+# WHY THE NOTE IS CARRIED RATHER THAN RE-TAKEN
+#
+# Notes are keyed by commit, and a rebase produces a new head. If the scenario
+# simply rebased and verified, the verifier would find no self-report at all and
+# answer `unwitnessed` — a true answer to a different question, and not the row
+# PLAN R2-5 asks for.
+#
+# The case R2-4 actually describes is an agent that measured, had its branch
+# rebased underneath it, and **reused the measurement** instead of re-measuring.
+# That is what `copy-note` stages: the pre-rebase record, verbatim, attached to
+# the post-rebase head. The claimed base is now an ancestor of main rather than
+# the merge base, and the correct answer is a demotion with no accusation —
+# `unwitnessed-base-mismatch`, tamper signals empty. Repeated mismatches on one
+# PR escalate; that escalation is P8/P9's, and the classification is here.
+#
+# The "rebase" is modelled by building the new head directly on the advanced
+# main with the same content, which is what `git rebase` produces. Running the
+# rebase machinery instead would add a half-finished-operation state for the
+# fixture to trip over and prove nothing extra.
+
+schema_version = 1
+name = "rebased-pr"
+title = "Measured before a rebase, verified after it"
+trusted_branch = "main"
+rationale = """
+The demote-do-not-accuse bar. A `divergent` here would be the false-tamper
+epidemic firing on the single most ordinary thing that happens to a PR, and a
+`confirmed` here would let a measurement of one change stand as evidence for
+another. Neither is a pass: the record stays self-reported.
+"""
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "base"
+message = "base"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\n"
+
+[[step]]
+kind = "branch"
+name = "feature"
+from = "base"
+
+[[step]]
+kind = "commit"
+branch = "feature"
+label = "head"
+message = "feature: change a"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const b = 2;\n"
+
+[[step]]
+kind = "measure"
+head = "head"
+base = "merge-base"
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "advance"
+message = "main: something else lands"
+
+[[step.file]]
+path = "src/unrelated.ts"
+text = "export const unrelated = true;\n"
+
+# The rebase: the same change, now sitting on top of the advanced main.
+[[step]]
+kind = "branch"
+name = "feature-rebased"
+from = "advance"
+
+[[step]]
+kind = "commit"
+branch = "feature-rebased"
+label = "rebased"
+message = "feature: change a"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const b = 2;\n"
+
+# The agent reuses its pre-rebase measurement rather than re-measuring.
+[[step]]
+kind = "copy-note"
+source = "head"
+target = "rebased"
+
+[verify]
+head = "rebased"
+expect = "unwitnessed-base-mismatch"
+expect_tamper = []
+expect_mismatches = false
+expect_flag_disagreements = false

@@ -1,0 +1,87 @@
+# The one-boolean escape, closed. DEFERRED-APPROVALS E4.
+#
+# `deterministic` decides whether a result enters the digest compare, and it
+# sits outside `ResultDigestInput` — so nothing signs it and a self-report can
+# say anything it likes about it. A verifier that honoured the report's flag
+# would let any record buy its way out of the compare for the price of one
+# boolean: flip the flags, forge the numbers, write garbage digests, and the
+# comparison loop walks past all of it leaving matched, mismatched and unpaired
+# empty. A `confirmed` with no trace of what was never checked.
+#
+# P0 closed it — compare-set membership is keyed on the *verifier's* flag alone
+# — and pinned it in unit tests (`compare.rs` PROBE8/PROBE9). Codex asked for a
+# P1.5 fixture and a P9 acceptance criterion on top; both were adopted, belt and
+# braces. This is the fixture: the same evasion, through the real action path,
+# on a metric the shipped registry calls deterministic.
+#
+# `--op flip-deterministic` does both halves — forges every count *and* clears
+# every flag — because the flag alone leaves an honest number behind it, and the
+# whole point of the dodge is to hide a dishonest one.
+#
+# The expected outcome is `divergent`, and `expect_flag_disagreements = true` is
+# the load-bearing half of the assertion: the attempt itself has to be visible.
+# A signal nobody can see is a signal that does not exist.
+
+schema_version = 1
+name = "flipped-deterministic"
+title = "A self-report that declares itself out of the compare set"
+trusted_branch = "main"
+rationale = """
+Should-fail, and specifically must NOT confirm. The verifier derives
+compare-set membership from its own compiled registry; the report's flag
+changes nothing except what lands in `flag_disagreements`. If this ever
+returns `confirmed`, every deterministic check in the product is optional at
+the measured party's discretion.
+"""
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "base"
+message = "base"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\n"
+
+[[step.file]]
+path = "src/b.ts"
+text = "export const b = 1;\n"
+
+[[step]]
+kind = "branch"
+name = "feature"
+from = "base"
+
+# Two files, so the record carries several results and the evasion has to work
+# across all of them rather than on a single lucky one.
+[[step]]
+kind = "commit"
+branch = "feature"
+label = "head"
+message = "feature: change both files"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const a2 = 2;\n"
+
+[[step.file]]
+path = "src/b.ts"
+text = "export const b = 1;\nexport const b2 = 2;\nexport const b3 = 3;\n"
+
+[[step]]
+kind = "measure"
+head = "head"
+base = "merge-base"
+
+[[step]]
+kind = "forge"
+commit = "head"
+op = "flip-deterministic"
+
+[verify]
+head = "head"
+expect = "divergent"
+expect_tamper = []
+expect_mismatches = true
+expect_flag_disagreements = true

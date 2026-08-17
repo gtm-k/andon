@@ -1,0 +1,66 @@
+# The plain forgery: numbers that were never measured.
+#
+# `andon-spike-forge --op inflate-metric` adds one to every count in the
+# self-report and **re-seals every per-result digest**, so the record that lands
+# on `refs/notes/andon-measure` is internally consistent, correctly formatted,
+# and false. Nothing about it can be detected by inspection; only an independent
+# recompute of the same blobs disagrees.
+#
+# Off by one on purpose. A wildly wrong number would be caught by anything with
+# a sanity check in it, and would prove nothing about the trust model. One is
+# what a competent attacker ships.
+#
+# This is the should-fail row of PLAN R2-5, and it is the single assertion the
+# whole two-channel design exists to make true.
+
+schema_version = 1
+name = "inflated-metric"
+title = "A self-report whose numbers were never measured"
+trusted_branch = "main"
+rationale = """
+Should-fail. If this returns anything but `divergent`, self-reported
+measurements are worth nothing and neither is the CI attestation that blesses
+them — the product's central claim, falsified.
+"""
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "base"
+message = "base"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\n"
+
+[[step]]
+kind = "branch"
+name = "feature"
+from = "base"
+
+[[step]]
+kind = "commit"
+branch = "feature"
+label = "head"
+message = "feature: a change worth lying about"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const b = 2;\nexport const c = 3;\n"
+
+[[step]]
+kind = "measure"
+head = "head"
+base = "merge-base"
+
+[[step]]
+kind = "forge"
+commit = "head"
+op = "inflate-metric"
+
+[verify]
+head = "head"
+expect = "divergent"
+expect_tamper = []
+expect_mismatches = true
+expect_flag_disagreements = false

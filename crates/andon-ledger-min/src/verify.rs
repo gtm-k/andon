@@ -179,7 +179,10 @@ pub fn attest(git: &Git, request: &VerifyRequest) -> Result<VerifyOutcome, Verif
     // `append`, not `write`: a second verifier run — a re-run of a job, a second
     // workflow — must not delete the first one's attestation. Two attestations
     // that disagree is information; one that silently replaced another is not.
-    Notes::attest(git).append(&outcome.attest_record.compare_context.head_oid, &outcome.attest_record)?;
+    Notes::attest(git).append(
+        &outcome.attest_record.compare_context.head_oid,
+        &outcome.attest_record,
+    )?;
     Ok(outcome)
 }
 
@@ -264,12 +267,7 @@ pub fn base_relation_of(
         return Ok(BaseRelation::Unknown);
     }
     let is_ancestor = git
-        .cmd([
-            "merge-base",
-            "--is-ancestor",
-            claimed,
-            trusted_branch,
-        ])
+        .cmd(["merge-base", "--is-ancestor", claimed, trusted_branch])
         .succeeds()?;
     Ok(if is_ancestor {
         BaseRelation::Ancestor
