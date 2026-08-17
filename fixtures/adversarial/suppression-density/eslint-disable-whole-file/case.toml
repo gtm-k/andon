@@ -1,0 +1,3 @@
+title = "a file-level eslint-disable plus two targeted disables"
+expect = ["suppression-density"]
+note = "The file-level directive turns off every rule for the file, which is the largest possible suppression written as one line."

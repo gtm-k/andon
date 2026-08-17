@@ -1,0 +1,3 @@
+title = "a pytest skip decorator added to two cases"
+expect = ["test-removal"]
+note = "Same move as the JavaScript skip, in the idiom Python uses. The reason string makes it read as maintenance."

@@ -185,11 +185,20 @@ impl Detector for ThresholdConfigEdit {
 fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
     let key = key.to_ascii_lowercase();
     let leaf = key.rsplit('.').next().unwrap_or(&key).to_string();
+    // Booleans are spelled `true` in TOML and JSON, `True` in an INI file that
+    // Python wrote, and `yes` in some YAML. Comparing them as written meant
+    // `disallow_untyped_defs = True -> False` in mypy.ini read as an ordinary
+    // string edit; the corpus caught it.
+    let before_bool = boolean(before);
+    let after_bool = boolean(after);
 
     if let (Some(b), Some(a)) = (rank(before), rank(after)) {
         return (a < b).then_some("severity lowered");
     }
-    if STRICT_WHEN_TRUE.iter().any(|k| leaf == *k) && before == "true" && after == "false" {
+    if STRICT_WHEN_TRUE.iter().any(|k| leaf == *k)
+        && before_bool == Some(true)
+        && after_bool == Some(false)
+    {
         return Some("strictness turned off");
     }
     if let (Ok(b), Ok(a)) = (before.parse::<f64>(), after.parse::<f64>()) {
@@ -201,6 +210,15 @@ fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// A configuration boolean, however the file's syntax spells it.
+fn boolean(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" => Some(false),
+        _ => None,
+    }
 }
 
 /// Position in [`SEVERITY_WORDS`], for values that are severity words.
@@ -316,6 +334,20 @@ mod tests {
         let head = "export const maxComplexity = 40;\n";
         let view = ChangeView::new(vec![FileChange::modified("src/limits.ts", base, head)]);
         assert!(!ThresholdConfigEdit.run(&view).fired);
+    }
+
+    #[test]
+    fn an_ini_written_boolean_is_still_a_boolean() {
+        let base = "[mypy]
+disallow_untyped_defs = True
+";
+        let head = "[mypy]
+disallow_untyped_defs = False
+";
+        let view = ChangeView::new(vec![FileChange::modified("mypy.ini", base, head)]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(outcome.findings[0].detail.contains("strictness turned off"));
     }
 
     #[test]

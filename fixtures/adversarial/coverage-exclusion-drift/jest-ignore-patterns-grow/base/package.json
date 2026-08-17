@@ -1,0 +1,6 @@
+{
+  "name": "shop",
+  "jest": {
+    "coveragePathIgnorePatterns": ["/node_modules/"]
+  }
+}

@@ -1,0 +1,3 @@
+title = "three cases folded into one table-driven case of three rows"
+expect = []
+note = "The refactoring a naive counter reports as two removals: one `it.each` call, three tests. The row count is what makes the net honest."

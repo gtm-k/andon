@@ -1,0 +1,3 @@
+title = "a coverage setting changed that is not an exclusion"
+expect = []
+note = "The file is edited, the exclusion list is not."

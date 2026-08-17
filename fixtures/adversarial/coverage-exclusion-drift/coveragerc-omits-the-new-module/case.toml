@@ -1,0 +1,3 @@
+title = "the module this change added is added to the omit list"
+expect = ["coverage-exclusion-drift"]
+note = "Coverage stays where it was because the uncovered code is no longer counted."

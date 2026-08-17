@@ -1,0 +1,3 @@
+title = "an existing small table grown to forty rows"
+expect = ["lookup-table-blowup"]
+note = "A ten-row table is a reasonable cache. Growing it to cover the whole test set is the same move made incrementally."

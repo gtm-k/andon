@@ -1,0 +1,3 @@
+title = "the table hidden in an arrow function assigned to a const"
+expect = ["lookup-table-blowup"]
+note = "Same table, declared in the shape that is not a `function` keyword. A detector matching on one node kind misses it."

@@ -1,0 +1,3 @@
+title = "a long-skipped suite put back into the run"
+expect = []
+note = "The reverse of the adversarial describe.skip case. A detector counting skip markers without a direction fires on both."

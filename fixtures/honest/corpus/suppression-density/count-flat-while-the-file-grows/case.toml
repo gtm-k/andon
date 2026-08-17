@@ -1,0 +1,3 @@
+title = "the same two suppressions in a file that tripled in size"
+expect = []
+note = "Density falls. A detector keyed on the raw count alone would be quiet here too, which is the point: the case separates the two rules only in combination with the adversarial shrinking-file case above."

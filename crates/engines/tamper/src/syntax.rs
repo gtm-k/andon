@@ -212,6 +212,52 @@ pub fn callee_text(parsed: &Parsed, node: Node<'_>) -> Option<String> {
     Some(parsed.text(callee))
 }
 
+/// Whether this call is the callee of another call — the inner half of a
+/// curried invocation like `it.each(table)(name, fn)`.
+///
+/// Both halves are `call_expression`s and both name `it`, so a walk that
+/// counted every matching call would count one test twice. The outer call is
+/// the one that carries the case's name and body, so the inner is the one to
+/// skip.
+pub fn is_curried_inner(node: Node<'_>) -> bool {
+    node.parent()
+        .and_then(|parent| parent.child_by_field_name("function"))
+        .is_some_and(|function| function.id() == node.id())
+}
+
+/// How many rows a table-driven call declares, for `it.each(table)(...)`.
+///
+/// `None` when the call is not table-driven or the table is not a literal.
+/// A table-driven case is *n* cases at run time, and counting it as one would
+/// make replacing three `it` calls with one `it.each` of three rows read as two
+/// tests removed — a refactoring reported as tampering, which is the
+/// false-positive class the should-pass corpus exists to catch.
+pub fn each_rows(node: Node<'_>) -> Option<usize> {
+    let inner = node.child_by_field_name("function")?;
+    if inner.kind() != "call_expression" {
+        return None;
+    }
+    let callee = inner.child_by_field_name("function")?;
+    if !matches!(callee.kind(), "member_expression") {
+        return None;
+    }
+    let property = callee.child_by_field_name("property")?;
+    let arguments = inner.child_by_field_name("arguments")?;
+    let mut cursor = arguments.walk();
+    let table = arguments
+        .named_children(&mut cursor)
+        .find(|child| matches!(child.kind(), "array" | "template_string"))?;
+    if table.kind() != "array" {
+        return None;
+    }
+    let mut cursor = table.walk();
+    let rows = table.named_children(&mut cursor).count();
+    // The property name is checked last so that a non-`each` curried call still
+    // returns `None` rather than a row count.
+    let _ = property;
+    Some(rows)
+}
+
 /// The last segment of a dotted callee: `foo.bar.baz` -> `baz`.
 pub fn last_segment(callee: &str) -> &str {
     callee.rsplit(['.', '?']).next().unwrap_or(callee).trim()

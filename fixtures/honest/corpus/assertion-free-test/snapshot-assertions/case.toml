@@ -1,0 +1,3 @@
+title = "cases that assert through snapshots"
+expect = []
+note = "A snapshot matcher is an assertion whose expected value lives in another file."

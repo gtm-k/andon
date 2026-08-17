@@ -1,0 +1,3 @@
+title = "a file with old parse errors, edited somewhere else"
+expect = []
+note = "The faults were there before and are there after. Only the delta fires."

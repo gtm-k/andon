@@ -1,0 +1,3 @@
+title = "two new pytest cases with no assert statement"
+expect = ["assertion-free-test"]
+note = "The Python spelling of the same move. Both functions run the code and return."

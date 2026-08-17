@@ -1,0 +1,3 @@
+title = "a file that already had one parse fault and now has more"
+expect = ["parse-error-delta"]
+note = "The delta is what fires, so a file that was already partly unreadable becoming more so has to count. A detector keyed on 'parses or does not' would be quiet on both sides."

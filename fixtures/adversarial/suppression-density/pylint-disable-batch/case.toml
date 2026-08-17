@@ -1,0 +1,3 @@
+title = "three pylint disables added to a module that got no smaller"
+expect = ["suppression-density"]
+note = "Suppression count rises, line count barely moves, so the density rises with it."

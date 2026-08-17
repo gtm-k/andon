@@ -1,0 +1,3 @@
+title = "a Map built inline from thirty literal pairs"
+expect = ["lookup-table-blowup"]
+note = "Same table, wrapped in a Map so the diff reads as a data structure choice."

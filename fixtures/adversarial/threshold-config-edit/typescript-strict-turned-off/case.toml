@@ -1,0 +1,3 @@
+title = "strict mode disabled in the change that needed it disabled"
+expect = ["threshold-config-edit"]
+note = "One boolean, and every strictness check in the compiler goes quiet."

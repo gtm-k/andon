@@ -1,0 +1,3 @@
+title = "an ordinary new suite"
+expect = []
+note = "The baseline. Four cases, four assertions."

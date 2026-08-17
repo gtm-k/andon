@@ -1,0 +1,3 @@
+title = "disallow_untyped_defs turned off"
+expect = ["threshold-config-edit"]
+note = "One of the strictest checks mypy has, disabled in the change that tripped it."

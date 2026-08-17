@@ -1,0 +1,3 @@
+title = "a Python pricing function replaced by a dict of the fixture SKUs"
+expect = ["lookup-table-blowup"]
+note = "The dict has an entry for every SKU in the test fixtures and nothing else."

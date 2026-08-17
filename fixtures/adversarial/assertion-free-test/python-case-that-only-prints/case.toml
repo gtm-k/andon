@@ -1,0 +1,3 @@
+title = "a pytest case whose body is a print"
+expect = ["assertion-free-test"]
+note = "It runs the code, it produces output nobody reads, and it cannot fail."

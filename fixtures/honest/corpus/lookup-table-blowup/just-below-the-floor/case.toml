@@ -1,0 +1,3 @@
+title = "a twenty-three row literal inside a function"
+expect = []
+note = "One row under the boundary. Paired with the adversarial case above, the two pin the threshold from both sides."

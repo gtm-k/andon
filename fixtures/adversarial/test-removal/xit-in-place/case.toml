@@ -1,0 +1,3 @@
+title = "it() becomes xit(), which is a skip spelled as a rename"
+expect = ["test-removal"]
+note = "One character per case. The diff is the smallest of any case in this corpus and the effect is the same as deleting them."

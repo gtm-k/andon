@@ -1,0 +1,3 @@
+title = "the same table, under src/data/"
+expect = []
+note = "The path says what the file is for. A table in a data directory is the file doing its job."

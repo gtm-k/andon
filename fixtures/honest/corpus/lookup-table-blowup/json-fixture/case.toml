@@ -1,0 +1,3 @@
+title = "a thirty-key JSON fixture"
+expect = []
+note = "Every JSON file of any size is a large literal collection. Firing on them would make the detector useless in any repository with fixtures."

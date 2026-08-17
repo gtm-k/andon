@@ -1,0 +1,3 @@
+title = "a substantial new module with nothing suppressed"
+expect = []
+note = "Volume without suppression. A count-only detector normalised by nothing would still be quiet here; it is in the corpus so that the density path is exercised on a file that grew a lot."

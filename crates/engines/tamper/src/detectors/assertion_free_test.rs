@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 
 use crate::change::{is_test_path, ChangeView};
 use crate::detectors::{Detector, Finding, Outcome};
-use crate::syntax::{callee_text, first_segment, last_segment, Parsed};
+use crate::syntax::{callee_text, first_segment, is_curried_inner, Parsed};
 use andon_core::schema::enums::TamperSignal;
 use tree_sitter::Node;
 
@@ -38,19 +38,27 @@ pub struct AssertionFreeTest;
 const JS_CASE: &[&str] = &["it", "test", "xit", "xtest", "fit", "bench"];
 
 /// Callee fragments that mean "this line checks something".
+///
+/// Matched against the **whole** callee text, not against its first or last
+/// segment. The should-style idiom is the reason: `subtotal(lines).should.equal(0)`
+/// has `subtotal` at the front and `equal` at the back, and the only thing in it
+/// that says "assertion" is in the middle. A segment-wise match reported an
+/// entire should-style suite as assertion-free, which the should-pass corpus
+/// caught.
+///
+/// Correspondingly generic fragments are out. `check` matched `checkout(...)`
+/// and `must` matches half the words in English; both would have made the
+/// detector believe anything.
 const ASSERTION_HINTS: &[&str] = &[
     "expect",
     "assert",
     "should",
-    "must",
     "verify",
     "raises",
     "throws",
     "rejects",
     "resolves",
     "matchsnapshot",
-    "tomatchsnapshot",
-    "check",
 ];
 
 impl Detector for AssertionFreeTest {
@@ -134,6 +142,11 @@ fn cases(parsed: &Parsed) -> Vec<(String, u32, u32)> {
 fn js_cases(parsed: &Parsed) -> Vec<(String, u32, u32)> {
     let mut out = Vec::new();
     for node in parsed.nodes() {
+        // The inner half of `it.each(table)(name, fn)` names no body; the outer
+        // one does, and counting both would report one case twice.
+        if is_curried_inner(node) {
+            continue;
+        }
         let Some(callee) = callee_text(parsed, node) else {
             continue;
         };
@@ -205,12 +218,7 @@ fn assertions_within(parsed: &Parsed, node: Node<'_>, nested_case_names: Option<
             }
         }
         let lowered = callee.to_ascii_lowercase();
-        let head = first_segment(&lowered);
-        let tail = last_segment(&lowered);
-        if ASSERTION_HINTS
-            .iter()
-            .any(|hint| head.contains(hint) || tail.contains(hint))
-        {
+        if ASSERTION_HINTS.iter().any(|hint| lowered.contains(hint)) {
             count += 1;
         }
     }
@@ -300,6 +308,24 @@ mod tests {
         let outcome = AssertionFreeTest.run(&view);
         assert!(outcome.fired, "{outcome:?}");
         assert_eq!(outcome.magnitude, 1, "{:?}", outcome.findings);
+    }
+
+    #[test]
+    fn should_style_assertions_are_believed() {
+        let head = "it('sums an empty cart', () => { subtotal([]).should.equal(0); });
+";
+        let view = ChangeView::new(vec![FileChange::added("test/cart.spec.ts", head)]);
+        assert!(!AssertionFreeTest.run(&view).fired);
+    }
+
+    #[test]
+    fn a_call_that_merely_contains_a_hint_word_is_not_an_assertion() {
+        // `checkout` used to match the `check` hint, which made the detector
+        // believe any suite with a checkout call.
+        let head = "it('checks out', () => { checkout(cart); });
+";
+        let view = ChangeView::new(vec![FileChange::added("test/cart.spec.ts", head)]);
+        assert!(AssertionFreeTest.run(&view).fired);
     }
 
     #[test]

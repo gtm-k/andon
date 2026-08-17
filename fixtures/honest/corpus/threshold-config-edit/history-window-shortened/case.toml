@@ -1,0 +1,3 @@
+title = "the Andon history window changed from a year to six months"
+expect = []
+note = "A number in a threshold-carrying file, moved down, that is not a threshold: the window is stamped into the measurement regime rather than compared against."

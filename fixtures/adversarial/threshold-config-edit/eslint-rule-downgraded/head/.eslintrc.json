@@ -1,0 +1,6 @@
+{
+  "rules": {
+    "no-explicit-any": "warn",
+    "complexity": "error"
+  }
+}

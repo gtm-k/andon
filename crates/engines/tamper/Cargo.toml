@@ -18,3 +18,11 @@ tree-sitter = "=0.26.12"
 tree-sitter-javascript = "=0.25.0"
 tree-sitter-python = "=0.25.0"
 tree-sitter-typescript = "=0.23.2"
+
+# The corpus harness. A binary rather than only a test so the table can be
+# regenerated into `fixtures/adversarial/README.md` and printed in CI, and so
+# `freeze` is a deliberate act with a command behind it rather than something
+# that happens as a side effect of running the suite.
+[[bin]]
+name = "andon-corpus-report"
+path = "src/bin/andon-corpus-report.rs"

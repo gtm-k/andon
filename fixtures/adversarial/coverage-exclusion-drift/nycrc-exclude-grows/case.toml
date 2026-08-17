@@ -1,0 +1,3 @@
+title = "an nyc exclude list gaining an entry"
+expect = ["coverage-exclusion-drift"]
+note = "The JavaScript coverage tool that predates jest, configured as a JSON object."

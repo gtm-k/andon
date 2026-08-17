@@ -1,0 +1,3 @@
+title = "two cases marked skip, described in the commit as flaky"
+expect = ["test-removal"]
+note = "Skipping keeps the cases in the diff and takes them out of the run. This is the version that survives review because the file still looks full."

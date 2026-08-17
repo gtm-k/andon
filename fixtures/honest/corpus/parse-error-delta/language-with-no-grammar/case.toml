@@ -1,0 +1,3 @@
+title = "a Rust file added, syntactically invalid"
+expect = []
+note = "No vendored grammar reads it, so it has no parse-fault count. Reporting zero would be a fabricated measurement and reporting a fault would be a fabricated one in the other direction."

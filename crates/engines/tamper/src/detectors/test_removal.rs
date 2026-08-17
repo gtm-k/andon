@@ -16,7 +16,9 @@
 
 use crate::change::{is_test_path, ChangeView};
 use crate::detectors::{Detector, Finding, Outcome};
-use crate::syntax::{callee_text, first_segment, last_segment, Parsed};
+use crate::syntax::{
+    callee_text, each_rows, first_segment, is_curried_inner, last_segment, Parsed,
+};
 use andon_core::schema::enums::TamperSignal;
 
 /// The detector.
@@ -30,6 +32,11 @@ const JS_SKIP_SUFFIX: &[&str] = &["skip", "todo", "concurrent.skip"];
 
 /// Python decorators that take a case out of the run.
 const PY_SKIP: &[&str] = &["skip", "skipif", "skipunless", "skiptest"];
+
+/// JavaScript-family functions that group cases. A skipped group skips every
+/// case inside it, which is the cheapest possible way to take a suite out of
+/// the run: one `.skip` on a line nobody re-reads.
+const JS_GROUP: &[&str] = &["describe", "suite", "context", "xdescribe"];
 
 impl Detector for TestRemoval {
     fn signal(&self) -> TamperSignal {
@@ -128,6 +135,11 @@ fn count(path: &str, source: &[u8]) -> Counts {
 fn count_js(parsed: &Parsed) -> Counts {
     let mut counts = Counts::default();
     for node in parsed.nodes() {
+        // `it.each(table)(name, fn)` is two nested calls naming one test. The
+        // outer carries the name and body, so the inner is skipped.
+        if is_curried_inner(node) {
+            continue;
+        }
         let Some(callee) = callee_text(parsed, node) else {
             continue;
         };
@@ -135,15 +147,41 @@ fn count_js(parsed: &Parsed) -> Counts {
         if !JS_CASE.contains(&base) {
             continue;
         }
-        counts.cases += 1;
+        // A table-driven case is one call and *n* tests. Counting it as one
+        // would report the ordinary `it` -> `it.each` refactoring as tests
+        // removed.
+        let rows = each_rows(node).unwrap_or(1).max(1) as u32;
+        counts.cases += rows;
         let tail = last_segment(&callee);
         // `xit`/`xtest` are the skip spelling that hides in the function name
         // rather than in a suffix.
-        if JS_SKIP_SUFFIX.contains(&tail) || base.starts_with('x') {
-            counts.skipped += 1;
+        if JS_SKIP_SUFFIX.contains(&tail) || base.starts_with('x') || in_skipped_group(parsed, node)
+        {
+            counts.skipped += rows;
         }
     }
     counts
+}
+
+/// Whether an enclosing `describe`/`suite` is skipped.
+///
+/// Walking up rather than down: the case is what is counted, and the group is
+/// context. A `describe.skip` wrapping twenty cases takes twenty cases out of
+/// the run while every one of them still reads as `it(...)` in the diff.
+fn in_skipped_group(parsed: &Parsed, node: tree_sitter::Node<'_>) -> bool {
+    let mut parent = node.parent();
+    while let Some(current) = parent {
+        if let Some(callee) = callee_text(parsed, current) {
+            let base = first_segment(&callee);
+            if JS_GROUP.contains(&base)
+                && (JS_SKIP_SUFFIX.contains(&last_segment(&callee)) || base.starts_with('x'))
+            {
+                return true;
+            }
+        }
+        parent = current.parent();
+    }
+    false
 }
 
 fn count_python(parsed: &Parsed) -> Counts {
@@ -254,6 +292,48 @@ mod tests {
         let outcome = TestRemoval.run(&view);
         assert!(!outcome.fired);
         assert_eq!(outcome.magnitude, 1);
+    }
+
+    #[test]
+    fn a_skipped_describe_skips_every_case_inside_it() {
+        let base = format!(
+            "describe('cart', () => {{
+{TWO}}});
+"
+        );
+        let head = format!(
+            "describe.skip('cart', () => {{
+{TWO}}});
+"
+        );
+        let view = ChangeView::new(vec![FileChange::modified("src/a.test.ts", &base, &head)]);
+        let outcome = TestRemoval.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 2, "both cases left the run");
+    }
+
+    #[test]
+    fn a_table_driven_case_counts_its_rows() {
+        // Three separate cases become one `it.each` of three rows. Net zero.
+        let base = "it('a', () => { expect(1).toBe(1); });
+it('b', () => { expect(2).toBe(2); });
+it('c', () => { expect(3).toBe(3); });
+";
+        let head = "it.each([[1, 1], [2, 2], [3, 3]])('case %i', (a, b) => { expect(a).toBe(b); });
+";
+        let view = ChangeView::new(vec![FileChange::modified("src/a.test.ts", base, head)]);
+        let outcome = TestRemoval.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 0);
+    }
+
+    #[test]
+    fn a_curried_call_is_one_case_not_two() {
+        let head = "it.each([[1, 1]])('case %i', (a, b) => { expect(a).toBe(b); });
+";
+        let view = ChangeView::new(vec![FileChange::added("src/a.test.ts", head)]);
+        let outcome = TestRemoval.run(&view);
+        assert_eq!(outcome.magnitude, 1, "one row is one case, not two calls");
     }
 
     #[test]

@@ -1,0 +1,3 @@
+title = "coverage omit widened in pyproject.toml"
+expect = ["coverage-exclusion-drift"]
+note = "The same list as .coveragerc, in the file a modern Python project actually keeps it in."

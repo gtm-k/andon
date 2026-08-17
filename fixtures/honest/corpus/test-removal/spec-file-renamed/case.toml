@@ -1,0 +1,7 @@
+title = "a spec file renamed, byte for byte"
+expect = []
+note = "A rename with no edit. The base path holds the cases and the head path holds the same cases; anything that counted the sides separately would report four removals."
+
+[[rename]]
+from = "test/cart.spec.ts"
+to = "test/checkout-cart.spec.ts"

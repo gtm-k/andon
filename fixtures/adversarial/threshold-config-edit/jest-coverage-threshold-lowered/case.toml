@@ -1,0 +1,3 @@
+title = "the global branch-coverage threshold dropped from 80 to 40"
+expect = ["threshold-config-edit"]
+note = "A jest coverageThreshold is the CI gate for a whole repository, written as a number in a config file."

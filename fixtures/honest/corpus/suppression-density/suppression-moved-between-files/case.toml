@@ -1,0 +1,3 @@
+title = "two suppressions moved from one module to another"
+expect = []
+note = "Net zero across the change, two added in one file. A per-file detector fires."

@@ -1,0 +1,3 @@
+title = "a coverage omit list in setup.cfg gaining two entries"
+expect = ["coverage-exclusion-drift"]
+note = "The oldest place a Python project keeps this, and the one most likely to be skimmed because the file is full of unrelated tool configuration."

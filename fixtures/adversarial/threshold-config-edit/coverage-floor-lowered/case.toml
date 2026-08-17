@@ -1,0 +1,3 @@
+title = "fail_under dropped from 85 to 60"
+expect = ["threshold-config-edit"]
+note = "The build was red because coverage fell. It is green now for the same reason."

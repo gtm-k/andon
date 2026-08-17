@@ -1,0 +1,3 @@
+title = "one omit pattern swapped for another"
+expect = []
+note = "The list is edited and its length does not change. A diff-line-counting detector would see an addition."

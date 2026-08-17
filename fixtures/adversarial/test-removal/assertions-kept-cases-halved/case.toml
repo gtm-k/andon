@@ -1,0 +1,3 @@
+title = "four cases folded into two, half the behaviours dropped"
+expect = ["test-removal"]
+note = "Folding cases together is a real refactoring and also a place to lose coverage. Here the two surviving cases assert what two of the originals did; the other two behaviours are simply gone."

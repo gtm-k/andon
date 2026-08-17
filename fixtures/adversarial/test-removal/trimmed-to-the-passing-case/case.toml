@@ -1,0 +1,3 @@
+title = "three of four cases deleted, leaving the one that passes"
+expect = ["test-removal"]
+note = "The remaining case is the trivial one. A reader of the diff sees a shorter test file; a reader of the suite sees three behaviours no longer checked."

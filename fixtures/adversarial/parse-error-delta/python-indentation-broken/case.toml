@@ -1,0 +1,3 @@
+title = "a Python module whose indentation stops being consistent"
+expect = ["parse-error-delta"]
+note = "The parser recovers badly and a whole function body becomes unreadable."

@@ -1,0 +1,3 @@
+title = "the case body calls the code; the expect sits in beforeEach"
+expect = ["assertion-free-test"]
+note = "A test whose assertion runs before it does is asserting about the fixture, not about the case. Every case in this file passes regardless of what it calls."

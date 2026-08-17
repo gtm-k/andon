@@ -1,0 +1,3 @@
+title = "a squaring function that consults a table of the tested inputs"
+expect = ["lookup-table-blowup"]
+note = "Thirty rows, each one an input the suite happens to use. It passes every test and returns undefined for thirty-one."

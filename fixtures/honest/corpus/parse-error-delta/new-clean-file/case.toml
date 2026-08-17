@@ -1,0 +1,3 @@
+title = "an added file that parses"
+expect = []
+note = "The ordinary case an added-file rule has to stay quiet on."

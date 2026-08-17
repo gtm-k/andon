@@ -1,0 +1,3 @@
+title = "a file that did not parse and now does"
+expect = []
+note = "The direction that must never fire: this is the change that removes a blind spot."

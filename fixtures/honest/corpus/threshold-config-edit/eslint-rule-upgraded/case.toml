@@ -1,0 +1,3 @@
+title = "a warning promoted to an error"
+expect = []
+note = "Tightening. The reverse of the adversarial case, and a detector without a direction would fire on both."

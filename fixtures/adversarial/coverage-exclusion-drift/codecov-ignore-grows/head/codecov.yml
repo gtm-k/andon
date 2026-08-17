@@ -1,0 +1,7 @@
+coverage:
+  status:
+    project: yes
+ignore:
+  - vendor/**
+  - src/billing/**
+  - src/payments/**

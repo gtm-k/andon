@@ -1,0 +1,3 @@
+title = "a rule removed from the config rather than downgraded"
+expect = ["threshold-config-edit"]
+note = "Deleting a rule loosens as surely as setting it to off, and it leaves no value to compare against. A detector that only compares keys present on both sides misses it — the case is in the corpus because that gap is real and should be visible in the recall column rather than in a footnote."

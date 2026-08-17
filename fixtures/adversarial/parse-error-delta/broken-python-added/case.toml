@@ -1,0 +1,3 @@
+title = "a new Python module that does not parse"
+expect = ["parse-error-delta"]
+note = "Python's grammar fails differently from TypeScript's, and the count has to come out of the same rule."

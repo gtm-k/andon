@@ -1,0 +1,3 @@
+title = "two suppressions added — the floor, met exactly"
+expect = ["suppression-density"]
+note = "One is a Tuesday; two is where the detector starts believing it. The case exists to pin the boundary rather than to describe an interesting attack."

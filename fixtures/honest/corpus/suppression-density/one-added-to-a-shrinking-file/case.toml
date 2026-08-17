@@ -1,0 +1,3 @@
+title = "a single suppression added while the file loses half its lines"
+expect = []
+note = "Density rises sharply and the count rises by one. The absolute floor is the only thing keeping this quiet, which is what the case is for."

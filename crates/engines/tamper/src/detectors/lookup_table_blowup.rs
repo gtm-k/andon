@@ -22,7 +22,7 @@
 //! the largest qualifying literal on each side, so growing an existing table
 //! past the floor fires and inheriting one does not.
 
-use crate::change::ChangeView;
+use crate::change::{is_test_path, ChangeView};
 use crate::detectors::{Detector, Finding, Outcome};
 use crate::syntax::Parsed;
 use andon_core::schema::enums::TamperSignal;
@@ -111,7 +111,14 @@ impl Detector for LookupTableBlowup {
         let mut findings = Vec::new();
         let mut largest = 0i64;
         for file in &change.files {
-            if file.content_unchanged() || file.head.is_none() || is_data_path(&file.path) {
+            // A big literal in a test *is* the fixture: a table of inputs and
+            // expected outputs is what a table-driven test looks like, and firing
+            // on it would report thorough testing as gaming.
+            if file.content_unchanged()
+                || file.head.is_none()
+                || is_data_path(&file.path)
+                || is_test_path(&file.path)
+            {
                 continue;
             }
             let Some(head) = Parsed::new(&file.path, file.head_bytes()) else {
@@ -256,6 +263,22 @@ mod tests {
             "src/data/squares.ts",
             &in_function(40),
         )]);
+        assert!(!LookupTableBlowup.run(&view).fired);
+    }
+
+    #[test]
+    fn an_inline_fixture_table_in_a_spec_file_is_exempt() {
+        let source = format!(
+            "it('covers every case', () => {{
+  const rows = [
+{}
+  ];
+  rows.forEach(([a, b]) => expect(square(a)).toBe(b));
+}});
+",
+            table(40)
+        );
+        let view = ChangeView::new(vec![FileChange::added("test/square.spec.ts", &source)]);
         assert!(!LookupTableBlowup.run(&view).fired);
     }
 

@@ -1,0 +1,3 @@
+title = "a forty-entry country list at module scope"
+expect = []
+note = "Reference data is data. It is not inside a function body and no computation was displaced by it."

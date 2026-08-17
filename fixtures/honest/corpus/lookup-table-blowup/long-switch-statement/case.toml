@@ -1,0 +1,3 @@
+title = "a function with twenty-eight case clauses"
+expect = []
+note = "Long, repetitive, arguably worth refactoring — and not a literal. The detector looks for tables, not for length."

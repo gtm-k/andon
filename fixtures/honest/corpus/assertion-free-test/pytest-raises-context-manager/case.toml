@@ -1,0 +1,3 @@
+title = "a Python case whose whole assertion is a raises block"
+expect = []
+note = "`with pytest.raises(...)` contains no `assert` keyword and is a complete assertion."
