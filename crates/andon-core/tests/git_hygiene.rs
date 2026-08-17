@@ -111,8 +111,139 @@ fn hostile_bait_repo(root: &Path) -> (TestRepo, String, String) {
 
     // Leave the tree dirty so the snapshot path is exercised too.
     repo.write("src/plain.ts", b"plain\r\nedited\r\n");
+    // And leave one file untracked, which `status.showUntrackedFiles = no` acts
+    // on. Our own status call passes `--untracked-files=all` explicitly, so the
+    // planted setting cannot reach it — which is exactly the immunity this test
+    // asserts, and is also what makes the untracked probe below a usable
+    // positive control.
+    repo.write("src/untracked.ts", b"export const stray = 1;\r\n");
     (repo, base, head)
 }
+
+/// `git --version`, for failure messages that have to name the git that failed.
+fn git_version() -> String {
+    let out = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .expect("bare git runs");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Run an arbitrary bare `git` invocation — **no pins at all** — under a
+/// controlled `HOME`.
+///
+/// # Why the two `env_remove` calls, which are the whole bugfix
+///
+/// This control assumes that writing `$HOME/.gitconfig` and redirecting `HOME`
+/// puts that file in front of git. That assumption is false whenever
+/// `GIT_CONFIG_GLOBAL` is set in the ambient environment: git then reads *that*
+/// path as the global config and never looks at `$HOME/.gitconfig` at all. The
+/// planted bait is not weakened, it is not delivered — both homes read the same
+/// leaked file, both answers match, and the control reports "the bait is inert"
+/// on a build where nothing about this crate changed. Reproduced exactly:
+///
+/// ```text
+/// HOME=clean   git hash-object plain.ts -> a636bef...   LIVE
+/// HOME=hostile git hash-object plain.ts -> f171456...
+///
+/// GIT_CONFIG_GLOBAL=leak.gitconfig HOME=clean   -> a636bef...   INERT
+/// GIT_CONFIG_GLOBAL=leak.gitconfig HOME=hostile -> a636bef...
+/// ```
+///
+/// `GIT_CONFIG_COUNT` is removed for the same reason: it injects config that
+/// outranks the file, so a leaked one could equally decide the answer.
+///
+/// This is *not* a general un-pinning of the environment. Only the two variables
+/// that decide **whether the planted file is read at all** are cleared. Anything
+/// that merely changes git's behaviour is left exactly as the runner set it,
+/// because an unpinned git is what this control is supposed to be.
+///
+/// `XDG_CONFIG_HOME` is redirected alongside `HOME` so the other standard global
+/// location (`$XDG_CONFIG_HOME/git/config`) cannot come from the real user
+/// either.
+fn bare_git_under_home(repo: &Path, args: &[&str], home: &Path) -> String {
+    let home = home.display().to_string();
+    let out = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("XDG_CONFIG_HOME", &home)
+        .env_remove("GIT_CONFIG_GLOBAL")
+        .env_remove("GIT_CONFIG_COUNT")
+        .output()
+        .expect("bare git runs");
+    // Not asserting success: a hostile setting is allowed to make an unpinned
+    // git *fail*, and a failure that a clean run does not produce is itself a
+    // demonstration that the setting bites. Status and stderr are folded into
+    // the compared string so that difference is visible rather than swallowed.
+    format!(
+        "status={:?}\nstdout={}\nstderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+/// One way of showing that the planted config actually changes what an unpinned
+/// git says.
+struct Bait {
+    /// What is being read, for the failure message.
+    setting: &'static str,
+    /// The bare invocation that reads it.
+    args: &'static [&'static str],
+}
+
+/// The positive-control candidates, in the order they are tried.
+///
+/// # Why this is a list rather than one probe
+///
+/// It used to be one: `hash-object` on the CRLF-dirty file, reading
+/// `core.autocrlf`. That is a good probe and it is still first. But it went
+/// inert on a GitHub runner — the clean and hostile homes hashed identically —
+/// and the test went red saying "the bait is inert" on a build where nothing
+/// about *this* crate had changed. A newer git had moved a default out from
+/// under the control.
+///
+/// That failure was correct in the narrow sense and useless in the wide one: the
+/// thing being controlled for is "does a hostile global config change unpinned
+/// git's answer", and the answer was still yes — through several other settings
+/// the same planted file sets. One probe made a property of git the sole
+/// evidence for a property of the planted config.
+///
+/// So the control now tries several independent readings of the same planted
+/// config and needs **one** to bite. It never skips: if every candidate is
+/// inert the test fails, loudly, naming the git version and each probe that
+/// produced no difference — because at that point the main assertion below
+/// really would be proving that our git agrees with itself about nothing.
+///
+/// Each entry reads a *different* key, so no single upstream default change can
+/// silence the set:
+const BAITS: &[Bait] = &[
+    // `core.autocrlf` + `core.eol` + the planted `attributesFile`. The original,
+    // and the one that is PREMORTEM Story 1 in miniature: a CRLF file hashes to
+    // one value with end-of-line translation on and another with it off.
+    Bait {
+        setting: "core.autocrlf / core.eol / core.attributesFile",
+        args: &["hash-object", "--", PROBE_FILE],
+    },
+    // `status.showUntrackedFiles = no`, which hides `src/untracked.ts`. Stable
+    // across every git that has had the setting, and it needs no filter, no
+    // attributes file and no content translation to bite.
+    Bait {
+        setting: "status.showUntrackedFiles",
+        args: &["status", "--porcelain=v1"],
+    },
+    // `diff.renames = false` + `diff.renameLimit = 1`. The bait repo renames a
+    // file, so the clean run reports `R` and the hostile one reports a delete
+    // and an add. `--name-status` produces no textual diff, so the planted
+    // `diff.external` cannot interfere with this reading.
+    Bait {
+        setting: "diff.renames / diff.renameLimit",
+        args: &["diff", "--name-status", "-M", "HEAD~1", "HEAD"],
+    },
+];
 
 /// Run `git hash-object` on a working-tree file with **no pins at all**, under a
 /// controlled environment.
@@ -257,26 +388,44 @@ fn a_hostile_global_config_changes_nothing() {
     // Positive control. Proves two things at once: that redirecting HOME
     // actually delivers the config on this platform, and that the settings
     // delivered do change what an unpinned git returns.
-    let bare_clean = bare_hash_object(
-        repo.path(),
-        PROBE_FILE,
-        &[
-            ("HOME", &clean_home.display().to_string()),
-            ("USERPROFILE", &clean_home.display().to_string()),
-        ],
-    );
-    let bare_hostile = bare_hash_object(
-        repo.path(),
-        PROBE_FILE,
-        &[
-            ("HOME", &hostile_home.display().to_string()),
-            ("USERPROFILE", &hostile_home.display().to_string()),
-        ],
-    );
-    assert_ne!(
-        bare_clean, bare_hostile,
-        "the bait is inert: an unpinned git gave the same answer either way, \
-         so proving our git does too would prove nothing"
+    //
+    // Tried across several independent readings of the same planted config
+    // (see `BAITS`) because a single probe makes one upstream default the sole
+    // evidence for both. One live bait is enough; none is a failure, never a
+    // skip.
+    let mut live = Vec::new();
+    let mut inert = Vec::new();
+    for bait in BAITS {
+        let bare_clean = bare_git_under_home(repo.path(), bait.args, &clean_home);
+        let bare_hostile = bare_git_under_home(repo.path(), bait.args, &hostile_home);
+        if bare_clean == bare_hostile {
+            inert.push(format!(
+                "  INERT  {} (`git {}`)\n           both homes said: {}",
+                bait.setting,
+                bait.args.join(" "),
+                bare_clean.replace('\n', " | ")
+            ));
+        } else {
+            live.push(format!("  live   {}", bait.setting));
+        }
+    }
+    for line in live.iter().chain(inert.iter()) {
+        println!("{line}");
+    }
+    assert!(
+        !live.is_empty(),
+        "the bait is inert on every probe: an unpinned git gave the same answer \
+         either way for all {} of them, so proving our git does too would prove \
+         nothing.\n\n\
+         This is a statement about the git running this test, not about \
+         andon-core. Either the HOME redirection is not delivering the config on \
+         this platform, or every setting the bait plants has become a default. \
+         Add a probe that reads a key this git still honours — do not delete the \
+         control.\n\n\
+         git version: {}\n{}",
+        BAITS.len(),
+        git_version(),
+        inert.join("\n")
     );
 
     let clean = with_env(&home_env(&clean_home), || {
