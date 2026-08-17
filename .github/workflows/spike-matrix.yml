@@ -165,17 +165,30 @@ jobs:
           git config --show-origin --get core.autocrlf || echo "core.autocrlf: unset"
           git -C work config --show-origin --get core.eol || echo "core.eol: unset"
 
-      - name: Worktree bytes vs blob bytes
+      # Whether this runner mangled the checkout, in one line and in git's own
+      # terms: the committed blob OID against the OID of the bytes now on disk,
+      # hashed with every filter off. Printed rather than asserted — a green
+      # matrix must not depend on a runner image's git config staying the way it
+      # is today — but printed as a *computed answer* rather than as two hexdumps
+      # for a human to compare in a log viewer.
+      - name: Did this checkout change the bytes?
         shell: bash
         run: |
           set -euo pipefail
-          echo "--- src/lf.ts as committed (blob) ---"
-          git -C work show HEAD:src/lf.ts | od -c | head -3
-          echo "--- src/lf.ts on disk (worktree) ---"
-          od -c work/src/lf.ts | head -3
-          echo "The compared lane reads the first of these. If they differ on"
-          echo "this runner, that difference is exactly what PREMORTEM T1 says"
-          echo "must not reach a digest."
+          for path in src/lf.ts src/crlf.ts src/mixed.ts; do
+            committed="$(git -C work rev-parse "HEAD:$path")"
+            on_disk="$(git -C work hash-object --no-filters "$path")"
+            if [ "$committed" = "$on_disk" ]; then
+              echo "unchanged  $path  $committed"
+            else
+              echo "MANGLED    $path  blob=$committed disk=$on_disk"
+            fi
+          done
+          echo
+          echo "A MANGLED line is PREMORTEM Story 1's setup, reproduced: the"
+          echo "working tree is not what was committed. The compared lane reads"
+          echo "blobs, so the digests below must agree with the other legs"
+          echo "regardless of which lines above say what."
 
       - name: Measure
         shell: bash
@@ -262,11 +275,14 @@ jobs:
       - name: The verdict set, on this OS
         run: cargo test -p andon-ledger-min -- --nocapture
 
+  # Linux, and therefore on push: D2 puts Linux checks on every push and holds
+  # only the macOS and Windows legs back for dispatch. This job is where the
+  # verdicts come out of the composite action's YAML rather than out of a Rust
+  # test calling the same functions, and that is worth having as a standing
+  # push gate — the first version of the action failed to load at all, and a
+  # dispatch-only job would have hidden that until the gate run.
   action-smoke:
     name: through the action (${{ matrix.scenario }})
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, '[spike-matrix]')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

@@ -135,9 +135,16 @@ runs:
         set -euo pipefail
         cd "$REPO_PATH"
         # Inputs reach the script through the environment rather than through
-        # ${{ }} interpolation: direct interpolation pastes the value into the
-        # shell source before bash parses it, so anything shell-significant in
-        # it executes. Same rule the P0 CI workflow states for github.event.
+        # workflow-expression interpolation: an interpolated value is pasted
+        # into the shell source before bash parses it, so anything
+        # shell-significant in it executes. Same rule the P0 CI workflow states
+        # for github.event.
+        #
+        # The expression delimiters are not written out anywhere in this file,
+        # including in comments. GitHub's template parser scans a `run` block
+        # for them wherever they appear and does not know a comment from code;
+        # an empty pair here failed the whole action to load with "an
+        # expression was expected", pointing at the block rather than the line.
         if ! git rev-parse --verify --quiet "${HEAD_SHA}^{commit}" >/dev/null; then
           echo "::error::${HEAD_SHA} is not a commit in this checkout." >&2
           echo "Fetch the PR head before running this action; verifying the" >&2
