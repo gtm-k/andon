@@ -560,7 +560,11 @@ mod tests {
         else {
             panic!("the clones engine reports a clones regime");
         };
-        assert_eq!(algorithm, "rabin-karp");
+        // The saturation cap rides in the algorithm string because it can
+        // change a reported value, and a result-changing parameter outside the
+        // regime is a disagreement the verifier reads as tampering.
+        assert_eq!(algorithm, fingerprint::ALGORITHM);
+        assert!(algorithm.contains("sat32"));
         assert_eq!(min_tokens, fingerprint::MIN_CLONE_TOKENS);
         assert_eq!(window_tokens, fingerprint::WINDOW_TOKENS);
         for (name, version) in syntax::GRAMMAR_PINS {

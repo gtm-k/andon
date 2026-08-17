@@ -27,8 +27,39 @@ pub const WINDOW_TOKENS: u32 = 25;
 /// window matches.
 pub const MIN_CLONE_TOKENS: u32 = 50;
 
+/// Occurrences of one window hash beyond which a bucket is treated as
+/// saturated repetition.
+///
+/// # Why a cap exists at all
+///
+/// Expansion is pairwise within a bucket, so a file whose tokens repeat — a
+/// long literal table, a minified bundle, a hundred near-identical guard
+/// clauses — costs O(n^2) in the number of occurrences. Measured on a literal
+/// table: 200 rows in 2.8 ms, 800 in 27 ms, 2000 in 178 ms. Extrapolated, a
+/// large generated file would blow the fast lane's 1000 ms warm budget on its
+/// own, which is PREMORTEM T6 arriving through an engine instead of through git.
+///
+/// # Why the answer does not change
+///
+/// Above the cap, only *adjacent* occurrences are paired. In a periodic region
+/// that is the shortest lag, and the greedy disjoint selection in
+/// [`crate::detect`] keeps exactly that one anyway — the longer-lag matches it
+/// would have found are the ones it then discards. Where a bucket is large
+/// because a helper really was copied a hundred times, adjacent pairs share one
+/// group key and accumulate into the same group, so all hundred members are
+/// still reported.
+///
+/// The cap can nonetheless change a number, so it is part of the regime: see
+/// [`ALGORITHM`].
+pub const SATURATED_OCCURRENCES: usize = 32;
+
 /// The algorithm name stamped into the `measurement_regime`.
-pub const ALGORITHM: &str = "rabin-karp";
+///
+/// Carries [`SATURATED_OCCURRENCES`] because that constant can change a
+/// reported value, and a parameter that changes results and is not in the regime
+/// is a digest disagreement the verifier would read as tampering rather than as
+/// skew (PREMORTEM S4).
+pub const ALGORITHM: &str = "rabin-karp+sat32";
 
 /// Rolling-hash base. An odd constant, so multiplication is invertible modulo
 /// 2^64 and the low bits are not thrown away.

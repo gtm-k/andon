@@ -24,7 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::fingerprint::{self, MIN_CLONE_TOKENS, WINDOW_TOKENS};
+use crate::fingerprint::{self, MIN_CLONE_TOKENS, SATURATED_OCCURRENCES, WINDOW_TOKENS};
 use crate::index::Index;
 
 /// One side of a clone.
@@ -157,8 +157,37 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
         if occurrences.len() < 2 {
             continue;
         }
+        // A saturated bucket pairs each occurrence with its **nearest usable**
+        // partner instead of with all of them. See
+        // `fingerprint::SATURATED_OCCURRENCES` for why that bounds the cost.
+        //
+        // Nearest *usable*, not nearest, and the distinction was worth two
+        // wrong attempts. In a periodic region the following occurrences are one
+        // period apart, and a same-file pair is reported at no more than its lag
+        // — so a partner closer than `MIN_CLONE_TOKENS` can never produce a
+        // clone that clears the floor. Stopping at the first non-overlapping
+        // partner found nothing at all on a three-thousand-row table: zero
+        // groups where the answer is one.
+        //
+        // So the scan walks to the first partner that could yield a reportable
+        // clone. It is bounded: at most `MIN_CLONE_TOKENS` occurrences of one
+        // hash fit within that distance in one file, and a partner in another
+        // file stops it immediately.
+        let saturated = occurrences.len() > SATURATED_OCCURRENCES;
         for (i, a) in occurrences.iter().enumerate() {
-            for b in &occurrences[i + 1..] {
+            let rest = &occurrences[i + 1..];
+            let partners: &[Occurrence] = if saturated {
+                match rest
+                    .iter()
+                    .position(|b| a.file != b.file || b.window >= a.window + MIN_CLONE_TOKENS)
+                {
+                    Some(first) => &rest[first..first + 1],
+                    None => &[],
+                }
+            } else {
+                rest
+            };
+            for b in partners {
                 // Seeds only. If the preceding window pair also matches, this
                 // pair is the interior of a match already being extended from
                 // its own start, and extending it again would report the same
@@ -435,6 +464,41 @@ mod tests {
         );
         let report = run(&[input("a.ts", &source)]);
         assert_eq!(report.groups.len(), 1, "{:#?}", report.groups);
+    }
+
+    #[test]
+    fn a_saturated_bucket_does_not_cost_quadratic_time() {
+        // Pairwise expansion over a repeating table was measured at 2.8 ms for
+        // 200 rows, 27 ms for 800, and 178 ms for 2000 — a shape that puts a
+        // large generated file past the fast lane's whole warm budget on its
+        // own. The bound is asserted rather than described, because a
+        // performance property nobody measures is a performance property that
+        // regresses.
+        let rows: Vec<String> = (0..3000).map(|i| format!("  [{i}, {}],", i * i)).collect();
+        let source = format!(
+            "export function f(x: number) {{
+  const t = [
+{}
+  ];
+  return t[x];
+}}
+",
+            rows.join(
+                "
+"
+            )
+        );
+        let started = std::time::Instant::now();
+        let report = run(&[input("a.ts", &source)]);
+        let elapsed = started.elapsed();
+        assert_eq!(report.groups.len(), 1, "{:#?}", report.groups);
+        // Generous by an order of magnitude against the measured cost, because
+        // this runs on shared CI hardware in a debug build; it is a guard
+        // against the quadratic shape returning, not a benchmark.
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "detection over 3000 repeating rows took {elapsed:?}; the saturation guard is not working"
+        );
     }
 
     #[test]
