@@ -1,0 +1,48 @@
+# cargo-deny: the licence gate.
+#
+# PRE-DECISIONS makes this a hard constraint rather than hygiene: engines and
+# dependencies are permissive-licence only. qlty is barred outright because its
+# BSL Additional Use Grant excludes exactly what Andon is (a "Code Quality
+# Service" / "AI Coding Service"), verified at primary source. A copyleft
+# dependency arriving transitively would be the same problem discovered later, so
+# the allow-list is closed and unknown licences fail.
+
+[graph]
+all-features = true
+
+[licenses]
+# Closed allow-list. Anything not named here fails, including "no licence
+# detected" — an unknown licence is a licence problem, not a gap to wave through.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Unlicense",
+]
+confidence-threshold = 0.93
+# Headroom: the list carries common permissive licences a future dependency may
+# bring, so a routine `cargo add` does not fail on a licence that was always
+# going to be acceptable. Unmatched entries are therefore expected, not a smell.
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[advisories]
+# Vulnerability data is advisory here; the licence gate is the blocking half of
+# this file. Security review of dependencies is a P10a flip precondition.
+yanked = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

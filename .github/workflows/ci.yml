@@ -1,0 +1,163 @@
+# Andon CI.
+#
+# Execution strategy is user decision D2, "dispatch-at-gates": Linux checks run
+# on every push; the macOS and Windows matrix legs and the perf gate run via
+# workflow_dispatch at each phase-review gate. The cross-OS matrix is still a
+# hard gate — "standing" means required green at every gate, not on every push.
+# That reconciles the standing-matrix requirement with conserving Actions
+# minutes, at no new spend.
+#
+# The matrix legs themselves arrive with P1.5 (spike-matrix.yml) and the perf
+# gate with P1 (perf.yml). This file carries the checks that exist from P0.
+
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Deliberately no `RUSTFLAGS: -D warnings` here: RUSTFLAGS applies to
+  # dependencies too, so a warning in someone else's crate would fail our build
+  # and a flag change would invalidate the whole cache. Warnings are denied
+  # where they belong instead — `#![deny(missing_docs)]` in andon-core and the
+  # explicit `-D warnings` on the clippy step.
+
+jobs:
+  checks:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the version; this only adds the components.
+      - name: Install toolchain
+        run: rustup component add rustfmt clippy
+
+      - name: Toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+          cargo fmt --version
+          cargo clippy --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  registry-lint:
+    name: evidence registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      # Required green from P2 onward, and runnable from P0. It passes over an
+      # empty registry and says so, so this job is meaningful from the first
+      # commit rather than red until the first engine ships.
+      - name: Registry lint
+        run: cargo run -p andon-registry-lint -- --policy .andon.toml registry/
+
+  licences:
+    name: licence gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installed from a release binary rather than `cargo install` (which
+      # compiles for minutes) and rather than a third-party action (an
+      # unreviewed dependency in a repository whose product is trust). The
+      # version is pinned so the gate cannot change under us.
+      - name: Install cargo-deny
+        env:
+          CARGO_DENY_VERSION: 0.20.2
+        run: |
+          set -euo pipefail
+          archive="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL --retry 3 \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${archive}.tar.gz" \
+            -o cargo-deny.tar.gz
+          tar -xzf cargo-deny.tar.gz
+          install -m 0755 "${archive}/cargo-deny" /usr/local/bin/cargo-deny
+          cargo-deny --version
+
+      # Permissive licences only — a hard constraint from PRE-DECISIONS, not
+      # hygiene. Unknown licences fail: an undetected licence is a licence
+      # problem, not a gap to wave through.
+      - name: Licence gate
+        run: cargo deny check licenses
+
+  self-measure:
+    name: self-measure (bootstrap)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Placeholder until dogfood switch-on at P5b. It announces that no
+      # measurement was performed, and fails if the measurement CLI has appeared
+      # and made it obsolete. See docs/self-measure.md.
+      - name: Self-measure
+        run: bash scripts/self-measure.sh
+
+  engines-change:
+    name: engines change gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Two commits is enough to diff a push against its parent.
+          fetch-depth: 2
+
+      # Changed paths are computed with plain git rather than a third-party
+      # path-filter action, for the same reason cargo-deny is not one.
+      - name: Detect engine changes
+        id: detect
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ] \
+             && git cat-file -e "${{ github.event.before }}^{commit}" 2>/dev/null; then
+            base="${{ github.event.before }}"
+          else
+            base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          fi
+          changed="$(git diff --name-only "$base" HEAD -- 'crates/engines/**' || true)"
+          if [ -n "$changed" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Engine files changed:"; echo "$changed"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No engine files changed."
+          fi
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.detect.outputs.changed == 'true'
+
+      # The two-binary comparison needs a golden set, which P5b creates. Wiring
+      # the gate now means the first engine change cannot land before someone
+      # remembers to add it; reporting which mode ran means the P5b transition
+      # is visible in the log rather than a question answered by reading this
+      # file. See docs/self-measure.md.
+      - name: Two-binary comparison, or compile and unit only
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          if [ -d fixtures/golden ]; then
+            echo "MODE: two-binary comparison (fixtures/golden present)"
+            echo "ERROR: the golden set exists but the comparison is not implemented." >&2
+            echo "       P5b must land the comparison when it creates fixtures/golden." >&2
+            exit 1
+          else
+            echo "MODE: compile + unit only (no fixtures/golden yet; activates at P5b)"
+            cargo test --workspace
+          fi

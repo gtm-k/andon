@@ -1,0 +1,70 @@
+# Andon's own policy. Also the worked example of the policy schema — see
+# schemas/policy-v1.schema.json for the full contract.
+#
+# Every value here is a default from `andon_core::policy`. The file is written
+# out in full anyway, because a policy that relies on implicit defaults is one
+# nobody can review: the operator should be able to read what is in force
+# without reading the source.
+#
+# Changing a threshold in this file is a ledgered edit. The CI verifier loads
+# policy from the BASE commit of a pull request, so editing a threshold inside
+# the change being measured gains nothing — it surfaces as an advisory
+# `policy-change` finding, and blocks only when it loosens policy without a
+# ledgered justification (PLAN.md round-1 B6).
+
+schema_version = 1
+
+[severity]
+# Conservative by default. A tamper signal or a failing suite stops the line.
+block_on_tamper = true
+block_on_test_failure = true
+# C-tier evidence is weak or contested on its own; it may advise, never block.
+max_severity_for_c_tier = "low"
+# MED+ only on metrics the agent can act on inside its own change. Blocking on
+# what nobody can fix in the diff is the uninstall loop of PREMORTEM A4.
+med_plus_requires_diff_actionable = true
+med_plus_tiers = ["A", "B"]
+
+[loop]
+# Enough passes to act on a finding and confirm the fix. Past that it is
+# grinding, and the verdict becomes escalate_to_human.
+iteration_cap = 3
+count_context_informational = false
+
+[agent]
+# Bound for the agent-mode schema view, enforced by construction in
+# `build_agent_profile` and asserted by property test.
+profile_token_budget = 1500
+bytes_per_token = 4
+
+[perf]
+# Budgets live in policy so that changing one is a reviewable edit rather than a
+# quiet ratchet in a benchmark harness (PREMORTEM T6). P1's perf gate reads them.
+fast_lane_warm_p95_ms = 1000
+fast_lane_cold_cap_ms = 10000
+max_git_spawns_per_measure = 64
+
+[history]
+# Stamped into the process measurement_regime: changing it makes old and new
+# numbers incomparable rather than silently different.
+window_days = 365
+
+[registry]
+# Enforced count, not an intention. The bound is what one owner can re-review in
+# a week, once a year (PREMORTEM S2).
+claim_budget = 24
+max_claims_expiring_per_month = 3
+
+[self_measure]
+# Until the first attested release exists, the bootstrap exception applies and
+# this reads "current-build" — see docs/self-measure.md. It is set to the rule
+# now so that the exception has to be taken deliberately.
+binary = "last-attested-release"
+# Fixtures that exist to fire the tamper suite. Declared here rather than hidden
+# in the runner so the exclusion is reviewable and drift has a baseline.
+excluded_paths = [
+    "fixtures/gamed/**",
+    "fixtures/adversarial/**",
+    "crates/andon-registry-lint/tests/fixtures/**",
+]
+exclusion_drift_signal = true
