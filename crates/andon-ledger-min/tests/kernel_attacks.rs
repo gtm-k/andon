@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use andon_core::git::{Git, Revision};
 use andon_core::schema::enums::{Attestation, InvocationSource, RecordKind, Verdict};
+use andon_core::schema::payload::MeasurementRecord;
 use andon_ledger_min::measure::measure;
 use andon_ledger_min::notes::Notes;
 use andon_ledger_min::scenario::{self, Manifest, PrepareOptions};
@@ -202,6 +203,99 @@ fn an_honest_run_carries_no_skew_or_escalation_marker() {
         "a clean confirmation explains itself: {:?}",
         reason_codes(&outcome)
     );
+}
+
+// ---------------------------------------------------------------------------
+// P15-R4: the worst-of defence, and what a deletion buys
+// ---------------------------------------------------------------------------
+
+/// Appending an honest record beside a forged one buys nothing.
+///
+/// The evasion the worst-of rule exists to close, exercised end to end. Taking
+/// the best, the first, or the newest report would each let this pass.
+#[test]
+fn an_honest_record_appended_beside_a_forged_one_still_diverges() {
+    let (git, head, trusted) = staged(
+        "gamed/inflated-metric/manifest.toml",
+        "honest-beside-forged",
+    );
+    // The fixture leaves exactly one forged record.
+    let forged_only = run_verify(&git, &head, &trusted);
+    assert_eq!(forged_only.attestation, Attestation::Divergent);
+    assert_eq!(forged_only.self_reports, 1);
+
+    // Now the flattering half arrives: a genuine, matching measurement.
+    append_report(
+        &git,
+        &head,
+        &trusted,
+        &andon_ledger_min::spike::engine_version(),
+    );
+    let both = run_verify(&git, &head, &trusted);
+    assert_eq!(both.self_reports, 2);
+    assert_eq!(
+        both.attestation,
+        Attestation::Divergent,
+        "one honest record beside a forged one must not launder it"
+    );
+    assert!(reason_codes(&both).contains(&reason::DIGEST_MISMATCH.to_string()));
+}
+
+/// Deleting the self-report demotes to `unwitnessed` and leaves the attestation
+/// standing.
+///
+/// The other half of the same question. An attacker who cannot make a forged
+/// record pass may try to make the evidence disappear instead — `git notes
+/// remove` on the measure ref, by hand, with nothing but push access.
+///
+/// What that buys is a demotion, not a pass: `unwitnessed` never counts
+/// downstream. And it does not reach backwards — the `divergent` attestation
+/// already written to `refs/notes/andon-attest` is still there, on a separate
+/// ref, saying what the verifier found when the record existed. Removing that
+/// too is possible with the same push access, which is exactly the limitation
+/// `docs/trust-boundary.md` discloses: v1 trust is Actions provenance, not a
+/// signature.
+#[test]
+fn deleting_the_self_report_demotes_without_erasing_the_attestation() {
+    let (git, head, trusted) = staged("gamed/inflated-metric/manifest.toml", "deleted-report");
+
+    let attested = andon_ledger_min::verify::attest(
+        &git,
+        &VerifyRequest {
+            head: head.clone(),
+            trusted_branch: trusted.clone(),
+            fork_tier: false,
+        },
+    )
+    .expect("attest");
+    assert_eq!(attested.attestation, Attestation::Divergent);
+
+    // Raw git, not our API: the attacker has push access, not our tooling.
+    git.cmd(["notes", "--ref=refs/notes/andon-measure", "remove", &head])
+        .env("GIT_AUTHOR_NAME", "attacker")
+        .env("GIT_AUTHOR_EMAIL", "attacker@andon.invalid")
+        .env("GIT_COMMITTER_NAME", "attacker")
+        .env("GIT_COMMITTER_EMAIL", "attacker@andon.invalid")
+        .output()
+        .expect("remove the self-report");
+
+    let after = run_verify(&git, &head, &trusted);
+    assert_eq!(after.self_reports, 0);
+    assert_eq!(
+        after.attestation,
+        Attestation::Unwitnessed,
+        "silence is a demotion, never a pass"
+    );
+    assert!(!after.attestation.counts_downstream());
+    assert!(
+        after.attest_record.attestation.tamper_signals.is_empty(),
+        "an absent record is not an accusation"
+    );
+
+    // The earlier verdict is still on the attest ref.
+    let retained: Vec<MeasurementRecord> = Notes::attest(&git).read(&head).expect("read attest");
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].attestation.value, Attestation::Divergent);
 }
 
 // ---------------------------------------------------------------------------
