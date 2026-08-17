@@ -280,3 +280,66 @@ fn the_regime_lists_every_parser_this_build_carries() {
         other => panic!("the artifacts engine must report an artifacts regime, got {other:?}"),
     }
 }
+
+#[test]
+fn a_report_that_exists_and_cannot_be_read_says_so_rather_than_saying_nothing() {
+    // "You have no coverage report" and "your coverage.xml is malformed" ask
+    // different things of whoever reads the payload, and only one of them is
+    // something they can act on. `discover` carries its failures; this is the
+    // constructor that puts them where an actor can see them.
+    let fixture = fixture("unreadable-surfaced");
+    std::fs::write(fixture.path.join("coverage.xml"), b"<coverage><classes>")
+        .expect("write report");
+    let discovery = discover(&fixture.path);
+    assert!(discovery.reports.is_empty());
+    assert_eq!(discovery.problems.len(), 1);
+
+    let range = ResolvedRange::resolve(
+        &fixture.git,
+        &Revision::Rev(fixture.base.clone()),
+        &Revision::Rev(fixture.head.clone()),
+    )
+    .expect("both endpoints are commits");
+    let changed = ChangedSet::enumerate(&fixture.git, &range).expect("enumerating");
+    let engine = ArtifactsEngine::for_discovery(&fixture.git, &range, &changed, &discovery)
+        .expect("the hunk diff runs");
+    let ctx = MeasureContext {
+        compare_context: range.compare_context().expect("a commit range"),
+        policy: Policy::default(),
+        changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
+        sandbox_available: false,
+    };
+    let results = run_engine(&engine, &ctx).expect("the engine measures");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].completeness, Completeness::Unwitnessed);
+    assert_eq!(
+        results[0].value,
+        MetricValue::Text(REASON_REPORT_UNREADABLE.to_string()),
+        "a broken report must not be reported as an absent one"
+    );
+}
+
+#[test]
+fn every_unwitnessed_value_comes_from_the_closed_reason_set() {
+    let fixture = fixture("closed-reasons");
+    let lcov = "SF:src/elsewhere.ts\nDA:1,1\nend_of_record\n";
+    let report = CoverageReport::parse("lcov.info", lcov.as_bytes()).expect("parses");
+    let mut seen = 0;
+    for results in [measure(&fixture, &[]), measure(&fixture, &[report])] {
+        for result in results {
+            if result.completeness != Completeness::Unwitnessed {
+                continue;
+            }
+            seen += 1;
+            match &result.value {
+                MetricValue::Text(reason) => assert!(
+                    UNWITNESSED_REASONS.contains(&reason.as_str()),
+                    "unwitnessed reasons must come from the closed set, got {reason:?}"
+                ),
+                other => panic!("an unwitnessed result carried a number: {other:?}"),
+            }
+        }
+    }
+    assert!(seen >= 2, "the fixture must produce unwitnessed results");
+}

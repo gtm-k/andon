@@ -79,13 +79,27 @@ pub const CLAIM_DIFF_COVERAGE: &str = "andon.artifacts.diff-coverage@1|any|test-
 
 /// No coverage report was found or supplied.
 pub const REASON_NO_REPORT: &str = "unwitnessed: no coverage report found";
+/// A report file was found and could not be read.
+///
+/// Distinct from [`REASON_NO_REPORT`] on the actor-observability principle: "you
+/// have no coverage report" and "your `coverage.xml` is malformed" call for
+/// different actions from whoever reads the payload, and only one of them is
+/// something they can fix. Collapsing the second into the first would leave a
+/// broken report invisible — the reader would go looking for a coverage step
+/// they already have.
+pub const REASON_REPORT_UNREADABLE: &str =
+    "unwitnessed: a coverage report was found but could not be read";
 /// A report was read, but it does not cover this file.
 pub const REASON_NOT_IN_REPORT: &str = "unwitnessed: this file is not in the coverage report";
 
 /// Every reason string this engine can emit. Constant, for the reason the
 /// process engine's equivalent set is constant: reason strings are values, and a
 /// value built by interpolation is a value two honest sides can disagree on.
-pub const UNWITNESSED_REASONS: &[&str] = &[REASON_NO_REPORT, REASON_NOT_IN_REPORT];
+pub const UNWITNESSED_REASONS: &[&str] = &[
+    REASON_NO_REPORT,
+    REASON_REPORT_UNREADABLE,
+    REASON_NOT_IN_REPORT,
+];
 
 /// Where a coverage report is looked for, relative to the repository root.
 ///
@@ -199,6 +213,10 @@ pub struct ArtifactsEngine {
     findings: Vec<FileFinding>,
     /// True when no report was available at all.
     no_report: bool,
+    /// True when a report file existed and could not be read. Only meaningful
+    /// alongside `no_report`: a readable report elsewhere answers the question,
+    /// and one unreadable file beside it is not the headline.
+    unreadable: bool,
 }
 
 impl ArtifactsEngine {
@@ -215,6 +233,25 @@ impl ArtifactsEngine {
     ) -> Result<Self, ArtifactsError> {
         let lines = ChangedLines::for_range(git, range)?;
         Ok(Self::from_lines(&lines, changed, reports))
+    }
+
+    /// Measure from a [`Discovery`], so that a report which was *found and
+    /// unreadable* reaches the payload as itself.
+    ///
+    /// The reason this exists rather than being left to the caller: `discover`
+    /// carries its failures, and a failure nobody consumes is a failure that
+    /// does not exist for the person who has to act on it. Every caller that
+    /// discovers rather than being handed a report should use this.
+    pub fn for_discovery(
+        git: &Git,
+        range: &ResolvedRange,
+        changed: &ChangedSet,
+        discovery: &Discovery,
+    ) -> Result<Self, ArtifactsError> {
+        let lines = ChangedLines::for_range(git, range)?;
+        let mut engine = Self::from_lines(&lines, changed, &discovery.reports);
+        engine.unreadable = !discovery.problems.is_empty();
+        Ok(engine)
     }
 
     /// Attribute coverage to an already-computed set of changed lines.
@@ -281,6 +318,7 @@ impl ArtifactsEngine {
             version: engine_version(),
             findings,
             no_report: reports.is_empty(),
+            unreadable: false,
         }
     }
 
@@ -364,9 +402,14 @@ impl MeasureEngine for ArtifactsEngine {
             // coverage report" is a fact about the run, not about each file, and
             // repeating it once per changed file would bury the finding that
             // matters under noise the reader cannot act on.
+            let reason = if self.unreadable {
+                REASON_REPORT_UNREADABLE
+            } else {
+                REASON_NO_REPORT
+            };
             return Ok(vec![self.result(
                 change_scope(),
-                MetricValue::Text(REASON_NO_REPORT.to_string()),
+                MetricValue::Text(reason.to_string()),
                 Completeness::Unwitnessed,
                 evidence,
             )]);

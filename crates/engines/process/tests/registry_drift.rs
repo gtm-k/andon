@@ -9,6 +9,13 @@
 //! file: duplicate claim ids, a busted claim budget, and an expiry cliff are all
 //! cross-file properties, and P4 ships two files into a directory that P2 and P3
 //! are shipping into at the same time.
+//!
+//! And `docs/metric-families.csv` is read, not merely cited. PLAN P4 requires
+//! metric definitions to come from that committed catalogue (Codex F3), and a
+//! requirement satisfied only by a prose comment is a requirement nobody can
+//! check. The tier assertions below turn "the registry follows the catalogue"
+//! into a fact the build verifies — including the one place P4 deliberately
+//! grades *below* it.
 
 mod common;
 
@@ -19,6 +26,7 @@ use andon_core::date::Date;
 use andon_core::git::ChangedSet;
 use andon_core::policy::Policy;
 use andon_core::registry::{lint, parse_file, EngineRegistryFile, Registry};
+use andon_core::schema::enums::EvidenceTier;
 use andon_engine_process::complexity::NoComplexity;
 use andon_engine_process::engine::{claim_ids, metric_ids, registry_file, ProcessEngine};
 use andon_engine_process::history::{HistoryWindow, WINDOW_VERSION};
@@ -198,5 +206,108 @@ fn every_claim_says_what_it_does_not_predict() {
                 );
             }
         }
+    }
+}
+
+/// One catalogue row, reduced to the two fields the registry derives from.
+///
+/// A minimal reader rather than a CSV crate: the file is a committed artefact
+/// with a fixed shape, every field is double-quoted, and none contains an
+/// embedded quote or newline. Splitting on the `","` boundary is exact for that
+/// shape and adds no dependency to a workspace whose supply chain is a gate.
+fn catalogue_tier(family: &str) -> String {
+    let path = workspace_root().join("docs").join("metric-families.csv");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("{} is readable: {err}", path.display()));
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line
+            .trim_start_matches('"')
+            .trim_end_matches('"')
+            .split("\",\"")
+            .collect();
+        if fields.first() == Some(&family) {
+            return fields
+                .get(4)
+                .unwrap_or_else(|| panic!("the {family} row has no evidence-tier field"))
+                .to_string();
+        }
+    }
+    panic!("docs/metric-families.csv has no row for {family:?}");
+}
+
+fn claim_tier(claim_id: &str) -> EvidenceTier {
+    for (_, file) in registry_files() {
+        for claim in &file.claims {
+            if claim.claim_id == claim_id {
+                return claim.tier;
+            }
+        }
+    }
+    panic!("no claim {claim_id:?} in registry/");
+}
+
+#[test]
+fn the_registry_tiers_are_the_committed_catalogues_tiers() {
+    // PLAN P4: metric definitions are read from the repo-relative catalogue.
+    // Read, and held to — a tier that drifted from the source it claims to
+    // follow would be the evidence registry telling a story about itself.
+    assert!(
+        catalogue_tier("Process / evolutionary metrics").starts_with('A'),
+        "the catalogue no longer grades the process family A"
+    );
+    assert!(catalogue_tier("Hotspots & change coupling").starts_with('B'));
+    assert!(catalogue_tier("Coverage (line / branch / diff)").starts_with('C'));
+
+    assert_eq!(
+        claim_tier("andon.process.churn@1|any|defect-proneness"),
+        EvidenceTier::A
+    );
+    assert_eq!(
+        claim_tier("andon.process.ownership@1|any|defect-proneness"),
+        EvidenceTier::A
+    );
+    assert_eq!(
+        claim_tier("andon.process.hotspot@1|any|risk-prioritisation"),
+        EvidenceTier::B
+    );
+    assert_eq!(
+        claim_tier("andon.process.change-coupling@1|any|co-change-risk"),
+        EvidenceTier::B
+    );
+    assert_eq!(
+        claim_tier("andon.artifacts.diff-coverage@1|any|test-gap"),
+        EvidenceTier::C
+    );
+}
+
+#[test]
+fn the_one_tier_that_departs_from_the_catalogue_departs_downwards() {
+    // Code age sits in the catalogue's A-graded process row, and P4 grades it B:
+    // the studies behind that row rank a metric suite this particular
+    // formulation is not part of, and the gap belongs in the tier rather than
+    // only in the prose. Asserted as a deliberate deviation so that nobody
+    // "fixes" it back to A without meeting this test — and so that a future
+    // deviation *upwards*, which would be the failure mode the registry exists
+    // to prevent, cannot be introduced quietly beside it.
+    assert!(catalogue_tier("Process / evolutionary metrics").starts_with('A'));
+    let code_age = claim_tier("andon.process.code-age@1|any|defect-proneness");
+    assert_eq!(code_age, EvidenceTier::B);
+    assert!(
+        strength(code_age) < strength(EvidenceTier::A),
+        "a departure from the catalogue may only ever be downwards"
+    );
+}
+
+/// Evidence strength as a number, strongest first. `EvidenceTier` is not
+/// ordered in the schema — a deliberate choice, since "B is half of A" is not a
+/// thing the tiers mean — so the ordering is local to the one assertion that
+/// needs a direction rather than a value.
+fn strength(tier: EvidenceTier) -> u8 {
+    match tier {
+        EvidenceTier::A => 5,
+        EvidenceTier::B => 4,
+        EvidenceTier::C => 3,
+        EvidenceTier::D => 2,
+        EvidenceTier::N => 1,
     }
 }
