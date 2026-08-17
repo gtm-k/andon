@@ -18,6 +18,26 @@
 //! every function-scope number, and old and new must become incomparable rather
 //! than silently different.
 //!
+//! # Code outside any function has no complexity result, and that is not
+//! degradation
+//!
+//! Complexity is reported per function, so statements at module scope, class
+//! static blocks, and immediately-invoked expressions produce **no** cyclomatic
+//! or cognitive result. The file is parsed completely and its `static.sloc` and
+//! parse-health results are exactly as trustworthy as any other file's — this is
+//! a scoping limit, not a parse failure, and it is worth being precise about the
+//! difference because the two look identical in a payload that only shows what
+//! is present.
+//!
+//! A degraded parse says so: `completeness: parse-degraded`, capped severity, a
+//! caveat, and a non-zero ERROR count naming the file. Module-scope code says
+//! nothing at all, because nothing went wrong. The consumer consequence is the
+//! same in both cases and worth stating once: **absence of a complexity result
+//! is not evidence of low complexity.** An agent moving logic to module scope
+//! would reduce the reported numbers without reducing the work a reader has to
+//! do, and the defence is not in this engine — it is P3's tamper suite noticing
+//! that function-scope coverage fell.
+//!
 //! # Names are for humans; identity is the line span
 //!
 //! `ResultScope` carries `symbol` and `line_span`, and the *pair* is the

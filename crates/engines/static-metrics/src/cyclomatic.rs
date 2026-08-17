@@ -12,13 +12,32 @@
 //! | conditional expression | `a ? b : c` | `b if a else c`, comprehension `if` |
 //! | exception arm | each `catch` | each `except` |
 //! | multi-way arm | each `case` | each non-wildcard `case` |
-//! | short-circuit operator | each `&&`, `||`, `??` | each `and`, `or` |
+//! | short-circuit operator | each **binary** `&&`, `||`, `??` | each `and`, `or` |
 //!
 //! `else` is not a decision point — it is the absence of one — and neither is
 //! `default` or an unguarded `case _`, for the same reason: the path exists
 //! whether or not the arm is written. A guarded `case _ if c` **is** an arm that
 //! can be skipped, and counts once: the guard and the arm are one choice, not
 //! two.
+//!
+//! # Two boundaries this table does not cross
+//!
+//! **Logical-assignment operators.** `a &&= b`, `a ||= b` and `a ??= b` are not
+//! counted. They short-circuit, so an argument for counting them exists — but
+//! they are assignments rather than binary expressions, the published
+//! definitions this crate implements speak of binary logical operators, and
+//! inventing a rule is how a clean-room implementation stops matching the thing
+//! it claims to implement. Named here so the row above reads as a boundary
+//! rather than an oversight.
+//!
+//! **Comprehensions cost 3 here and 0 in cognitive complexity.** Not an
+//! inconsistency: they are different metrics answering different questions.
+//! `[x for x in xs if x]` genuinely adds independent paths, which is what
+//! cyclomatic complexity counts; it does not add a flow break a reader has to
+//! hold in mind, which is what cognitive complexity counts — a comprehension is
+//! one idiom read at a glance. The gap between the two numbers on
+//! comprehension-heavy Python is expected, and a consumer comparing them should
+//! know that before drawing a conclusion from it.
 //!
 //! Nested functions are **included**. `crate::functions` reports one result per
 //! outermost function, so a callback's branches have to land somewhere, and the

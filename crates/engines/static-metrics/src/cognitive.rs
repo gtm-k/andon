@@ -80,6 +80,16 @@
 //!
 //! # What is deliberately not counted
 //!
+//! **Comprehensions.** `[x for x in xs if x]` adds nothing here, while
+//! `crate::cyclomatic` scores it 3. The two metrics answer different questions:
+//! a comprehension adds independent paths, but it is one idiom a reader takes in
+//! at a glance rather than a break in the flow they have to hold. The gap is
+//! expected on comprehension-heavy Python and is stated so nobody reads it as a
+//! bug in one of the two.
+//!
+//! **Logical-assignment operators** (`&&=`, `||=`, `??=`) — see the boundary
+//! note in `crate::cyclomatic`, which applies to both metrics.
+//!
 //! Type-level conditionals (`T extends U ? X : Y`) and other type expressions
 //! are not control flow and add nothing. They are a real comprehension cost and
 //! a real research question; charging for them here would be this crate

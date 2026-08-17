@@ -261,6 +261,7 @@ does_not_predict = [
     "correctness",
     "review effort",
     "comprehension time in TypeScript specifically: the validation population is dominated by Java, and this claim extrapolates the model across languages",
+    "the published model exactly: this implementation does not apply the JavaScript declarative-outer exception, so a function whose body is wholly a nested declaration reads one nesting level higher here than the specification says",
     "comprehension time under this crate's clean-room implementation unless it agrees with the published model — the claim is scoped to andon.static.cognitive@1 and is wrong if it does not",
 ]
 owner = "gtm-k"
@@ -282,6 +283,7 @@ does_not_predict = [
     "correctness",
     "review effort",
     "comprehension time in JavaScript specifically: the validation population is dominated by Java, and this claim extrapolates the model across languages",
+    "the published model exactly: this implementation does not apply the JavaScript declarative-outer exception, so a function whose body is wholly a nested declaration reads one nesting level higher here than the specification says",
     "comprehension time under this crate's clean-room implementation unless it agrees with the published model",
 ]
 owner = "gtm-k"
