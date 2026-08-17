@@ -795,3 +795,135 @@ jobs:
             --leg windows=legs/engine-records-windows-latest/clones-windows-latest.json \
             --leg verifier=clones-verifier.json \
             --expect-results 9
+
+  # --------------------------------------------------- P4: process, push tier
+  # Linux only, on every push, per D2: the cheap standing check that the process
+  # family's agent-side and verifier-side numbers agree on one machine. The
+  # cross-OS legs below wait for the dispatch at a phase gate.
+  process-linux-self-check:
+    name: process determinism (linux self-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the spike and the probe
+        run: cargo build --release -p andon-ledger-min -p andon-engine-process
+
+      - name: Measure the determinism fixture twice, as agent and as verifier
+        run: |
+          set -euo pipefail
+          ./target/release/andon-spike scenario prepare \
+            --manifest "$FIXTURE_MANIFEST" --dest fixture-src --json fixture.json
+          head="$(jq -r .head fixture.json)"
+          branch="$(jq -r .trusted_branch fixture.json)"
+          git clone --quiet fixture-src agent-work
+          git clone --quiet fixture-src verifier-work
+          for side in agent verifier; do
+            ./target/release/andon-p4-probe measure \
+              --repo "${side}-work" --base "merge-base:origin/${branch}" \
+              --head "$head" --window 3650 --no-cache \
+              --out "process-${side}.json"
+          done
+          ./target/release/andon-p4-probe compare \
+            --leg agent=process-agent.json \
+            --leg verifier=process-verifier.json
+
+  # ------------------------------------------------ P4: process, dispatch tier
+  process-determinism:
+    name: process metrics (${{ matrix.os }})
+    needs: build-fixture
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the probe
+        run: cargo build --release -p andon-engine-process
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: determinism-fixture
+
+      # Full history, deliberately: `--depth` here would make every leg report a
+      # truncated window, the probe would fail the job, and it would be right to.
+      - name: Clone the fixture with this runner's own git config
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf determinism.tar.gz
+          git clone --quiet determinism.git work
+          git --version
+          test "$(git -C work rev-parse --is-shallow-repository)" = "false"
+
+      - name: Measure the process family
+        shell: bash
+        env:
+          HEAD_SHA: ${{ needs.build-fixture.outputs.head }}
+        run: |
+          set -euo pipefail
+          probe=./target/release/andon-p4-probe
+          [ -x "$probe" ] || probe="${probe}.exe"
+          # A window wide enough to hold the whole fixture history whatever its
+          # pinned dates are, and identical on every leg because the window is
+          # part of the regime.
+          "$probe" measure \
+            --repo work \
+            --base "merge-base:origin/${{ needs.build-fixture.outputs.trusted-branch }}" \
+            --head "$HEAD_SHA" \
+            --window 3650 \
+            --no-cache \
+            --out "process-${{ matrix.os }}.json"
+          cat "process-${{ matrix.os }}.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: process-${{ matrix.os }}
+          path: process-${{ matrix.os }}.json
+          retention-days: 7
+
+  process-compare:
+    name: process metrics — identical within a regime
+    needs: [build-fixture, process-determinism]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the probe
+        run: cargo build --release -p andon-engine-process
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: legs
+
+      # The verifier leg. Same runner image as the Linux agent leg, so the two
+      # always share a regime and the strong assertion always has at least one
+      # pair to bite on.
+      - name: Recompute as the verifier
+        env:
+          HEAD_SHA: ${{ needs.build-fixture.outputs.head }}
+        run: |
+          set -euo pipefail
+          tar -xzf legs/determinism-fixture/determinism.tar.gz
+          git clone --quiet determinism.git verifier-work
+          ./target/release/andon-p4-probe measure \
+            --repo verifier-work \
+            --base "merge-base:origin/${{ needs.build-fixture.outputs.trusted-branch }}" \
+            --head "$HEAD_SHA" \
+            --window 3650 \
+            --no-cache \
+            --out process-verifier.json
+
+      - name: Byte-identical within a regime; skewed across regimes
+        run: |
+          set -euo pipefail
+          ./target/release/andon-p4-probe compare \
+            --leg linux=legs/process-ubuntu-latest/process-ubuntu-latest.json \
+            --leg macos=legs/process-macos-latest/process-macos-latest.json \
+            --leg windows=legs/process-windows-latest/process-windows-latest.json \
+            --leg verifier=process-verifier.json
