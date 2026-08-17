@@ -99,11 +99,7 @@ impl DirtySnapshot {
     /// batched `hash-object`.
     ///
     /// `staged_only` distinguishes the `INDEX` sentinel from `WORKTREE`.
-    pub fn incremental(
-        git: &Git,
-        head_oid: &str,
-        staged_only: bool,
-    ) -> Result<Self, GitError> {
+    pub fn incremental(git: &Git, head_oid: &str, staged_only: bool) -> Result<Self, GitError> {
         let raw = git
             .cmd([
                 "status",
@@ -374,7 +370,11 @@ fn hash_paths(git: &Git, paths: &[String]) -> Result<Vec<(String, String)>, GitE
     let text = String::from_utf8(output.stdout).map_err(|_| GitError::NotUtf8 {
         argv: "hash-object --stdin-paths".to_string(),
     })?;
-    let oids: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let oids: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     if oids.len() != paths.len() {
         return Err(GitError::Protocol {
             argv: "hash-object --stdin-paths".to_string(),

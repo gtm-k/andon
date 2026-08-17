@@ -156,7 +156,8 @@ mod tests {
     }
 
     fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("andon-cache-test-{name}-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("andon-cache-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         root
     }

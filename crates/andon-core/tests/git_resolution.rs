@@ -51,7 +51,10 @@ fn merge_base_is_the_fork_point_and_not_wherever_main_has_reached() {
     let ctx = range.compare_context().expect("both endpoints are commits");
     assert_eq!(ctx.base_oid, base, "the base is the fork point");
     assert_eq!(ctx.head_oid, head);
-    assert_ne!(ctx.base_oid, main_advanced, "main advancing must not move it");
+    assert_ne!(
+        ctx.base_oid, main_advanced,
+        "main advancing must not move it"
+    );
     assert_eq!(ctx.base_resolution, "merge-base");
     assert!(ctx.git_version.starts_with("git version"));
 }
@@ -216,7 +219,11 @@ fn the_full_rehash_fallback_agrees_about_content_while_keying_separately() {
         incremental.entries["src/a.ts"].worktree_oid, full.entries["src/a.ts"].worktree_oid,
         "both paths must see the same bytes for the dirty file"
     );
-    assert_eq!(incremental.len(), 1, "the incremental path visits the dirty set");
+    assert_eq!(
+        incremental.len(),
+        1,
+        "the incremental path visits the dirty set"
+    );
     assert_eq!(full.len(), 2, "the fallback visits every tracked file");
     assert_ne!(incremental.digest(), full.digest());
     assert_eq!(full.mode, SnapshotMode::FullRehash);
@@ -261,9 +268,8 @@ fn an_index_head_resolves_but_yields_no_wire_tuple_either() {
     repo.write("src/a.ts", b"staged\n");
     repo.add_all();
 
-    let range =
-        ResolvedRange::resolve(repo.git(), &Revision::Rev("HEAD".into()), &Revision::Index)
-            .expect("a staged head is measurable");
+    let range = ResolvedRange::resolve(repo.git(), &Revision::Rev("HEAD".into()), &Revision::Index)
+        .expect("a staged head is measurable");
     assert!(matches!(range.head, Endpoint::Index { .. }));
     assert!(range.compare_context().is_err());
 }
@@ -316,12 +322,8 @@ fn non_ascii_paths_survive_enumeration_intact() {
     let base = repo.commit_file("src/a.ts", b"one\n", "base");
     let head = repo.commit_file("src/naïve — ü.ts", b"two\n", "unicode path");
 
-    let range = ResolvedRange::resolve(
-        repo.git(),
-        &Revision::Rev(base),
-        &Revision::Rev(head),
-    )
-    .unwrap();
+    let range =
+        ResolvedRange::resolve(repo.git(), &Revision::Rev(base), &Revision::Rev(head)).unwrap();
     let changed = ChangedSet::enumerate(repo.git(), &range).unwrap();
 
     let paths: Vec<&str> = changed.entries.iter().map(|e| e.path.as_str()).collect();
@@ -348,11 +350,15 @@ fn a_rename_carries_both_paths_and_reads_the_destination_blob() {
     repo.run(&["mv", "src/old-name.ts", "src/new-name.ts"]);
     let head = repo.commit("rename");
 
-    let range = ResolvedRange::resolve(repo.git(), &Revision::Rev(base), &Revision::Rev(head))
-        .unwrap();
+    let range =
+        ResolvedRange::resolve(repo.git(), &Revision::Rev(base), &Revision::Rev(head)).unwrap();
     let changed = ChangedSet::enumerate(repo.git(), &range).unwrap();
 
-    assert_eq!(changed.len(), 1, "a pure rename is one entry, not a delete plus an add");
+    assert_eq!(
+        changed.len(),
+        1,
+        "a pure rename is one entry, not a delete plus an add"
+    );
     let entry = &changed.entries[0];
     assert_eq!(entry.status, ChangeStatus::Renamed);
     assert_eq!(entry.old_path.as_deref(), Some("src/old-name.ts"));
@@ -381,8 +387,8 @@ fn a_rename_with_an_edit_is_still_one_entry() {
     repo.add_all();
     let head = repo.commit("rename with edit");
 
-    let range = ResolvedRange::resolve(repo.git(), &Revision::Rev(base), &Revision::Rev(head))
-        .unwrap();
+    let range =
+        ResolvedRange::resolve(repo.git(), &Revision::Rev(base), &Revision::Rev(head)).unwrap();
     let changed = ChangedSet::enumerate(repo.git(), &range).unwrap();
     assert_eq!(changed.len(), 1);
     assert_eq!(changed.entries[0].status, ChangeStatus::Renamed);
@@ -483,7 +489,10 @@ fn a_shallow_clone_is_flagged_and_a_lost_merge_base_says_why() {
 
     // A depth-limited clone needs the file:// transport; a plain path clone is a
     // hardlink copy and ignores --depth.
-    let url = format!("file:///{}", origin_path.display().to_string().replace('\\', "/"));
+    let url = format!(
+        "file:///{}",
+        origin_path.display().to_string().replace('\\', "/")
+    );
     let clone_path = dir.path().join("shallow");
     origin.run(&[
         "clone",
@@ -561,7 +570,10 @@ fn a_submodule_bump_is_a_change_and_never_a_blob_read() {
 
     // git 2.38 refused file:// submodules by default (CVE-2022-39253). The
     // fixture opts in explicitly rather than relying on the host's config.
-    let sub_url = format!("file:///{}", sub_path.display().to_string().replace('\\', "/"));
+    let sub_url = format!(
+        "file:///{}",
+        sub_path.display().to_string().replace('\\', "/")
+    );
     outer.run(&[
         "-c",
         "protocol.file.allow=always",
@@ -582,12 +594,8 @@ fn a_submodule_bump_is_a_change_and_never_a_blob_read() {
     outer.add_all();
     let head = outer.commit("bump submodule");
 
-    let range = ResolvedRange::resolve(
-        outer.git(),
-        &Revision::Rev(base),
-        &Revision::Rev(head),
-    )
-    .unwrap();
+    let range =
+        ResolvedRange::resolve(outer.git(), &Revision::Rev(base), &Revision::Rev(head)).unwrap();
     let changed = ChangedSet::enumerate(outer.git(), &range).unwrap();
 
     let gitlink = changed
@@ -644,7 +652,10 @@ fn a_submodules_internal_dirtiness_does_not_churn_the_outer_key() {
     let outer_path = dir.path().join("outer");
     let outer = TestRepo::init(&outer_path);
     outer.commit_file("src/a.ts", b"one\n", "base");
-    let sub_url = format!("file:///{}", sub_path.display().to_string().replace('\\', "/"));
+    let sub_url = format!(
+        "file:///{}",
+        sub_path.display().to_string().replace('\\', "/")
+    );
     outer.run(&[
         "-c",
         "protocol.file.allow=always",

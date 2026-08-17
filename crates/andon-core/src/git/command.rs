@@ -40,6 +40,22 @@
 //!   orderfile ''`), so it cannot be neutralized by pinning. Every enumeration
 //!   in this module sorts its own output instead, which is the stronger fix:
 //!   the order no longer depends on git's at all.
+//! - `core.excludesFile`. It hides untracked files from `status`, and only
+//!   untracked files — which are in no commit, so they reach the advisory lane
+//!   and never the compared one. Neutralizing it would mean a developer's global
+//!   ignore stopped applying and their editor's scratch files started churning
+//!   the cache key on every measurement. The determinism it could buy is
+//!   determinism nothing needs.
+//!
+//! # Where the pins are belt and where they are braces
+//!
+//! Several of these keys cannot actually reach us, because the commands that
+//! would read them are already invoked with an overriding flag: `-z` makes
+//! `core.quotepath` inert, `--no-ext-diff` outranks `diff.external`,
+//! `--find-renames` outranks `diff.renames`. They stay pinned anyway — a future
+//! call site that forgets a flag should fail safe — but the flags are the load
+//! bearing half, and `crates/andon-core/tests/git_hygiene.rs` proves which by
+//! showing each planted setting changing the output of an *unpinned* git first.
 //!
 //! **System files.** `GIT_CONFIG_NOSYSTEM=1` drops `/etc/gitconfig` and
 //! `GIT_ATTR_NOSYSTEM=1` drops the system attributes file. The *global*
@@ -70,6 +86,15 @@ pub const PINNED_CONFIG: &[(&str, &str)] = &[
     ("core.autocrlf", "false"),
     ("core.eol", "lf"),
     ("core.safecrlf", "false"),
+    // A *global* attributes file changes what `hash-object` returns for
+    // identical bytes — `*.ts text eol=crlf` in one developer's `~/.gitattributes`
+    // is enough — so it is neutralized. Measured, not assumed: with it set, a
+    // CRLF file hashes to `85c3040…`; without, `b4ec4d1…`.
+    //
+    // The repository's own `.gitattributes` still applies, and should: it is
+    // committed content that every checkout shares, which is the opposite of a
+    // machine-local preference.
+    ("core.attributesFile", ""),
     // Never run repository hooks from a measurement. A `reference-transaction`
     // or `post-index-change` hook firing inside `andon measure` is arbitrary
     // repository code executing in the static-safe lane, and nondeterministic

@@ -335,7 +335,13 @@ fn resolve_endpoint(
 fn rev_parse_commit(git: &Git, rev: &str) -> Result<String, ResolveError> {
     let spec = format!("{rev}^{{commit}}");
     let output = git
-        .cmd(["rev-parse", "--verify", "--quiet", "--end-of-options", &spec])
+        .cmd([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &spec,
+        ])
         .succeeds_with_output()?;
     match output {
         Some(text) => expect_oid(text.trim(), rev),
@@ -415,15 +421,11 @@ impl From<&Endpoint> for EndpointKey {
     fn from(endpoint: &Endpoint) -> Self {
         match endpoint {
             Endpoint::Commit { oid, .. } => EndpointKey::Commit { oid: oid.clone() },
-            Endpoint::Index {
-                snapshot, mode, ..
-            } => EndpointKey::Index {
+            Endpoint::Index { snapshot, mode, .. } => EndpointKey::Index {
                 snapshot: snapshot.clone(),
                 mode: *mode,
             },
-            Endpoint::Worktree {
-                snapshot, mode, ..
-            } => EndpointKey::Worktree {
+            Endpoint::Worktree { snapshot, mode, .. } => EndpointKey::Worktree {
                 snapshot: snapshot.clone(),
                 mode: *mode,
             },

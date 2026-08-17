@@ -62,9 +62,9 @@ impl CacheKey {
                 // parse and version variants cannot arise from an in-memory
                 // value. Rendering keeps the compiler honest without inventing
                 // an error variant nobody can trigger.
-                other => CanonicalError::NotSerializable(serde::ser::Error::custom(
-                    other.to_string(),
-                )),
+                other => {
+                    CanonicalError::NotSerializable(serde::ser::Error::custom(other.to_string()))
+                }
             })?,
             engine_id: engine_id.to_string(),
             engine_version: engine_version.to_string(),
