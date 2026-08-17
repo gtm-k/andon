@@ -82,7 +82,7 @@ impl CacheKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{Endpoint, SnapshotMode};
+    use crate::git::{testing, Endpoint, SnapshotMode};
 
     fn range() -> ResolvedRange {
         ResolvedRange {
@@ -178,17 +178,17 @@ mod tests {
     fn a_dirty_endpoint_keys_on_its_snapshot_and_its_mode() {
         let policy = Policy::default();
         let mut incremental = range();
-        incremental.head = Endpoint::Worktree {
-            snapshot: "a".repeat(64),
-            head_oid: "2".repeat(40),
-            mode: SnapshotMode::Incremental,
-        };
+        incremental.head = Endpoint::from_snapshot(testing::empty_snapshot(
+            &"2".repeat(40),
+            false,
+            SnapshotMode::Incremental,
+        ));
         let mut fallback = incremental.clone();
-        fallback.head = Endpoint::Worktree {
-            snapshot: "a".repeat(64),
-            head_oid: "2".repeat(40),
-            mode: SnapshotMode::FullRehash,
-        };
+        fallback.head = Endpoint::from_snapshot(testing::empty_snapshot(
+            &"2".repeat(40),
+            false,
+            SnapshotMode::FullRehash,
+        ));
         // Same tree, different derivation: a miss, never a shared entry.
         assert_ne!(
             key_for(&incremental, &policy),
@@ -203,17 +203,17 @@ mod tests {
         // when nothing is unstaged. They are still different questions.
         let policy = Policy::default();
         let mut index = range();
-        index.head = Endpoint::Index {
-            snapshot: "a".repeat(64),
-            head_oid: "2".repeat(40),
-            mode: SnapshotMode::Incremental,
-        };
+        index.head = Endpoint::from_snapshot(testing::empty_snapshot(
+            &"2".repeat(40),
+            true,
+            SnapshotMode::Incremental,
+        ));
         let mut worktree = range();
-        worktree.head = Endpoint::Worktree {
-            snapshot: "a".repeat(64),
-            head_oid: "2".repeat(40),
-            mode: SnapshotMode::Incremental,
-        };
+        worktree.head = Endpoint::from_snapshot(testing::empty_snapshot(
+            &"2".repeat(40),
+            false,
+            SnapshotMode::Incremental,
+        ));
         assert_ne!(key_for(&index, &policy), key_for(&worktree, &policy));
     }
 }

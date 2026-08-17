@@ -9,12 +9,24 @@
 //! collapse T6 describes: the tool is fast on the repositories nobody needed it
 //! for and unusable on the ones they did.
 //!
-//! So the snapshot is incremental. `git status --porcelain -z` names the handful
-//! of paths that differ from `HEAD`, one batched `hash-object` turns them into
-//! the blob OIDs they would have if staged, and the snapshot digest covers
-//! `HEAD` plus that handful. Work is proportional to the dirty set, and git's
-//! own stat cache — accelerated by fsmonitor where the platform has it — is what
-//! keeps finding the dirty set cheap.
+//! So the snapshot is incremental. `git status --porcelain=v2 -z` names the
+//! handful of paths that differ from `HEAD`, one batched `hash-object` turns the
+//! modified ones into the blob OIDs they would have if staged, and the snapshot
+//! digest covers `HEAD` plus that handful.
+//!
+//! # Why porcelain v2, and why it is the only scan
+//!
+//! Each full scan of a 100,000-entry index costs a fifth of a second before any
+//! measurement happens, so the number of scans is the budget. Porcelain **v2**
+//! reports, per changed path, the HEAD blob OID and the index blob OID alongside
+//! the status letters — everything a `diff-index --cached` would have been run to
+//! find out. One scan answers what v1 needed three to answer.
+//!
+//! That is also why [`super::ChangedSet`] is derived from this snapshot rather
+//! than from its own `diff-index`. Two scans of a moving working tree can
+//! disagree — a file edited between them appears in one and not the other — and
+//! a changed set that disagrees with the cache key describing it is a bug that
+//! only shows up under exactly the conditions nobody can reproduce.
 //!
 //! # The fallback, and why it is a different key
 //!
@@ -33,8 +45,9 @@
 //!
 //! Everything here describes uncommitted state, so everything here is advisory
 //! (PREMORTEM T1). The snapshot is a *cache key input*, not a measurement: it
-//! never enters a per-result digest, and [`super::resolve::ResolvedRange::compare_context`]
-//! refuses to build a wire tuple from an endpoint that has one.
+//! never enters a per-result digest, and
+//! [`super::resolve::ResolvedRange::compare_context`] refuses to build a wire
+//! tuple from an endpoint that has one.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -56,6 +69,11 @@ pub enum SnapshotMode {
     FullRehash,
 }
 
+/// The mode git uses for an absent side.
+const ABSENT_MODE: &str = "000000";
+/// The gitlink mode: a submodule pointer, not a file.
+const GITLINK_MODE: &str = "160000";
+
 /// One path that differs from `HEAD`.
 ///
 /// Serialized into the snapshot digest, so the field set is the definition of
@@ -63,12 +81,46 @@ pub enum SnapshotMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DirtyEntry {
     /// The two status letters git reported, index-side then worktree-side.
+    /// `??` for an untracked file.
     pub status: String,
+    /// Mode in `HEAD`, or `None` when the path is new.
+    pub head_mode: Option<String>,
+    /// Mode in the working tree, or `None` when the path was deleted.
+    pub worktree_mode: Option<String>,
+    /// Blob OID in `HEAD`. `None` for a path `HEAD` does not have.
+    pub head_oid: Option<String>,
     /// Blob OID of the staged content, when the path is staged.
     pub staged_oid: Option<String>,
     /// Blob OID the working-tree bytes would have if staged. `None` for a path
     /// that has been deleted, or that git could not hash.
     pub worktree_oid: Option<String>,
+}
+
+impl DirtyEntry {
+    /// True when this entry is a submodule pointer rather than a file.
+    pub fn is_gitlink(&self) -> bool {
+        self.head_mode.as_deref() == Some(GITLINK_MODE)
+            || self.worktree_mode.as_deref() == Some(GITLINK_MODE)
+    }
+
+    /// True when the path is gone from the working tree.
+    pub fn is_deleted(&self) -> bool {
+        self.worktree_mode.is_none()
+    }
+
+    /// True when the index holds content that `HEAD` does not.
+    ///
+    /// Porcelain v2 writes `.` in the index column for "unmodified there", so a
+    /// staged path is any whose first status character is neither that nor the
+    /// `?` of an untracked file. The distinction decides whether this entry has
+    /// a blob anyone can read: staged bytes are in the object database, unstaged
+    /// bytes are only on disk.
+    pub fn is_staged(&self) -> bool {
+        !matches!(
+            self.status.as_bytes().first().copied(),
+            Some(b'.') | Some(b'?') | Some(b' ') | None
+        )
+    }
 }
 
 /// The uncommitted state of a working tree, as a hashable value.
@@ -95,15 +147,17 @@ pub struct DirtySnapshot {
 pub const SNAPSHOT_VERSION: u32 = 1;
 
 impl DirtySnapshot {
-    /// Snapshot the dirty set incrementally. Two spawns: `status`, then one
-    /// batched `hash-object`.
+    /// Snapshot the dirty set incrementally.
+    ///
+    /// Two spawns: one `status --porcelain=v2`, one batched `hash-object`. The
+    /// second is skipped when nothing needs hashing.
     ///
     /// `staged_only` distinguishes the `INDEX` sentinel from `WORKTREE`.
     pub fn incremental(git: &Git, head_oid: &str, staged_only: bool) -> Result<Self, GitError> {
         let raw = git
             .cmd([
                 "status",
-                "--porcelain=v1",
+                "--porcelain=v2",
                 "-z",
                 "--untracked-files=all",
                 "--no-renames",
@@ -120,56 +174,52 @@ impl DirtySnapshot {
         let mut entries: BTreeMap<String, DirtyEntry> = BTreeMap::new();
         let mut to_hash: Vec<String> = Vec::new();
 
-        for record in split_nul(&raw) {
-            // `XY<space><path>`, with `--no-renames` guaranteeing one path per
-            // record. Anything shorter is not a status record.
-            if record.len() < 4 {
-                continue;
-            }
-            let status = String::from_utf8_lossy(&record[..2]).into_owned();
-            let path = String::from_utf8_lossy(&record[3..]).into_owned();
-            let index_state = record[0];
-            let worktree_state = record[1];
+        for record in parse_porcelain_v2(&raw) {
+            let PorcelainEntry {
+                path,
+                status,
+                head_mode,
+                worktree_mode,
+                head_oid: entry_head_oid,
+                index_oid,
+                untracked,
+            } = record;
 
-            // The `INDEX` sentinel means staged content. An unstaged edit (` M`)
-            // is not staged, and neither is an untracked file (`??`) or an
-            // ignored one (`!!`) — git spells "nothing is staged here" three
-            // different ways, and only the first is a space.
-            if staged_only && matches!(index_state, b' ' | b'?' | b'!') {
-                continue;
+            if staged_only {
+                // The `INDEX` sentinel means staged content. An unstaged edit
+                // (` M`) is not staged, and neither is an untracked file — git
+                // spells "nothing is staged here" more than one way, and only
+                // one of them is a space.
+                let index_state = status.as_bytes().first().copied().unwrap_or(b' ');
+                if untracked || matches!(index_state, b' ' | b'.' | b'?' | b'!') {
+                    continue;
+                }
             }
-            // A deleted path has no bytes to hash. `D` on the worktree side
-            // means gone from disk; `D` on the index side with a clean worktree
-            // means staged for deletion.
-            let deleted = worktree_state == b'D' || (staged_only && index_state == b'D');
-            if !deleted {
+
+            let deleted = worktree_mode.is_none();
+            let gitlink = head_mode.as_deref() == Some(GITLINK_MODE)
+                || worktree_mode.as_deref() == Some(GITLINK_MODE);
+            // A deleted path has no bytes to hash, and a gitlink's "content" is
+            // another repository's commit.
+            if !staged_only && !deleted && !gitlink {
                 to_hash.push(path.clone());
             }
+
             entries.insert(
                 path,
                 DirtyEntry {
                     status,
-                    staged_oid: None,
+                    head_mode,
+                    worktree_mode,
+                    head_oid: entry_head_oid,
+                    staged_oid: index_oid,
                     worktree_oid: None,
                 },
             );
         }
 
-        // Staged blob OIDs come from the index directly — they are already
-        // objects, so hashing the worktree copy would be both slower and wrong
-        // for a path staged at one content and edited to another.
-        if !entries.is_empty() {
-            let staged = staged_blob_oids(git, head_oid)?;
-            for (path, oid) in staged {
-                if let Some(entry) = entries.get_mut(&path) {
-                    entry.staged_oid = Some(oid);
-                }
-            }
-        }
-
-        if !staged_only && !to_hash.is_empty() {
-            let hashed = hash_paths(git, &to_hash)?;
-            for (path, oid) in hashed {
+        if !to_hash.is_empty() {
+            for (path, oid) in hash_paths(git, &to_hash)? {
                 if let Some(entry) = entries.get_mut(&path) {
                     entry.worktree_oid = Some(oid);
                 }
@@ -191,40 +241,45 @@ impl DirtySnapshot {
     /// the steady state. Callers reach for it when `status` could not be
     /// trusted, and [`SnapshotMode`] records that they did.
     pub fn full_rehash(git: &Git, head_oid: &str, staged_only: bool) -> Result<Self, GitError> {
-        let raw = git.cmd(["ls-files", "-z", "--cached"]).output()?;
-        let paths: Vec<String> = split_nul(&raw)
-            .map(|p| String::from_utf8_lossy(p).into_owned())
-            .collect();
+        let index = index_entries(git)?;
 
         let mut entries = BTreeMap::new();
         if staged_only {
-            for (path, oid) in index_blob_oids(git)? {
+            for (path, mode, oid) in index {
                 entries.insert(
                     path,
                     DirtyEntry {
-                        status: "??".to_string(),
+                        status: "..".to_string(),
+                        head_mode: Some(mode.clone()),
+                        worktree_mode: Some(mode),
+                        head_oid: None,
                         staged_oid: Some(oid),
                         worktree_oid: None,
                     },
                 );
             }
         } else {
-            // Files deleted from disk cannot be hashed; the absence is the fact
-            // worth recording, so they get an entry with no worktree OID rather
-            // than being dropped.
-            let present: Vec<String> = paths
+            let present: Vec<String> = index
                 .iter()
-                .filter(|p| git.workdir().join(p).is_file())
-                .cloned()
+                .filter(|(path, mode, _)| {
+                    mode != GITLINK_MODE && git.workdir().join(path).is_file()
+                })
+                .map(|(path, _, _)| path.clone())
                 .collect();
             let hashed: BTreeMap<String, String> = hash_paths(git, &present)?.into_iter().collect();
-            for path in paths {
+            for (path, mode, oid) in index {
+                // Files deleted from disk cannot be hashed; the absence is the
+                // fact worth recording, so they get an entry with no worktree
+                // OID rather than being dropped.
                 let worktree_oid = hashed.get(&path).cloned();
                 entries.insert(
                     path,
                     DirtyEntry {
-                        status: "??".to_string(),
-                        staged_oid: None,
+                        status: "..".to_string(),
+                        head_mode: Some(mode.clone()),
+                        worktree_mode: worktree_oid.is_some().then_some(mode),
+                        head_oid: None,
+                        staged_oid: Some(oid),
                         worktree_oid,
                     },
                 );
@@ -261,34 +316,96 @@ impl DirtySnapshot {
     }
 }
 
-/// Staged blob OIDs for paths that differ from `head_oid`.
-fn staged_blob_oids(git: &Git, head_oid: &str) -> Result<Vec<(String, String)>, GitError> {
-    let raw = git
-        .cmd([
-            "diff-index",
-            "--cached",
-            "-r",
-            "--raw",
-            "-z",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-renames",
-            head_oid,
-        ])
-        .output()?;
-    Ok(super::diff::parse_raw(&raw)
-        .into_iter()
-        .filter_map(|entry| {
-            entry
-                .dst_oid
-                .filter(|_| entry.dst_mode.as_deref() != Some("160000"))
-                .map(|oid| (entry.path, oid))
-        })
-        .collect())
+/// One parsed porcelain-v2 record.
+struct PorcelainEntry {
+    path: String,
+    status: String,
+    head_mode: Option<String>,
+    worktree_mode: Option<String>,
+    head_oid: Option<String>,
+    index_oid: Option<String>,
+    untracked: bool,
 }
 
-/// Every path in the index with its blob OID.
-fn index_blob_oids(git: &Git) -> Result<Vec<(String, String)>, GitError> {
+/// Parse `git status --porcelain=v2 -z`.
+///
+/// Ordinary changes are `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`; untracked
+/// files are `? <path>`; ignored are `! <path>`; unmerged are `u …`, which
+/// resolution refuses before reaching here. Rename records (`2 …`) carry a second
+/// path in the following NUL field and cannot appear under `--no-renames`, but
+/// the parser skips their extra field anyway rather than desynchronizing if a
+/// future call site drops the flag.
+fn parse_porcelain_v2(raw: &[u8]) -> Vec<PorcelainEntry> {
+    let mut records = split_nul(raw);
+    let mut out = Vec::new();
+
+    while let Some(record) = records.next() {
+        let text = String::from_utf8_lossy(record);
+        let mut fields = text.splitn(9, ' ');
+        let Some(kind) = fields.next() else { continue };
+
+        match kind {
+            "?" | "!" => {
+                let path = text[2.min(text.len())..].to_string();
+                if path.is_empty() {
+                    continue;
+                }
+                out.push(PorcelainEntry {
+                    path,
+                    status: "??".to_string(),
+                    head_mode: None,
+                    // An untracked file exists on disk by definition; git does
+                    // not report its mode, and the ordinary one is right.
+                    worktree_mode: Some("100644".to_string()),
+                    head_oid: None,
+                    index_oid: None,
+                    untracked: true,
+                });
+            }
+            "1" | "2" => {
+                let parsed: Vec<&str> = fields.collect();
+                let [xy, _sub, m_head, _m_index, m_worktree, h_head, h_index, rest] =
+                    parsed.as_slice()
+                else {
+                    continue;
+                };
+                // A `2` record's rename score precedes the path, and its source
+                // path is the next NUL field.
+                let path = if kind == "2" {
+                    let path = rest.split_once(' ').map_or(*rest, |(_score, p)| p);
+                    let _source = records.next();
+                    path.to_string()
+                } else {
+                    (*rest).to_string()
+                };
+                out.push(PorcelainEntry {
+                    path,
+                    status: (*xy).to_string(),
+                    head_mode: keep_present(m_head),
+                    worktree_mode: keep_present(m_worktree),
+                    head_oid: keep_nonnull(h_head),
+                    index_oid: keep_nonnull(h_index),
+                    untracked: false,
+                });
+            }
+            // `u` (unmerged) and the header lines (`#`) are not dirty state we
+            // can key on; resolution refuses a conflicted tree before this runs.
+            _ => continue,
+        }
+    }
+    out
+}
+
+fn keep_present(mode: &str) -> Option<String> {
+    (mode != ABSENT_MODE).then(|| mode.to_string())
+}
+
+fn keep_nonnull(oid: &str) -> Option<String> {
+    (!oid.bytes().all(|b| b == b'0')).then(|| oid.to_string())
+}
+
+/// Every path in the index with its mode and blob OID.
+fn index_entries(git: &Git) -> Result<Vec<(String, String, String)>, GitError> {
     let raw = git.cmd(["ls-files", "-s", "-z"]).output()?;
     let mut out = Vec::new();
     for record in split_nul(&raw) {
@@ -299,9 +416,7 @@ fn index_blob_oids(git: &Git) -> Result<Vec<(String, String)>, GitError> {
         };
         let fields: Vec<&str> = meta.split(' ').collect();
         if let [mode, oid, _stage] = fields.as_slice() {
-            if *mode != "160000" {
-                out.push((path.to_string(), (*oid).to_string()));
-            }
+            out.push((path.to_string(), (*mode).to_string(), (*oid).to_string()));
         }
     }
     Ok(out)
@@ -412,7 +527,10 @@ mod tests {
 
     fn entry(oid: &str) -> DirtyEntry {
         DirtyEntry {
-            status: " M".to_string(),
+            status: ".M".to_string(),
+            head_mode: Some("100644".to_string()),
+            worktree_mode: Some("100644".to_string()),
+            head_oid: Some("9".repeat(40)),
             staged_oid: None,
             worktree_oid: Some(oid.to_string()),
         }
@@ -459,5 +577,69 @@ mod tests {
     fn nul_splitting_drops_the_trailing_empty_record() {
         let records: Vec<&[u8]> = split_nul(b" M a.ts\0?? b.ts\0").collect();
         assert_eq!(records, vec![&b" M a.ts"[..], &b"?? b.ts"[..]]);
+    }
+
+    #[test]
+    fn porcelain_v2_yields_both_the_head_and_index_blob_oids() {
+        // The whole reason for v2 over v1: these two OIDs arrive free, where v1
+        // would need a second full scan of the index to learn them.
+        let raw = b"1 .M N... 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb src/a.ts\0";
+        let parsed = parse_porcelain_v2(raw);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].path, "src/a.ts");
+        assert_eq!(parsed[0].status, ".M");
+        assert_eq!(parsed[0].head_oid.as_deref(), Some(&"a".repeat(40)[..]));
+        assert_eq!(parsed[0].index_oid.as_deref(), Some(&"b".repeat(40)[..]));
+        assert!(!parsed[0].untracked);
+    }
+
+    #[test]
+    fn a_deleted_path_has_no_worktree_mode() {
+        let raw = b"1 .D N... 100644 100644 000000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa src/gone.ts\0";
+        let parsed = parse_porcelain_v2(raw);
+        assert_eq!(parsed[0].worktree_mode, None);
+        assert_eq!(parsed[0].head_mode.as_deref(), Some("100644"));
+    }
+
+    #[test]
+    fn an_untracked_file_is_reported_with_its_path_intact() {
+        let raw = b"? src/new file.ts\0";
+        let parsed = parse_porcelain_v2(raw);
+        assert_eq!(parsed[0].path, "src/new file.ts");
+        assert!(parsed[0].untracked);
+        assert_eq!(parsed[0].head_oid, None);
+    }
+
+    #[test]
+    fn a_rename_record_does_not_desynchronize_the_parser() {
+        // `--no-renames` means these should not arrive, but a parser that
+        // consumed the wrong number of NUL fields would attribute every later
+        // record to the wrong path — silently.
+        let raw = b"2 R. N... 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb R100 new.ts\0old.ts\0? after.ts\0";
+        let parsed = parse_porcelain_v2(raw);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].path, "new.ts");
+        assert_eq!(parsed[1].path, "after.ts");
+    }
+}
+
+/// Snapshot constructors for tests in this crate and its integration tests.
+///
+/// Compiled into the library for the reason [`crate::testing`] is: fixtures
+/// built from one shape stop diverging, and a schema change breaks them all in
+/// one place rather than in five.
+pub mod testing {
+    use super::*;
+
+    /// A snapshot with no dirty entries, for keying tests that care only about
+    /// identity.
+    pub fn empty_snapshot(head_oid: &str, staged_only: bool, mode: SnapshotMode) -> DirtySnapshot {
+        DirtySnapshot {
+            version: SNAPSHOT_VERSION,
+            head_oid: head_oid.to_string(),
+            staged_only,
+            mode,
+            entries: BTreeMap::new(),
+        }
     }
 }

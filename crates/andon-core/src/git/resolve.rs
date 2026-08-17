@@ -71,21 +71,20 @@ pub enum Endpoint {
     },
     /// The index. Content is blob-addressable, but there is no commit to pin to.
     Index {
-        /// Digest over the staged state. See [`DirtySnapshot`].
-        snapshot: String,
-        /// The commit the index sits on top of.
-        head_oid: String,
-        /// How the snapshot was computed.
-        mode: SnapshotMode,
+        /// The staged state. Carried whole rather than as a digest so that
+        /// [`super::ChangedSet`] can be derived from it instead of costing a
+        /// second scan — see [`DirtySnapshot`]'s note on why one scan is both
+        /// faster and the only self-consistent answer.
+        snapshot: Box<DirtySnapshot>,
+        /// Digest of `snapshot`, computed once.
+        digest: String,
     },
     /// The working tree.
     Worktree {
-        /// Digest over the dirty state. See [`DirtySnapshot`].
-        snapshot: String,
-        /// The commit the working tree sits on top of.
-        head_oid: String,
-        /// How the snapshot was computed.
-        mode: SnapshotMode,
+        /// The dirty state, carried whole. See [`Endpoint::Index`].
+        snapshot: Box<DirtySnapshot>,
+        /// Digest of `snapshot`, computed once.
+        digest: String,
     },
 }
 
@@ -103,7 +102,9 @@ impl Endpoint {
     pub fn anchor_oid(&self) -> &str {
         match self {
             Endpoint::Commit { oid, .. } => oid,
-            Endpoint::Index { head_oid, .. } | Endpoint::Worktree { head_oid, .. } => head_oid,
+            Endpoint::Index { snapshot, .. } | Endpoint::Worktree { snapshot, .. } => {
+                &snapshot.head_oid
+            }
         }
     }
 
@@ -115,7 +116,32 @@ impl Endpoint {
     pub fn content_hash(&self) -> &str {
         match self {
             Endpoint::Commit { oid, .. } => oid,
-            Endpoint::Index { snapshot, .. } | Endpoint::Worktree { snapshot, .. } => snapshot,
+            Endpoint::Index { digest, .. } | Endpoint::Worktree { digest, .. } => digest,
+        }
+    }
+
+    /// Build a dirty endpoint from a snapshot, computing its digest once.
+    ///
+    /// `staged_only` on the snapshot decides which sentinel this is, so the two
+    /// cannot disagree — an `INDEX` endpoint holding a worktree snapshot would
+    /// key one question under another's name.
+    pub fn from_snapshot(snapshot: DirtySnapshot) -> Self {
+        let snapshot = Box::new(snapshot);
+        let digest = snapshot.digest();
+        if snapshot.staged_only {
+            Endpoint::Index { snapshot, digest }
+        } else {
+            Endpoint::Worktree { snapshot, digest }
+        }
+    }
+
+    /// The dirty state behind this endpoint, when it has one.
+    pub fn snapshot(&self) -> Option<&DirtySnapshot> {
+        match self {
+            Endpoint::Commit { .. } => None,
+            Endpoint::Index { snapshot, .. } | Endpoint::Worktree { snapshot, .. } => {
+                Some(snapshot)
+            }
         }
     }
 
@@ -308,21 +334,11 @@ fn resolve_endpoint(
             let _ = side;
             let head_oid = rev_parse_commit(git, "HEAD")?;
             let staged_only = matches!(revision, Revision::Index);
-            let snapshot = DirtySnapshot::incremental(git, &head_oid, staged_only)?;
-            let digest = snapshot.digest();
-            if staged_only {
-                Ok(Endpoint::Index {
-                    snapshot: digest,
-                    head_oid,
-                    mode: snapshot.mode,
-                })
-            } else {
-                Ok(Endpoint::Worktree {
-                    snapshot: digest,
-                    head_oid,
-                    mode: snapshot.mode,
-                })
-            }
+            Ok(Endpoint::from_snapshot(DirtySnapshot::incremental(
+                git,
+                &head_oid,
+                staged_only,
+            )?))
         }
     }
 }
@@ -421,13 +437,13 @@ impl From<&Endpoint> for EndpointKey {
     fn from(endpoint: &Endpoint) -> Self {
         match endpoint {
             Endpoint::Commit { oid, .. } => EndpointKey::Commit { oid: oid.clone() },
-            Endpoint::Index { snapshot, mode, .. } => EndpointKey::Index {
-                snapshot: snapshot.clone(),
-                mode: *mode,
+            Endpoint::Index { snapshot, digest } => EndpointKey::Index {
+                snapshot: digest.clone(),
+                mode: snapshot.mode,
             },
-            Endpoint::Worktree { snapshot, mode, .. } => EndpointKey::Worktree {
-                snapshot: snapshot.clone(),
-                mode: *mode,
+            Endpoint::Worktree { snapshot, digest } => EndpointKey::Worktree {
+                snapshot: digest.clone(),
+                mode: snapshot.mode,
             },
         }
     }
@@ -445,11 +461,11 @@ mod tests {
     }
 
     fn dirty() -> Endpoint {
-        Endpoint::Worktree {
-            snapshot: "f".repeat(64),
-            head_oid: "1".repeat(40),
-            mode: SnapshotMode::Incremental,
-        }
+        Endpoint::from_snapshot(crate::git::testing::empty_snapshot(
+            &"1".repeat(40),
+            false,
+            SnapshotMode::Incremental,
+        ))
     }
 
     fn range(base: Endpoint, head: Endpoint) -> ResolvedRange {

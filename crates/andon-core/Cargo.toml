@@ -22,3 +22,10 @@ proptest = "1"
 # that a hostile gitconfig changes nothing without a repository and a hostile
 # gitconfig — and each needs its own directory that disappears afterwards.
 tempfile = "3"
+
+# The perf-fixture generator. An example rather than a crate: it is developer
+# tooling for one gate, and a new workspace member would need a manifest, a
+# licence header, and a place in the dependency graph to earn nothing.
+[[example]]
+name = "gen_perf_fixture"
+path = "examples/gen_perf_fixture.rs"

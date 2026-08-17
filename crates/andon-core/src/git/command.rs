@@ -40,6 +40,18 @@
 //!   orderfile ''`), so it cannot be neutralized by pinning. Every enumeration
 //!   in this module sorts its own output instead, which is the stronger fix:
 //!   the order no longer depends on git's at all.
+//! - `GIT_OPTIONAL_LOCKS=0`. The obvious hygiene for a read-only tool, and
+//!   measured to cost a third of the dirty-tree path: it stops git writing the
+//!   refreshed index, so the stat cache and the untracked cache are never
+//!   persisted and every `status` re-walks the whole repository. On the
+//!   100k-file perf fixture that is 1629 ms against 1089 ms — the difference
+//!   between missing the warm budget badly and missing it narrowly, on exactly
+//!   the path PREMORTEM T6 is about. What the lock guards is git's own cache,
+//!   not repository content: a refresh updates stat data for entries whose
+//!   content already matches, stages nothing, and changes no output. Git also
+//!   degrades gracefully when the lock is held, skipping the update rather than
+//!   failing. Politeness that costs the tool its headline property is not
+//!   politeness worth having.
 //! - `core.excludesFile`. It hides untracked files from `status`, and only
 //!   untracked files — which are in no commit, so they reach the advisory lane
 //!   and never the compared one. Neutralizing it would mean a developer's global
@@ -138,7 +150,6 @@ const FORCED_ENV: &[(&str, &str)] = &[
     // which would let a blob digest describe content nobody committed.
     ("GIT_NO_REPLACE_OBJECTS", "1"),
     // Read-only by intent: do not take the index lock to refresh stat data.
-    ("GIT_OPTIONAL_LOCKS", "0"),
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_PAGER", "cat"),
     ("PAGER", "cat"),

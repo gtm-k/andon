@@ -124,25 +124,26 @@ impl ChangedSet {
     /// and the head-side OIDs are absent by construction, which is what stops
     /// dirty bytes from acquiring compared-lane identities.
     pub fn enumerate(git: &Git, range: &ResolvedRange) -> Result<Self, GitError> {
-        let base = range.base.anchor_oid();
-        let raw = match &range.head {
-            Endpoint::Commit { oid: head, .. } => git
-                .cmd(["diff-tree"])
-                .args(RAW_FLAGS)
-                .args(["-M", base, head])
-                .output()?,
-            Endpoint::Index { .. } => git
-                .cmd(["diff-index", "--cached"])
-                .args(RAW_FLAGS)
-                .args(["-M", base])
-                .output()?,
-            Endpoint::Worktree { .. } => git
-                .cmd(["diff-index"])
-                .args(RAW_FLAGS)
-                .args(["-M", base])
-                .output()?,
+        let mut entries = match &range.head {
+            Endpoint::Commit { oid: head, .. } => {
+                let raw = git
+                    .cmd(["diff-tree"])
+                    .args(RAW_FLAGS)
+                    .args(["-M", range.base.anchor_oid(), head])
+                    .output()?;
+                parse_raw(&raw)
+            }
+            // A dirty head already scanned the working tree once, and the
+            // snapshot it produced holds every path with its HEAD, index, and
+            // working-tree blob OIDs. Running `diff-index` here would pay a
+            // second 100k-entry scan (PREMORTEM T6) to learn what is already
+            // known — and, worse, could disagree with it: a file edited between
+            // the two scans appears in one and not the other, leaving a changed
+            // set that contradicts the cache key naming it.
+            Endpoint::Index { snapshot, .. } | Endpoint::Worktree { snapshot, .. } => {
+                from_snapshot(snapshot)
+            }
         };
-        let mut entries = parse_raw(&raw);
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(ChangedSet { entries })
     }
@@ -154,13 +155,22 @@ impl ChangedSet {
     /// than errored: they are ordinary parts of a change, and none of them names
     /// a blob.
     pub fn read_head_blobs(&self, git: &Git) -> Result<Vec<(String, Content)>, BlobError> {
+        let readable: Vec<(&str, &str)> = self
+            .entries
+            .iter()
+            .filter_map(|e| e.readable_blob().map(|oid| (e.path.as_str(), oid)))
+            .collect();
+        // Starting `cat-file --batch` to read nothing costs a process — around
+        // ninety milliseconds on Windows, a tenth of the warm budget — and a
+        // working-tree head reads no blobs at all, because its bytes are not in
+        // the object database.
+        if readable.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut batch = BlobBatch::open(git)?;
-        let mut out = Vec::with_capacity(self.entries.len());
-        for entry in &self.entries {
-            let Some(oid) = entry.readable_blob() else {
-                continue;
-            };
-            out.push((entry.path.clone(), batch.read(oid)?));
+        let mut out = Vec::with_capacity(readable.len());
+        for (path, oid) in readable {
+            out.push((path.to_string(), batch.read(oid)?));
         }
         Ok(out)
     }
@@ -195,6 +205,45 @@ const RAW_FLAGS: &[&str] = &[
 
 fn is_null_oid(oid: &str) -> bool {
     oid.bytes().all(|b| b == b'0')
+}
+
+/// Turn a dirty-tree snapshot into changed entries.
+///
+/// The head-side OID is the staged blob **only when the path is actually
+/// staged**, and `None` otherwise. The distinction is not pedantry: for an
+/// unstaged edit the index still holds `HEAD`'s content, so copying the index
+/// OID across would hand the blob reader the *pre-edit* bytes and label them as
+/// what the working tree contains. Unstaged bytes live only on disk, have no
+/// blob to read, and belong to the advisory lane by construction (PREMORTEM T1).
+///
+/// The snapshot's `worktree_oid` is likewise absent here: it is a content hash
+/// computed for keying, not an object in the database, and offering it to the
+/// blob reader would name something `cat-file` cannot resolve.
+fn from_snapshot(snapshot: &super::status::DirtySnapshot) -> Vec<ChangedEntry> {
+    snapshot
+        .entries
+        .iter()
+        .map(|(path, entry)| {
+            let status = match (entry.head_mode.is_some(), entry.worktree_mode.is_some()) {
+                (false, _) => ChangeStatus::Added,
+                (true, false) => ChangeStatus::Deleted,
+                (true, true) => ChangeStatus::Modified,
+            };
+            ChangedEntry {
+                path: path.clone(),
+                old_path: None,
+                status,
+                similarity: None,
+                src_mode: entry.head_mode.clone(),
+                dst_mode: entry.worktree_mode.clone(),
+                src_oid: entry.head_oid.clone(),
+                dst_oid: entry
+                    .is_staged()
+                    .then(|| entry.staged_oid.clone())
+                    .flatten(),
+            }
+        })
+        .collect()
 }
 
 /// Parse git's `--raw -z` output.

@@ -1,0 +1,23 @@
+# Pinned commit OIDs for the perf fixture.
+#
+# `fixtures/perf/generate.sh` verifies the repository it builds against these and
+# refuses to hand it to the gate if they differ. That is what makes the diff
+# series "pinned": not a promise in a comment, but a hash the generator checks.
+#
+# Every input to these OIDs is fixed — the seeded content, the paths, the author
+# and committer identity, and both timestamps — so they hold on Linux, macOS, and
+# Windows alike. If a run reports a mismatch, the fixture definition changed and
+# the perf numbers stop being comparable with the previous run's. Regenerate with
+# `./fixtures/perf/generate.sh --print-oids`, and ledger the budget implications
+# rather than refreshing the pins quietly.
+#
+# Recorded 2026-08-17 from git 2.39.0 on Windows; cross-checked on the Linux leg
+# of `.github/workflows/perf.yml`, which runs the same verification.
+
+schema_version = 1
+
+[commits]
+base = "18ceee7e87af3fd6d2b9e91829d7c41ee4ef80bf"
+small = "3b737d453fbc6869f0ddaaa0647832d05136715b"
+medium = "566e5e8cb7019b12b7c0ee11aa99fe6a5922c935"
+large = "d344443d9c62f7b40031db4b26652bc4da582450"

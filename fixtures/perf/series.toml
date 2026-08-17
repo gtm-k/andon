@@ -1,0 +1,53 @@
+# The perf fixture: one ~100k-file repository and a pinned diff series.
+#
+# This file is the definition. `fixtures/perf/generate.sh` builds the repository
+# from it, and `fixtures/perf/expected.toml` pins the commit OIDs that must come
+# out — so "pinned diff series" means pinned by content hash, not by intention.
+# Change a number here and the expected OIDs stop matching, which is the point:
+# a perf number is only comparable to last week's if the thing measured is
+# byte-identical to last week's.
+#
+# Why a generator rather than a committed repository: 100k files do not belong in
+# a git repository whose product is measurement of git repositories, and a
+# generated fixture with pinned OIDs gives the same guarantee at none of the cost.
+
+schema_version = 1
+
+# Seeds the content generator. Fixed, because the point of the fixture is that
+# everyone measures the same bytes.
+seed = 20260817
+
+[layout]
+# 100 x 100 x 10 = 100,000 files across 10,000 directories. Both numbers matter:
+# git's tree walk costs scale with directory count as well as file count, and a
+# flat 100k-file directory would be an easier problem than any real repository.
+top_dirs = 100
+mid_dirs = 100
+files_per_dir = 10
+lines_per_file = 12
+
+# The diff series. Three sizes, because PREMORTEM T6 is precisely the claim that
+# cost tracks diff size rather than repository size — which is a claim about the
+# *shape* of the curve and cannot be tested at one point.
+#
+# Each series is a branch off `base`, so every diff is exactly its own size and
+# not the sum of the ones before it. Files are chosen by a fixed stride from the
+# seeded ordering, so the selection is reproducible without being contiguous.
+[[series]]
+name = "small"
+changed_files = 1
+
+[[series]]
+name = "medium"
+changed_files = 50
+
+[[series]]
+name = "large"
+changed_files = 1000
+
+# Files left dirty in the working tree for the incremental-keying measurement.
+# Deliberately small against 100,000: a developer's uncommitted work is a handful
+# of files, and if finding that handful costs a walk of the other 99,975 then the
+# fast lane is not fast on the repositories that needed it.
+[dirty]
+files = 25
