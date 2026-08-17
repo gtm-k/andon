@@ -1,0 +1,92 @@
+# The E4 dodge on one result, with the rest left honest (P15-R1d).
+#
+# `fixtures/gamed/flipped-deterministic/` flips every flag at once, which is the
+# loud version: nothing pairs into the compare set and the whole record looks
+# odd. This is the version a competent attacker actually ships. Exactly one
+# result claims to be outside the compare set and carries a forged number; every
+# other result is honest and matches. The compare therefore has plenty to show —
+# real matched entries — and the forgery hides in the one place the loop used to
+# walk past.
+#
+# `compare.rs` pins this shape at the unit level as PROBE9. What it could not
+# pin is that the shape survives the real path: a real repository, a real
+# self-report written by a real binary, a real forge, a real recompute. That is
+# what this manifest is for.
+#
+# The load-bearing expectation is the pairing of `divergent` with
+# `expect_flag_disagreements = true`. Divergence alone would be satisfied by any
+# forgery; the flag disagreement is what proves the verifier saw through the
+# *dodge* rather than merely catching the number by luck.
+
+schema_version = 1
+name = "flipped-one-deterministic"
+title = "One result opts itself out of the compare; the rest stay honest"
+trusted_branch = "main"
+rationale = """
+Should-fail. The verifier derives compare-set membership from its own compiled
+registry, so a single flipped flag beside a wall of honest results changes
+nothing except what lands in `flag_disagreements`. If this ever returns
+`confirmed`, an attacker only ever has to lie about one number at a time.
+"""
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "base"
+message = "base"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\n"
+
+[[step.file]]
+path = "src/b.ts"
+text = "export const b = 1;\n"
+
+[[step.file]]
+path = "src/c.ts"
+text = "export const c = 1;\n"
+
+[[step]]
+kind = "branch"
+name = "feature"
+from = "base"
+
+# Three files, so the record carries seven results and the single forged one is
+# genuinely outnumbered by honest, matching ones.
+[[step]]
+kind = "commit"
+branch = "feature"
+label = "head"
+message = "feature: change all three files"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const a2 = 2;\n"
+
+[[step.file]]
+path = "src/b.ts"
+text = "export const b = 1;\nexport const b2 = 2;\nexport const b3 = 3;\n"
+
+[[step.file]]
+path = "src/c.ts"
+text = "export const c = 1;\nexport const c2 = 2;\nexport const c3 = 3;\nexport const c4 = 4;\n"
+
+[[step]]
+kind = "measure"
+head = "head"
+base = "merge-base"
+
+[[step]]
+kind = "forge"
+commit = "head"
+op = "flip-one-deterministic"
+
+[verify]
+head = "head"
+expect = "divergent"
+expect_tamper = []
+expect_mismatches = true
+expect_flag_disagreements = true
+expect_reason_codes = ["digest-mismatch", "deterministic-flag-disagreement"]
+expect_escalated = false

@@ -142,6 +142,61 @@ Fixture: `fixtures/gamed/flipped-deterministic/`.
 
 ---
 
+## The version-skew laundering window
+
+This is a **disclosed, open hole in v1**, and the honest thing is to describe it
+before describing what mitigates it.
+
+`engine_version` is part of the measurement regime, it is **self-asserted**, and
+the compare checks regime equality *before* it compares a single digest. A
+forger therefore never has to defeat the digest compare — it only has to avoid
+it. Stamp any engine version the verifier is not running, forge every number,
+and the outcome is `unwitnessed-version-skew` with `matched`, `mismatched` and
+`flag_disagreements` all empty. The same move re-cloaks the E4 `deterministic`
+flip, because the early return happens before the flag comparison.
+
+### What the window does not buy an attacker
+
+**A pass.** `unwitnessed-version-skew` is not in the passing set:
+`counts_downstream()` is false, the record stays self-reported, and nothing
+downstream may cite it. The window buys *silence*, not acceptance — a forged
+record that looks like an ordinary stale binary rather than like a forgery.
+
+### What closes it
+
+**PLAN P9's hermetic version-matched recompute**, which is already an acceptance
+criterion of that phase: "hermetic version-matched recompute or
+`unwitnessed-version-skew`". A verifier that reproduces the claimed regime has
+nothing to skew against, so the window has nowhere to live. Nothing in P1.5
+substitutes for that, and this section exists partly so that a later phase
+cannot quietly decide the criterion is optional.
+
+### What P1.5 does in the meantime
+
+Not detection — **observability**. The spike refuses to let the window be
+silent:
+
+- A `regime-skew` verdict reason names the results whose digests were withheld
+  from the compare and both engine versions involved, so a reader can see that a
+  comparison did not happen, over what, and between which claims.
+- Flag disagreements are computed by the verifier independently of the compare,
+  so flip-plus-skew still reports the flip.
+- Repeated skew on one head escalates to a human after three reports, following
+  R2-4's precedent for repeated base mismatches. One skewed report is a stale
+  binary; three, after two have already come back unusable, is a loop worth
+  interrupting.
+
+### What it explicitly cannot do
+
+**Tell an honest stale binary from a forger wearing one.** They produce
+identical records. `fixtures/honest/version-skew/` and
+`fixtures/gamed/skewed-forge/` differ only in whether the numbers were forged
+afterwards, and both pin the same attestation value and the same `regime-skew`
+marker — deliberately, because a fixture claiming the spike could separate them
+would be a false claim committed to the repository. Treating the skew as
+tampering would be the PREMORTEM S4 wound: every developer a version behind
+accused of gaming.
+
 ## The attestation values
 
 | Value | Means | Counts downstream |

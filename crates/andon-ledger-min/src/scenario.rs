@@ -48,7 +48,7 @@ use andon_core::git::{Git, GitError, Revision};
 use andon_core::schema::enums::{Attestation, InvocationSource, RecordKind, TamperSignal};
 use serde::Deserialize;
 
-use andon_core::schema::payload::AttestationBlock;
+use andon_core::schema::payload::MeasurementRecord;
 
 use crate::measure::{measure, MeasureError};
 use crate::notes::{Notes, NotesError};
@@ -237,6 +237,25 @@ pub struct Expectation {
     /// disagreement — the E4 signature.
     #[serde(default)]
     pub expect_flag_disagreements: bool,
+    /// Verdict reason codes that must be present on the attestation.
+    ///
+    /// The machine-readable half of an expectation, and the only evidence some
+    /// scenarios have. A version-skew cloak produces no digest mismatch and no
+    /// tamper signal — a `regime-skew` reason is what makes it observable at
+    /// all, so a fixture that stages one pins the code here rather than trusting
+    /// prose (P15-R1).
+    #[serde(default)]
+    pub expect_reason_codes: Vec<String>,
+    /// Whether repeated non-passing reports must have escalated to a human.
+    #[serde(default)]
+    pub expect_escalated: bool,
+    /// How many results the verifier's recompute must contain.
+    ///
+    /// A floor stated in the manifest rather than read off whatever the run
+    /// happened to produce. A recompute that measured nothing agrees with every
+    /// other leg that measured nothing (P15-R6b).
+    #[serde(default)]
+    pub expect_result_count: Option<usize>,
     /// Whether to verify as an unprivileged fork job.
     #[serde(default)]
     pub fork_tier: bool,
@@ -361,18 +380,53 @@ pub fn prepare(
     })
 }
 
-/// Check an attestation block against the committed expectation.
+/// Check an attestation record against the committed expectation.
 ///
-/// Takes the block rather than a [`VerifyOutcome`] so that the same check runs
-/// two ways: in-process against what [`crate::verify::verify`] returned, and
-/// after the fact against the note the composite action actually wrote. The
-/// second is what proves the YAML path, not just the code path.
+/// Takes the whole record rather than a [`crate::verify::VerifyOutcome`] so that
+/// the same check runs two ways: in-process against what
+/// [`crate::verify::verify`] returned, and after the fact against the note the
+/// composite action actually wrote. The second is what proves the YAML path,
+/// not just the code path.
+///
+/// The record rather than its attestation block, because some expectations live
+/// outside that block: the verdict reason codes that make a version-skew cloak
+/// observable, and the result-count floor.
 ///
 /// Returns every disagreement rather than the first, so a scenario that has
 /// moved reports what actually happened in one go.
-pub fn check(manifest: &Manifest, attestation: &AttestationBlock) -> Vec<String> {
+pub fn check(manifest: &Manifest, record: &MeasurementRecord) -> Vec<String> {
     let expected = &manifest.verify;
+    let attestation = &record.attestation;
     let mut problems = Vec::new();
+
+    if let Some(wanted) = expected.expect_result_count {
+        if record.results.len() != wanted {
+            problems.push(format!(
+                "expected {wanted} recomputed result(s), observed {}",
+                record.results.len()
+            ));
+        }
+    }
+    let observed_codes: Vec<&str> = record
+        .verdict
+        .reasons
+        .iter()
+        .map(|r| r.code.as_str())
+        .collect();
+    for wanted in &expected.expect_reason_codes {
+        if !observed_codes.contains(&wanted.as_str()) {
+            problems.push(format!(
+                "expected verdict reason '{wanted}', observed {observed_codes:?}"
+            ));
+        }
+    }
+    if expected.expect_escalated != record.verdict.iteration.escalated {
+        problems.push(format!(
+            "expected escalated={}, observed {}",
+            expected.expect_escalated, record.verdict.iteration.escalated
+        ));
+    }
+
     if attestation.value != expected.expect {
         problems.push(format!(
             "expected attestation {:?}, observed {:?}",

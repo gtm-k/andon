@@ -135,3 +135,7 @@ expect = "confirmed"
 expect_tamper = []
 expect_mismatches = false
 expect_flag_disagreements = false
+# The floor the cross-OS matrix asserts against. Four legs agreeing on nothing
+# is four legs agreeing; this pins how much there was to agree about, and it is
+# stated in the manifest rather than read off whatever the run produced.
+expect_result_count = 13

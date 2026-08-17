@@ -1,0 +1,101 @@
+# The version-skew laundering window, staged and pinned (P15-R1).
+#
+# THE ATTACK
+#
+# `engine_version` is self-asserted, it is part of the measurement regime, and
+# the compare checks regime equality BEFORE it looks at a single digest. So a
+# forger does not need to defeat the digest compare — it needs only to avoid it.
+# Measure with any engine version the verifier is not running, forge every
+# number, and the outcome is `unwitnessed-version-skew` with `matched`,
+# `mismatched` and `flag_disagreements` all empty. Compare this fixture with
+# `fixtures/honest/version-skew/`: the two records are indistinguishable.
+#
+# WHAT IS AND IS NOT PINNED HERE
+#
+# Pinned: the outcome **stays non-passing** (`unwitnessed-version-skew` never
+# counts downstream), and the withheld compare is **observable** — a
+# `regime-skew` verdict reason names the results that were not compared and the
+# two engine versions involved. A cloak that leaves a mark is a cloak someone
+# can audit.
+#
+# NOT pinned, because it is not true: that the spike tells this apart from an
+# honest stale binary. It cannot. Both produce the same bytes. An expectation of
+# `divergent` here would be a lie in a fixture file, and would also be the
+# false-tamper wound PREMORTEM S4 exists to prevent — every developer running a
+# version behind would be accused.
+#
+# THE DURABLE FIX IS P9's, AND IT ALREADY EXISTS IN THE PLAN
+#
+# "hermetic version-matched recompute or `unwitnessed-version-skew`" (PLAN P9
+# acceptance criteria). A verifier that reproduces the claimed regime has
+# nothing to skew against, so the window closes. This fixture exists to hold the
+# window open and visible until it does — and to fail loudly if a later phase
+# ever makes a skew silent again.
+
+schema_version = 1
+name = "skewed-forge"
+title = "Forged numbers hidden behind a self-asserted engine version"
+trusted_branch = "main"
+rationale = """
+Should-fail-to-pass, and should-be-observable. The attestation must stay
+non-passing and must carry a machine-readable `regime-skew` reason naming the
+withheld results. If the reason ever disappears, the cloak becomes silent and
+this fixture is the only thing that would have said so.
+"""
+
+[[step]]
+kind = "commit"
+branch = "main"
+label = "base"
+message = "base"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\n"
+
+[[step.file]]
+path = "src/b.ts"
+text = "export const b = 1;\n"
+
+[[step]]
+kind = "branch"
+name = "feature"
+from = "base"
+
+[[step]]
+kind = "commit"
+branch = "feature"
+label = "head"
+message = "feature: a change worth lying about"
+
+[[step.file]]
+path = "src/a.ts"
+text = "export const a = 1;\nexport const a2 = 2;\n"
+
+[[step.file]]
+path = "src/b.ts"
+text = "export const b = 1;\nexport const b2 = 2;\nexport const b3 = 3;\n"
+
+# The cloak: any version the verifier is not running will do.
+[[step]]
+kind = "measure"
+head = "head"
+base = "merge-base"
+engine_version = "0.0.1-not-what-ci-runs"
+
+[[step]]
+kind = "forge"
+commit = "head"
+op = "inflate-metric"
+
+[verify]
+head = "head"
+expect = "unwitnessed-version-skew"
+expect_tamper = []
+# Empty, and that is the finding: the forgery leaves no digest evidence because
+# no digest was ever compared.
+expect_mismatches = false
+expect_flag_disagreements = false
+# The marker that keeps the window from being silent.
+expect_reason_codes = ["regime-skew"]
+expect_escalated = false

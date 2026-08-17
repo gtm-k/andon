@@ -290,7 +290,7 @@ fn cmd_scenario(flags: &Flags) -> Result<ExitCode, String> {
                     attested.len()
                 ));
             };
-            let problems = scenario::check(&manifest, &record.attestation);
+            let problems = scenario::check(&manifest, record);
             if problems.is_empty() {
                 println!(
                     "{}: {:?} as expected",

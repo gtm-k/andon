@@ -80,7 +80,7 @@ fn run(manifest: &Manifest) -> Attestation {
     )
     .unwrap_or_else(|e| panic!("{}: verify failed: {e}", manifest.name));
 
-    let problems = scenario::check(manifest, &outcome.attest_record.attestation);
+    let problems = scenario::check(manifest, &outcome.attest_record);
     assert!(
         problems.is_empty(),
         "{} ({}):\n  {}\n  repository left at {} for inspection",

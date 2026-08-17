@@ -34,6 +34,11 @@
 //!                             flag is set to false, buying the whole record an
 //!                             opt-out from the compare for the price of a
 //!                             boolean the digest does not cover (E4)
+//!   --op flip-one-deterministic
+//!                             the same dodge on exactly ONE result, with every
+//!                             other result left honest — the shape a competent
+//!                             attacker ships, because the record still carries
+//!                             genuine matching pairs
 //!   --op fabricate-base       the claimed base becomes --base-oid: measure
 //!                             against a base where the numbers look good, then
 //!                             claim a different one (R2-4 base-fabrication)
@@ -49,8 +54,9 @@ use andon_core::schema::payload::{MeasurementRecord, MetricValue};
 use andon_ledger_min::notes::{Notes, MEASURE_REF};
 
 const USAGE: &str = "\
-usage: andon-spike-forge --repo <PATH> --commit <SHA> \
---op <inflate-metric|flip-deterministic|fabricate-base> [--base-oid <OID>] [--ref <REF>]";
+usage: andon-spike-forge --repo <PATH> --commit <SHA> --op \
+<inflate-metric|flip-deterministic|flip-one-deterministic|fabricate-base> \
+[--base-oid <OID>] [--ref <REF>]";
 
 fn main() -> ExitCode {
     match run() {
@@ -130,6 +136,20 @@ fn run() -> Result<ExitCode, String> {
                     result.deterministic = false;
                 }
             }
+            "flip-one-deterministic" => {
+                // The subtler shape, and the one a competent attacker actually
+                // ships: every other result stays honest, so the record carries
+                // genuine matching pairs and the compare has plenty to show.
+                // The forged number hides in the single result that claims to be
+                // outside the compare set. `compare.rs`'s PROBE9 pins it at the
+                // unit level; this is it through real git.
+                let Some(target) = pick_one(record) else {
+                    return Err("the record has no results to flip".to_string());
+                };
+                let result = &mut record.results[target];
+                result.deterministic = false;
+                result.value = inflate_value(&result.value);
+            }
             "fabricate-base" => {
                 let oid = args
                     .base_oid
@@ -161,17 +181,40 @@ fn run() -> Result<ExitCode, String> {
 /// everything except a recompute.
 fn inflate(record: &mut MeasurementRecord) {
     for result in &mut record.results {
-        result.value = match &result.value {
-            MetricValue::Count(n) => MetricValue::Count(n.saturating_add(1)),
-            MetricValue::Integer(n) => MetricValue::Integer(n.saturating_add(1)),
-            MetricValue::Duration { millis } => MetricValue::Duration {
-                millis: millis.saturating_add(1),
-            },
-            MetricValue::Ratio(r) => MetricValue::Ratio(r + 0.000_001),
-            MetricValue::Flag(b) => MetricValue::Flag(!b),
-            MetricValue::Text(t) => MetricValue::Text(format!("{t}!")),
-        };
+        result.value = inflate_value(&result.value);
     }
+}
+
+fn inflate_value(value: &MetricValue) -> MetricValue {
+    match value {
+        MetricValue::Count(n) => MetricValue::Count(n.saturating_add(1)),
+        MetricValue::Integer(n) => MetricValue::Integer(n.saturating_add(1)),
+        MetricValue::Duration { millis } => MetricValue::Duration {
+            millis: millis.saturating_add(1),
+        },
+        MetricValue::Ratio(r) => MetricValue::Ratio(r + 0.000_001),
+        MetricValue::Flag(b) => MetricValue::Flag(!b),
+        MetricValue::Text(t) => MetricValue::Text(format!("{t}!")),
+    }
+}
+
+/// Index of the one result a single-result attack targets.
+///
+/// Chosen by sorted `(metric_id, canonical scope)` rather than by position, so
+/// the fixture attacks the same result on every platform and a failure names the
+/// same metric wherever it is reproduced.
+fn pick_one(record: &MeasurementRecord) -> Option<usize> {
+    record
+        .results
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, result)| {
+            (
+                result.metric_id.clone(),
+                andon_core::canonical::to_canonical_string(&result.scope).unwrap_or_default(),
+            )
+        })
+        .map(|(index, _)| index)
 }
 
 /// Re-seal every result against the record's (possibly forged) tuple.

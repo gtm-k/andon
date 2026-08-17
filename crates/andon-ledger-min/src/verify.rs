@@ -35,12 +35,50 @@
 //! verifier pick the flattering half. Worst-of has the opposite failure mode —
 //! a stale record beside a fresh one demotes the pass — and demotion is the
 //! direction R2-4 says to fail in.
+//!
+//! # The version-skew laundering window, and what this module does about it
+//!
+//! `engine_version` is **self-asserted**, it is part of the measurement regime,
+//! and [`classify`] checks regime equality *before* it compares a single digest.
+//! Those three facts together are a cloak: a forger stamps any engine version
+//! the verifier is not running, forges every number, and the outcome is
+//! `unwitnessed-version-skew` with `matched`, `mismatched` and
+//! `flag_disagreements` all empty. The record does not pass — the
+//! `unwitnessed-*` family never counts downstream — but the forgery leaves no
+//! trace, and the same move re-cloaks the E4 `deterministic` flip, because the
+//! early return happens before the flag comparison the flip would otherwise
+//! show up in.
+//!
+//! **The durable fix is not here.** It is PLAN P9's hermetic version-matched
+//! recompute: a verifier that reproduces the claimed regime has nothing to skew
+//! against, so the cloak has no window to live in. That acceptance criterion
+//! already exists and this module cross-references it rather than inventing a
+//! competing one.
+//!
+//! What this module does instead is refuse to let the window be *silent*, using
+//! only what the payload schema already carries:
+//!
+//! - **Regime disagreements are reported.** A `regime-skew` verdict reason names
+//!   the results whose digests were withheld from the compare and the two engine
+//!   versions involved, so a reader sees that a comparison did not happen and
+//!   why, rather than seeing a quiet non-answer.
+//! - **Flag disagreements are computed here, independently of [`classify`].**
+//!   `classify` returns before it can record them under a skew; this module
+//!   pairs the results itself, so flip-plus-skew surfaces the flip anyway.
+//! - **Repeated skew on one head escalates.** Following R2-4's precedent for
+//!   repeated base mismatches: one skewed report is a stale binary, and
+//!   [`REPEAT_ESCALATION_THRESHOLD`] of them on the same head is a party not
+//!   responding to a signal that has already been reported twice.
+//!
+//! What none of that does is *distinguish* an honest stale binary from a forger
+//! wearing one. It cannot: both produce exactly the same record. Saying so is
+//! the point — see `docs/trust-boundary.md`.
 
 use andon_core::compare::{classify, BaseRelation, Classification, CompareInputs};
 use andon_core::git::{Git, GitError, Revision};
 use andon_core::schema::enums::{Attestation, InvocationSource, RecordKind, Verdict};
 use andon_core::schema::payload::{
-    AttestationBlock, MeasurementRecord, VerdictReason, VerifierIdentity,
+    AttestationBlock, MeasurementRecord, MeasurementResult, VerdictReason, VerifierIdentity,
 };
 
 use crate::measure::{measure, MeasureError, TAMPER_SEVERITY};
@@ -81,6 +119,21 @@ pub enum VerifyError {
     },
 }
 
+/// Distinct non-passing self-reports of one kind on a single head before the
+/// outcome escalates to a human.
+///
+/// Set ex ante at three, and the reasoning is the same one R2-4 gives for
+/// repeated base mismatches. One skewed or stale report is an ordinary stale
+/// binary. Two is that binary run twice. A third, after the first two have
+/// already come back as non-passing, is a party that is not reading the answer —
+/// and a loop that keeps producing unusable records is exactly what
+/// `escalate_to_human` exists for (PREMORTEM A4/S6).
+///
+/// A constant rather than a policy field **only because this is the spike**. It
+/// belongs in `.andon.toml` beside the iteration cap, where changing it is a
+/// ledgered edit; P8 moves it there.
+pub const REPEAT_ESCALATION_THRESHOLD: usize = 3;
+
 /// What the verifier was asked to do.
 #[derive(Debug, Clone)]
 pub struct VerifyRequest {
@@ -106,8 +159,19 @@ pub struct VerifyOutcome {
     pub trusted_base_oid: String,
     /// How many self-reports were found on the head commit.
     pub self_reports: usize,
-    /// The base relation of the self-report that produced the outcome.
+    /// The base relation of the self-report that **produced the outcome** — the
+    /// decisive one under the worst-of rule, not whichever happened to be first
+    /// in the note.
     pub base_relation: Option<BaseRelation>,
+    /// How many self-reports on this head disagree with the recompute about the
+    /// measurement regime. The size of the version-skew laundering window.
+    pub skewed_reports: usize,
+    /// How many self-reports on this head claim a base that is an ancestor of
+    /// the trusted branch (stale base or rebase).
+    pub base_mismatched_reports: usize,
+    /// True once repeated non-passing reports of one kind crossed
+    /// [`REPEAT_ESCALATION_THRESHOLD`].
+    pub escalated: bool,
 }
 
 /// Recompute, compare, and produce an attestation.
@@ -143,33 +207,35 @@ pub fn verify(git: &Git, request: &VerifyRequest) -> Result<VerifyOutcome, Verif
     let trusted_base_oid = attest_record.compare_context.base_oid.clone();
 
     let reports = Notes::measure(git).read(&head)?;
-    let classification = worst_classification(git, request, &reports, &attest_record)?;
-    let base_relation = if reports.is_empty() {
-        None
-    } else {
-        Some(base_relation_of(
-            git,
-            &reports[0].compare_context.base_oid,
-            &trusted_base_oid,
-            &request.trusted_branch,
-        )?)
-    };
+    let decision = decide(git, request, &reports, &attest_record)?;
+
+    // Reasons are built while `attest_record` is still the pure recompute, so
+    // the disagreement helpers below compare the report against what the
+    // verifier measured rather than against a record that has already been
+    // stamped with an attestation.
+    let escalated = decision.skewed >= REPEAT_ESCALATION_THRESHOLD
+        || decision.base_mismatched >= REPEAT_ESCALATION_THRESHOLD;
+    let reasons = reasons_for(&decision, &reports, &attest_record, escalated);
 
     attest_record.attestation = AttestationBlock {
-        value: classification.attestation,
-        tamper_signals: classification.tamper_signals.clone(),
+        value: decision.classification.attestation,
+        tamper_signals: decision.classification.tamper_signals.clone(),
         verifier: Some(verifier_identity(&trusted_base_oid)),
-        compare: classification.compare.clone(),
+        compare: decision.classification.compare.clone(),
     };
-    attest_record.verdict.verdict = verdict_for(classification.attestation);
-    attest_record.verdict.reasons = reasons_for(&classification);
+    attest_record.verdict.verdict = verdict_for(decision.classification.attestation, escalated);
+    attest_record.verdict.iteration.escalated = escalated;
+    attest_record.verdict.reasons = reasons;
 
     Ok(VerifyOutcome {
-        attestation: classification.attestation,
+        attestation: decision.classification.attestation,
         attest_record,
         trusted_base_oid,
         self_reports: reports.len(),
-        base_relation,
+        base_relation: decision.base_relation,
+        skewed_reports: decision.skewed,
+        base_mismatched_reports: decision.base_mismatched,
+        escalated,
     })
 }
 
@@ -186,35 +252,67 @@ pub fn attest(git: &Git, request: &VerifyRequest) -> Result<VerifyOutcome, Verif
     Ok(outcome)
 }
 
-/// Classify every self-report and keep the worst. See the module docs.
-fn worst_classification(
+/// Everything the verifier worked out about one head before it is rendered.
+struct Decision {
+    /// The outcome, from the worst-of report.
+    classification: Classification,
+    /// Which report produced it. `None` when there were no reports.
+    decisive: Option<usize>,
+    /// The decisive report's base relation.
+    base_relation: Option<BaseRelation>,
+    /// Reports whose regime disagrees with the recompute.
+    skewed: usize,
+    /// Reports claiming an ancestor base.
+    base_mismatched: usize,
+}
+
+/// Classify every self-report, keep the worst, and count the kinds.
+///
+/// The counts are taken over **all** reports rather than the decisive one,
+/// because the escalation question is "how many times has this head been handed
+/// a record nobody can use", not "what did the loudest one say".
+fn decide(
     git: &Git,
     request: &VerifyRequest,
     reports: &[MeasurementRecord],
     recompute: &MeasurementRecord,
-) -> Result<Classification, VerifyError> {
+) -> Result<Decision, VerifyError> {
     if reports.is_empty() {
-        return Ok(classify(
-            None,
-            recompute,
-            CompareInputs {
-                // Immaterial with no report to compare, and `Equal` is the
-                // honest value: the verifier's base is its own.
-                base_relation: BaseRelation::Equal,
-                head_equal: true,
-                fork_tier: request.fork_tier,
-            },
-        ));
+        return Ok(Decision {
+            classification: classify(
+                None,
+                recompute,
+                CompareInputs {
+                    // Immaterial with no report to compare, and `Equal` is the
+                    // honest value: the verifier's base is its own.
+                    base_relation: BaseRelation::Equal,
+                    head_equal: true,
+                    fork_tier: request.fork_tier,
+                },
+            ),
+            decisive: None,
+            base_relation: None,
+            skewed: 0,
+            base_mismatched: 0,
+        });
     }
 
-    let mut worst: Option<Classification> = None;
-    for report in reports {
+    let mut worst: Option<(usize, Classification, BaseRelation)> = None;
+    let mut skewed = 0;
+    let mut base_mismatched = 0;
+    for (index, report) in reports.iter().enumerate() {
         let base_relation = base_relation_of(
             git,
             &report.compare_context.base_oid,
             &recompute.compare_context.base_oid,
             &request.trusted_branch,
         )?;
+        if base_relation == BaseRelation::Ancestor {
+            base_mismatched += 1;
+        }
+        if !regime_disagreements(report, recompute).is_empty() {
+            skewed += 1;
+        }
         let outcome = classify(
             Some(report),
             recompute,
@@ -226,13 +324,83 @@ fn worst_classification(
         );
         let replace = match &worst {
             None => true,
-            Some(current) => rank(outcome.attestation) > rank(current.attestation),
+            Some((_, current, _)) => rank(outcome.attestation) > rank(current.attestation),
         };
         if replace {
-            worst = Some(outcome);
+            worst = Some((index, outcome, base_relation));
         }
     }
-    Ok(worst.expect("the report list is non-empty"))
+    let (decisive, classification, base_relation) = worst.expect("the report list is non-empty");
+    Ok(Decision {
+        classification,
+        decisive: Some(decisive),
+        base_relation: Some(base_relation),
+        skewed,
+        base_mismatched,
+    })
+}
+
+/// Results the two sides both produced, paired by `(metric_id, scope)`.
+///
+/// A local copy of the pairing `classify` does internally, because the
+/// disagreements below have to be computable **after** `classify` has already
+/// returned early — which is the whole point of computing them here.
+fn pairs<'a>(
+    report: &'a MeasurementRecord,
+    recompute: &'a MeasurementRecord,
+) -> Vec<(&'a MeasurementResult, &'a MeasurementResult)> {
+    report
+        .results
+        .iter()
+        .filter_map(|reported| {
+            recompute
+                .results
+                .iter()
+                .find(|r| r.metric_id == reported.metric_id && r.scope == reported.scope)
+                .map(|recomputed| (reported, recomputed))
+        })
+        .collect()
+}
+
+/// Paired results whose measurement regimes disagree.
+///
+/// Returns `(metric_id, claimed engine version, verifier engine version)`. The
+/// versions are carried because "the regimes differ" is not actionable and
+/// "the report claims engine 0.0.1-pre-history where this verifier runs 0.1.0"
+/// is.
+fn regime_disagreements(
+    report: &MeasurementRecord,
+    recompute: &MeasurementRecord,
+) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = pairs(report, recompute)
+        .into_iter()
+        .filter(|(a, b)| a.measurement_regime != b.measurement_regime)
+        .map(|(a, b)| {
+            (
+                a.metric_id.clone(),
+                a.measurement_regime.engine_version().to_string(),
+                b.measurement_regime.engine_version().to_string(),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Paired results the two sides disagree about the `deterministic` flag on.
+///
+/// Computed here rather than read off `CompareOutcome`, because a regime
+/// mismatch makes `classify` return before it records any — which is how a
+/// forger re-cloaks the E4 flip by stamping a version alongside it.
+fn flag_disagreements(report: &MeasurementRecord, recompute: &MeasurementRecord) -> Vec<String> {
+    let mut out: Vec<String> = pairs(report, recompute)
+        .into_iter()
+        .filter(|(a, b)| a.deterministic != b.deterministic)
+        .map(|(a, _)| a.metric_id.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// How a claimed base relates to what the verifier trusts.
@@ -298,7 +466,14 @@ fn rank(value: Attestation) -> u8 {
 /// verdict CI computes from its own recompute; the spike's three size counts
 /// produce no findings, so the second axis has nothing to contribute yet and
 /// pretending otherwise would be a claim this phase has not earned.
-fn verdict_for(attestation: Attestation) -> Verdict {
+fn verdict_for(attestation: Attestation, escalated: bool) -> Verdict {
+    // Escalation outranks the neutral outcomes and nothing else: a `block` is
+    // already the strongest thing this axis can say, and turning it into
+    // `escalate_to_human` would soften an accusation into a request for
+    // attention.
+    if escalated && !matches!(attestation, Attestation::Divergent) {
+        return Verdict::EscalateToHuman;
+    }
     match attestation {
         Attestation::Divergent => Verdict::Block,
         Attestation::Confirmed | Attestation::ConfirmedStatic => Verdict::Pass,
@@ -311,11 +486,40 @@ fn verdict_for(attestation: Attestation) -> Verdict {
     }
 }
 
-fn reasons_for(classification: &Classification) -> Vec<VerdictReason> {
+/// Machine-readable reason codes this module emits.
+///
+/// Named constants because a workflow, a report, and the fixture manifests all
+/// branch on them, and a code that exists only as a string literal in one
+/// `format!` is a contract nobody can see.
+pub mod reason {
+    /// A tamper signal fired in the attestation lane.
+    pub const TAMPER_SIGNAL: &str = "tamper-signal";
+    /// Digests were compared and disagreed.
+    pub const DIGEST_MISMATCH: &str = "digest-mismatch";
+    /// The two sides disagree about a result's `deterministic` flag.
+    pub const FLAG_DISAGREEMENT: &str = "deterministic-flag-disagreement";
+    /// A regime mismatch withheld results from the compare.
+    pub const REGIME_SKEW: &str = "regime-skew";
+    /// Repeated skewed reports on one head.
+    pub const REPEATED_REGIME_SKEW: &str = "repeated-regime-skew";
+    /// Repeated ancestor-base reports on one head.
+    pub const REPEATED_BASE_MISMATCH: &str = "repeated-base-mismatch";
+}
+
+/// Why the verdict is what it is, one entry per contributing cause.
+fn reasons_for(
+    decision: &Decision,
+    reports: &[MeasurementRecord],
+    recompute: &MeasurementRecord,
+    escalated: bool,
+) -> Vec<VerdictReason> {
+    use andon_core::schema::enums::Severity;
+
+    let classification = &decision.classification;
     let mut reasons = Vec::new();
     for signal in &classification.tamper_signals {
         reasons.push(VerdictReason {
-            code: "tamper-signal".to_string(),
+            code: reason::TAMPER_SIGNAL.to_string(),
             severity: TAMPER_SEVERITY,
             message: format!("{signal:?} raised by the attestation lane"),
             metric_ids: Vec::new(),
@@ -324,7 +528,7 @@ fn reasons_for(classification: &Classification) -> Vec<VerdictReason> {
     if let Some(compare) = &classification.compare {
         if !compare.mismatched.is_empty() {
             reasons.push(VerdictReason {
-                code: "digest-mismatch".to_string(),
+                code: reason::DIGEST_MISMATCH.to_string(),
                 severity: TAMPER_SEVERITY,
                 message: format!(
                     "{} result(s) recomputed to a different value than was self-reported",
@@ -333,18 +537,79 @@ fn reasons_for(classification: &Classification) -> Vec<VerdictReason> {
                 metric_ids: compare.mismatched.clone(),
             });
         }
-        if !compare.flag_disagreements.is_empty() {
+    }
+
+    // The two disagreements below are computed from the decisive report rather
+    // than read off `CompareOutcome`, so they survive an early return. Under a
+    // regime mismatch `classify` never reaches the flag comparison, and a
+    // forger who stamps a version alongside an E4 flip would otherwise buy
+    // silence for both.
+    if let Some(report) = decision.decisive.map(|index| &reports[index]) {
+        let flags = flag_disagreements(report, recompute);
+        if !flags.is_empty() {
             reasons.push(VerdictReason {
-                code: "deterministic-flag-disagreement".to_string(),
+                code: reason::FLAG_DISAGREEMENT.to_string(),
                 // Recorded, not accused: an engine version can legitimately
                 // change whether a metric is seed-free. It is visible because a
                 // signal nobody can see is a signal that does not exist.
-                severity: andon_core::schema::enums::Severity::Low,
+                severity: Severity::Low,
                 message: format!(
                     "{} result(s) disagree with the verifier about the `deterministic` flag",
-                    compare.flag_disagreements.len()
+                    flags.len()
                 ),
-                metric_ids: compare.flag_disagreements.clone(),
+                metric_ids: flags,
+            });
+        }
+
+        let regimes = regime_disagreements(report, recompute);
+        if !regimes.is_empty() {
+            let (_, claimed, verifier) = &regimes[0];
+            reasons.push(VerdictReason {
+                code: reason::REGIME_SKEW.to_string(),
+                // Not an accusation. A stale binary produces exactly this, and
+                // so does a forger wearing one — the spike cannot tell them
+                // apart, which is why the window is documented rather than
+                // policed. What this reason buys is that the withheld compare
+                // is *visible*: someone reading the record can see that a
+                // comparison did not happen, over which results, and between
+                // which two claimed engine versions.
+                severity: Severity::Low,
+                message: format!(
+                    "{} result(s) were withheld from the digest compare: the report claims \
+                     engine {claimed} where this verifier ran {verifier}. \
+                     A version-matched recompute (PLAN P9) is what closes this.",
+                    regimes.len()
+                ),
+                metric_ids: regimes.iter().map(|(id, _, _)| id.clone()).collect(),
+            });
+        }
+    }
+
+    if escalated {
+        if decision.skewed >= REPEAT_ESCALATION_THRESHOLD {
+            reasons.push(VerdictReason {
+                code: reason::REPEATED_REGIME_SKEW.to_string(),
+                severity: Severity::Medium,
+                message: format!(
+                    "{} self-reports on this head disagree with the verifier's regime; \
+                     the measurement has now been unusable {} times and a human should \
+                     look at why (PLAN R2-4 escalation precedent)",
+                    decision.skewed, decision.skewed
+                ),
+                metric_ids: Vec::new(),
+            });
+        }
+        if decision.base_mismatched >= REPEAT_ESCALATION_THRESHOLD {
+            reasons.push(VerdictReason {
+                code: reason::REPEATED_BASE_MISMATCH.to_string(),
+                severity: Severity::Medium,
+                message: format!(
+                    "{} self-reports on this head claim a base that is merely an ancestor \
+                     of the trusted branch; repeated mismatches on one PR escalate \
+                     (PLAN R2-4)",
+                    decision.base_mismatched
+                ),
+                metric_ids: Vec::new(),
             });
         }
     }
@@ -429,17 +694,17 @@ mod tests {
     #[test]
     fn only_confirmations_pass() {
         for value in [Attestation::Confirmed, Attestation::ConfirmedStatic] {
-            assert_eq!(verdict_for(value), Verdict::Pass);
+            assert_eq!(verdict_for(value, false), Verdict::Pass);
             assert!(value.counts_downstream());
         }
-        assert_eq!(verdict_for(Attestation::Divergent), Verdict::Block);
+        assert_eq!(verdict_for(Attestation::Divergent, false), Verdict::Block);
         for value in [
             Attestation::Unwitnessed,
             Attestation::UnwitnessedVersionSkew,
             Attestation::UnwitnessedBaseMismatch,
         ] {
             assert_eq!(
-                verdict_for(value),
+                verdict_for(value, false),
                 Verdict::Advise,
                 "{value:?} is neutral, never an accusation"
             );

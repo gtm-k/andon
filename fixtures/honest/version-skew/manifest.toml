@@ -62,3 +62,8 @@ expect = "unwitnessed-version-skew"
 expect_tamper = []
 expect_mismatches = false
 expect_flag_disagreements = false
+# The same marker `fixtures/gamed/skewed-forge` pins. Identical here, and that
+# identity IS the finding: at spike level an honest stale binary and a forger
+# wearing one produce the same record. P9's hermetic recompute is what tells
+# them apart.
+expect_reason_codes = ["regime-skew"]
