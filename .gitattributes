@@ -16,6 +16,13 @@
 crates/andon-registry-lint/tests/fixtures/**  -text
 fixtures/**     -text
 
+# ...but a script that *builds* a fixture is not fixture data, and the rule
+# above would otherwise win by being later and leave it byte-exact — which on a
+# Windows checkout means a CRLF shebang, which is not executable. The perf gate
+# went red on `/usr/bin/env: 'bash': No such file or directory` before this
+# line existed.
+fixtures/**/*.sh  text eol=lf
+
 # Generated contract artifacts, so a diff is a real schema change.
 schemas/*.json  text eol=lf linguist-generated=true
 
