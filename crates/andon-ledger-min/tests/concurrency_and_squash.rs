@@ -22,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
-use andon_core::git::{Git, Revision};
+use andon_core::git::{Git, GitCommand, Revision};
 use andon_core::schema::enums::{Attestation, InvocationSource, RecordKind};
 use andon_ledger_min::measure::measure;
 use andon_ledger_min::notes::{Notes, ATTEST_REF, MEASURE_REF};
@@ -44,13 +44,29 @@ fn bootstrap() -> Git {
     Git::open(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("the crate lives in a repository")
 }
 
-/// Run a git command that writes a commit object, with an identity attached.
-fn commit(git: &Git, message: &str) {
-    let mut cmd = git.cmd(["commit", "--quiet", "--allow-empty", "-m", message]);
+/// Attach a committer identity to a git invocation.
+///
+/// The fixture repositories deliberately have **no** `user.name` or
+/// `user.email` configured, because that is what a CI checkout looks like and
+/// because `Git::cmd` sweeps every inherited `GIT_*` variable. Setting the
+/// identity in each repository's config would be the easy fix and would also
+/// stop testing the thing that matters: the notes module carries its own
+/// identity precisely so the ledger works in a repository that has none. Left
+/// configured, that would go untested and break the first time it ran on a
+/// runner.
+///
+/// So the identity is attached here, at the fixture's own commit-writing
+/// spawns, and nowhere else.
+fn identified(mut cmd: GitCommand) -> GitCommand {
     for (key, value) in WHO {
         cmd = cmd.env(key, value);
     }
-    cmd.output()
+    cmd
+}
+
+fn commit(git: &Git, message: &str) {
+    identified(git.cmd(["commit", "--quiet", "--allow-empty", "-m", message]))
+        .output()
         .unwrap_or_else(|e| panic!("commit {message}: {e}"));
 }
 
@@ -227,7 +243,11 @@ fn two_concurrent_attestations_survive_a_squash_merge_and_a_shallow_clone() {
 
     let mut landed = Vec::new();
     for (branch, source) in [("pr-one", &pr_one), ("pr-two", &pr_two)] {
-        a.cmd(["merge", "--squash", branch])
+        // `merge --squash` writes no commit, and still needs an identity: git
+        // resolves the committer for the reflog entry before it discovers it
+        // will not be committing. Found on a runner, not on a laptop — a
+        // developer machine has a global identity and never sees it.
+        identified(a.cmd(["merge", "--squash", branch]))
             .output()
             .unwrap_or_else(|e| panic!("squash-merge {branch}: {e}"));
         commit(&a, &format!("squash: {branch}"));
