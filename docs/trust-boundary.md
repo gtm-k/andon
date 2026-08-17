@@ -310,9 +310,18 @@ rather than leaving anyone to wonder whether a tree-sitter grammar was at fault.
 | Version skew → skew, not divergence | `fixtures/honest/version-skew/` |
 | Forged numbers → `divergent` | `fixtures/gamed/inflated-metric/` |
 | Flipped `deterministic` cannot escape the compare | `fixtures/gamed/flipped-deterministic/` |
+| …nor can flipping one result among honest ones | `fixtures/gamed/flipped-one-deterministic/` |
 | Fabricated base → `base-fabrication` → `divergent` | `fixtures/gamed/fabricated-base/` |
+| A skew cloak stays non-passing and stays visible | `fixtures/gamed/skewed-forge/` |
+| A flip hidden behind a skew is still reported | `crates/andon-ledger-min/tests/kernel_attacks.rs` |
+| Repeated skew on one head escalates | same |
+| An honest record beside a forged one launders nothing | same |
+| Deleting the self-report demotes without erasing the attestation | same |
+| A dead remote is an error, not an empty ledger | same |
+| A squash migration merges rather than overwrites | same |
 | Concurrent attestations survive a notes merge | `crates/andon-ledger-min/tests/concurrency_and_squash.rs` |
 | Squash-migrated records survive on what landed | same |
 | A shallow clone still gets the whole ledger | same |
 | The measuring binary cannot forge a record | `crates/andon-ledger-min/tests/binary_separation.rs` |
 | The verifier refuses a merge-ref checkout | `crates/andon-ledger-min/tests/verdict_set.rs` |
+| Every gamed fixture pins a non-pass carrying evidence | same (direction binding) |
