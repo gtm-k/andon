@@ -52,11 +52,34 @@ const ONE_CASE: &str = "it('adds', () => { expect(add(1, 2)).toBe(3); });\n";
 /// An unclosed JSX element. Everything after it is JSX text rather than code:
 /// the `it(` calls are not calls to a parser, and the region is an ERROR.
 ///
-/// Chosen over a syntax error because tree-sitter's recovery is *good* — it
-/// finds calls and function definitions inside an ERROR subtree, and a plain
-/// broken brace leaves the cases perfectly visible. What hides code is a
-/// construct that changes how the bytes are **lexed**, and an unclosed tag in a
-/// `.tsx` file is the least conspicuous one there is: it looks like a fixture.
+/// # This is one hiding shape, and the fix does not depend on knowing them all
+///
+/// It would be comfortable to claim that only a lexer-level swallow can hide a
+/// test and that ordinary syntax errors recover. Measured, that is false, and
+/// the two halves fail in different directions:
+///
+/// | shape | test-removal | degraded |
+/// |---|---|---|
+/// | `export const Fixture = <div>` — unclosed tag, rest becomes JSX text | silent | yes (8 ERROR) |
+/// | `function f( {` — unclosed scope wrapping the rest of the file | **silent** | yes (3 ERROR, 2 MISSING) |
+/// | `const y = foo(1, 2 ;` — a localized missing paren | fires, 1 case | yes (2 MISSING) |
+///
+/// So tree-sitter's recovery is not the safety property. It is *unreliable* in
+/// both directions: it finds calls and definitions inside an ERROR subtree when
+/// the damage is local, and loses them when the broken construct swallows the
+/// scope the tests are in. Which of those happens is a property of the grammar's
+/// recovery on that byte sequence, and nothing here should be written as though
+/// it were predictable.
+///
+/// The invariant this fix rests on is the other one, and it is not shape-aware:
+/// **any tree carrying an ERROR or a MISSING node demotes the results computed
+/// over it.** The third row is the direction that error runs — a detector that
+/// recovered fine and found the removal is still marked `parse-degraded`,
+/// because the engine cannot know it got away with it. Conservative, and the
+/// only version of this that is safe to be wrong about.
+///
+/// The unclosed tag is the fixture because it is the most deniable of the three:
+/// it looks like a component, in a file where a component belongs.
 const OPENS_JSX: &str = "export const Fixture = <div>\n";
 
 fn context() -> MeasureContext {

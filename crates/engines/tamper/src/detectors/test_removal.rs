@@ -130,8 +130,29 @@ struct Counts {
 ///
 /// The health travels with the counts because it qualifies them: cases inside a
 /// region the parser could not read are not in `cases`, and nothing downstream
-/// can tell that from a file that genuinely had none. A path no grammar reads
-/// returns a default health — nothing was parsed, so no parse hid anything.
+/// can tell that from a file that genuinely had none.
+///
+/// # Two ways to be silent and `complete`, both of them honest
+///
+/// The demotion is for a parse that was attempted and did not finish. Two
+/// neighbouring cases look identical from outside — no cases counted, no caveat
+/// — and neither is PREMORTEM T3:
+///
+/// * **Cases inside a terminated `/* */` comment.** The file parses cleanly,
+///   the health is zero, and no cases are counted because there are none: code
+///   in a closed comment was not running before the change either, so there is
+///   nothing to report as removed. The parser understood the file perfectly and
+///   the answer is complete.
+/// * **A test file in a language no grammar here reads.** `Parsed::new` returns
+///   `None`, so this returns a default health — nothing was parsed, so no parse
+///   hid anything. What that file needs is a marker saying it went unmeasured,
+///   which is the static engine's `unmeasured-files` job and is `unwitnessed`
+///   rather than `parse-degraded`; claiming a degraded parse here would name a
+///   failure that did not happen.
+///
+/// T3 is the third case and the only one this qualifies: a parse that *was*
+/// attempted, half-succeeded, and dropped code on the floor while the result
+/// went out saying it was complete.
 fn count(path: &str, source: &[u8]) -> (Counts, ParseHealth) {
     let Some(parsed) = Parsed::new(path, source) else {
         return (Counts::default(), ParseHealth::default());
