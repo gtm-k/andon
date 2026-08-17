@@ -47,6 +47,41 @@ use std::collections::BTreeMap;
 /// result, never as a coverage figure computed from the part that fitted.
 pub const MAX_REPORT_BYTES: usize = 32 * 1024 * 1024;
 
+/// Deepest element nesting this engine will hand to the XML parser.
+///
+/// # The failure this prevents is an abort, not an error
+///
+/// `roxmltree`'s tokenizer recurses once per nesting level, and a deep document
+/// exhausts the thread's stack. A stack overflow is **not a panic**: it aborts
+/// the process, `catch_unwind` cannot see it, and no `Result` is ever returned.
+/// The size cap above never fires, because the document does not need to be
+/// large — measured here, a **14 KB** file is enough. The parser's `nodes_limit`
+/// does not help either: it bounds how many nodes a document may have, not how
+/// deeply they nest.
+///
+/// So the depth is counted **before** the parser is given anything, by
+/// [`max_element_depth`], which is an iterative scan and cannot itself recurse.
+///
+/// # Why 64 and not something larger
+///
+/// Measured on this workspace (Windows, main thread), the depth at which
+/// `roxmltree` 0.20 aborts:
+///
+/// | profile | survives | aborts |
+/// |---|---|---|
+/// | debug | 165 | 170 |
+/// | release | 500 | 2000 |
+///
+/// A limit near the debug figure would leave `cargo test` — and any developer
+/// run — one moderately nested document away from an abort, and the numbers move
+/// with the profile, the platform, and the thread's stack size (a libtest thread
+/// and a main thread do not get the same one). A real coverage report nests
+/// about seven elements: `coverage / packages / package / classes / class /
+/// lines / line`. Sixty-four is an order of magnitude above every real document
+/// and a factor of two and a half below the worst measured abort, which is the
+/// right side of both numbers to be on.
+pub const MAX_ELEMENT_DEPTH: usize = 64;
+
 /// Report formats this engine understands.
 ///
 /// Cobertura and coverage.py share a document shape — coverage.py writes the
@@ -105,6 +140,20 @@ pub enum ReportError {
     Unrecognized {
         /// The file that was examined.
         path: String,
+    },
+    /// The document nests deeper than [`MAX_ELEMENT_DEPTH`].
+    ///
+    /// A refusal rather than a parse, because the parse would not fail — it
+    /// would abort the process. See [`MAX_ELEMENT_DEPTH`].
+    #[error(
+        "coverage report {path} nests {depth} elements deep, above the limit of \
+         {MAX_ELEMENT_DEPTH}; a real coverage report nests about seven"
+    )]
+    TooDeep {
+        /// The report that was refused.
+        path: String,
+        /// The depth reached, so the operator can see how far off it is.
+        depth: usize,
     },
 }
 
@@ -184,6 +233,74 @@ pub fn normalize_path(path: &str) -> String {
     let slashed = path.replace('\\', "/");
     let trimmed = slashed.trim_start_matches("./");
     trimmed.to_string()
+}
+
+/// The deepest element nesting in an XML document, counted without recursing.
+///
+/// A byte scan, not a parse. It has to run *before* the parser sees the
+/// document — the thing it protects against aborts the process rather than
+/// returning an error — so it cannot lean on anything the parser knows, and it
+/// must not have the property it is guarding against. There is no call stack
+/// here: one pass, one counter.
+///
+/// It is deliberately generous about malformedness. Anything it cannot make
+/// sense of it skips, and a document that survives this scan still has to
+/// satisfy `roxmltree`. Being approximate is safe in one direction only, and
+/// this is that direction: the scan is an upper bound on nesting for any
+/// well-formed document, so a document it passes cannot nest deeper than it
+/// reported.
+///
+/// The four constructs that are skipped wholesale rather than counted —
+/// comments, CDATA, processing instructions, and declarations — are skipped
+/// because each may contain a `<` that opens nothing. Counting one would let a
+/// commented-out fragment inflate the depth of an innocent file.
+pub fn max_element_depth(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    let mut depth = 0usize;
+    let mut max = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] != b'<' {
+            index += 1;
+            continue;
+        }
+        let rest = &bytes[index..];
+        if rest.starts_with(b"<!--") {
+            index += find_after(rest, b"-->").unwrap_or(rest.len());
+        } else if rest.starts_with(b"<![CDATA[") {
+            index += find_after(rest, b"]]>").unwrap_or(rest.len());
+        } else if rest.starts_with(b"<?") {
+            index += find_after(rest, b"?>").unwrap_or(rest.len());
+        } else if rest.starts_with(b"<!") {
+            // A declaration: `<!DOCTYPE ...>`, `<!ENTITY ...>`. Each ends at its
+            // own `>`; a DOCTYPE's internal subset is a run of them, and none of
+            // them opens an element.
+            index += find_after(rest, b">").unwrap_or(rest.len());
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            index += find_after(rest, b">").unwrap_or(rest.len());
+        } else {
+            let end = find_after(rest, b">").unwrap_or(rest.len());
+            let self_closing = end >= 2 && rest[end - 2] == b'/';
+            if !self_closing {
+                depth += 1;
+                max = max.max(depth);
+            } else {
+                max = max.max(depth + 1);
+            }
+            index += end;
+        }
+    }
+    max
+}
+
+/// Offset just past the first occurrence of `needle`, if there is one.
+fn find_after(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|at| at + needle.len())
 }
 
 /// Join a `<source>` prefix to a class filename, in normalized form.
@@ -278,5 +395,102 @@ mod tests {
         );
         assert_eq!(join_source("", "src/a.py"), "src/a.py");
         assert_eq!(join_source("/build", "/abs/src/a.py"), "/abs/src/a.py");
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+
+    fn nested(depth: usize) -> String {
+        let mut doc = String::from("<coverage>");
+        for _ in 0..depth {
+            doc.push_str("<a>");
+        }
+        doc.push_str("<packages/>");
+        for _ in 0..depth {
+            doc.push_str("</a>");
+        }
+        doc.push_str("</coverage>");
+        doc
+    }
+
+    #[test]
+    fn a_document_deep_enough_to_abort_the_process_is_refused_instead() {
+        // The finding, pinned. Before the guard this test did not fail — it
+        // killed the test binary: a stack overflow is an abort, not a panic, so
+        // there is nothing for a `#[should_panic]` or a `catch_unwind` to see.
+        // The assertion that matters as much as the error value is that the
+        // process is still here to make it.
+        let doc = nested(2000);
+        assert!(
+            doc.len() < 20 * 1024,
+            "the point of this input is that it is small: {} bytes",
+            doc.len()
+        );
+        match CoverageReport::parse("coverage.xml", doc.as_bytes()) {
+            Err(ReportError::TooDeep { depth, .. }) => {
+                assert!(depth > MAX_ELEMENT_DEPTH, "reported depth {depth}")
+            }
+            other => panic!("expected a typed refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_document_at_a_depth_that_would_abort_a_debug_build_is_refused() {
+        // Measured on this workspace: a debug build aborts between 165 and 170,
+        // which is why the limit is 64 and not the 256 that the release-build
+        // figure would have allowed. A test suite runs debug.
+        assert!(matches!(
+            CoverageReport::parse("coverage.xml", nested(170).as_bytes()),
+            Err(ReportError::TooDeep { .. })
+        ));
+    }
+
+    #[test]
+    fn a_real_shaped_report_is_nowhere_near_the_limit() {
+        // Guarding is only worth having if it does not refuse real files. A
+        // cobertura document nests seven: coverage / packages / package /
+        // classes / class / lines / line.
+        let text = r#"<coverage><packages><package><classes>
+            <class filename="a.ts"><lines><line number="1" hits="1"/></lines></class>
+        </classes></package></packages></coverage>"#;
+        assert_eq!(max_element_depth(text), 7);
+        assert!(CoverageReport::parse("coverage.xml", text.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn a_valid_document_just_under_the_limit_still_parses() {
+        let doc = nested(MAX_ELEMENT_DEPTH - 2);
+        assert!(CoverageReport::parse("coverage.xml", doc.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn the_scan_counts_elements_and_not_the_angle_brackets_around_them() {
+        // Each of these carries a `<` that opens nothing. Counting one would let
+        // a commented-out fragment inflate an innocent file's depth — and, worse
+        // for a guard, would make the depth of a document depend on its prose.
+        assert_eq!(max_element_depth("<a><!-- <b><c><d> --></a>"), 1);
+        assert_eq!(max_element_depth("<a><![CDATA[ <b><c> ]]></a>"), 1);
+        assert_eq!(max_element_depth("<?xml version=\"1.0\"?><a></a>"), 1);
+        assert_eq!(
+            max_element_depth("<!DOCTYPE x [ <!ENTITY e \"v\"> ]><a><b/></a>"),
+            2
+        );
+    }
+
+    #[test]
+    fn a_self_closing_element_is_counted_once_and_then_closed() {
+        assert_eq!(max_element_depth("<a><b/><b/><b/></a>"), 2);
+        assert_eq!(max_element_depth("<a><b><c/></b></a>"), 3);
+    }
+
+    #[test]
+    fn an_unterminated_tag_does_not_hang_or_overcount() {
+        // Malformedness is the parser's to report; this scan only has to answer
+        // and stop.
+        assert_eq!(max_element_depth("<a><b"), 2);
+        assert_eq!(max_element_depth("<!-- unterminated"), 0);
+        assert_eq!(max_element_depth(""), 0);
     }
 }

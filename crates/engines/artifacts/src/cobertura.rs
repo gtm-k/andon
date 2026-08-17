@@ -37,13 +37,33 @@
 
 use std::collections::BTreeMap;
 
-use crate::report::{join_source, normalize_path, CoverageReport, ReportError, ReportFormat};
+use crate::report::{
+    join_source, max_element_depth, normalize_path, CoverageReport, ReportError, ReportFormat,
+    MAX_ELEMENT_DEPTH,
+};
 
 /// Parser version, stamped into `MeasurementRegime::Artifacts`.
 pub const PARSER_VERSION: &str = "1";
 
 /// Parse a Cobertura-shaped XML document.
 pub fn parse(source_path: &str, text: &str) -> Result<CoverageReport, ReportError> {
+    // Before the parser sees a byte. `roxmltree`'s tokenizer recurses per
+    // nesting level, and a deep document overflows the stack — which aborts the
+    // process rather than returning an error, so there is no version of this
+    // check that runs afterwards. Measured: 14 KB is enough. See
+    // `MAX_ELEMENT_DEPTH`.
+    //
+    // The guard is here rather than only in `CoverageReport::parse` because this
+    // function is public: a caller who found their own XML must be as safe as
+    // one who went through the sniff.
+    let depth = max_element_depth(text);
+    if depth > MAX_ELEMENT_DEPTH {
+        return Err(ReportError::TooDeep {
+            path: source_path.to_string(),
+            depth,
+        });
+    }
+
     let document = roxmltree::Document::parse(text).map_err(|err| ReportError::Malformed {
         path: source_path.to_string(),
         detail: err.to_string(),
