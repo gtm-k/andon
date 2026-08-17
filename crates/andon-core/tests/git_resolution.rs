@@ -13,7 +13,7 @@ use std::path::Path;
 
 use andon_core::git::{
     BlobBatch, BlobError, ChangeStatus, ChangedSet, Content, ContentLane, DirtySnapshot, Endpoint,
-    Git, ResolveError, ResolvedRange, Revision, SnapshotMode,
+    Git, GitError, ResolveError, ResolvedRange, Revision, SnapshotMode,
 };
 use common::TestRepo;
 
@@ -471,6 +471,70 @@ fn a_half_finished_rebase_is_refused_rather_than_measured() {
         "{err}"
     );
     repo.try_run(&["rebase", "--abort"]);
+}
+
+#[test]
+fn a_conflicted_index_is_refused_even_with_no_operation_marker() {
+    // The hole in `in_progress_operation`, which reads git's marker files: a
+    // conflicting `git stash pop` leaves unmerged index entries and writes no
+    // marker at all, so resolution walks straight past the check and the
+    // snapshot is the only thing standing between a conflicted tree and a cache
+    // key that claims to describe it.
+    let dir = scratch("conflicted-index");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"original\n", "base");
+    repo.write("src/a.ts", b"stashed edit\n");
+    repo.run(&["stash", "--quiet"]);
+    repo.commit_file("src/a.ts", b"committed edit\n", "diverge");
+    assert!(
+        !repo.try_run(&["stash", "pop"]),
+        "the fixture depends on this stash pop conflicting"
+    );
+
+    // The precondition that makes this a hole and not a duplicate of the
+    // suspended-rebase test: git left nothing for the marker check to find.
+    let git_dir = repo.git().facts().git_dir.clone();
+    for marker in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "BISECT_LOG",
+        "rebase-merge",
+        "rebase-apply",
+    ] {
+        assert!(
+            !git_dir.join(marker).exists(),
+            "{marker} exists, so this fixture would be refused by the marker \
+             check and would prove nothing about the snapshot"
+        );
+    }
+
+    let head = repo.rev_parse("HEAD");
+    let err = DirtySnapshot::incremental(repo.git(), &head, false)
+        .expect_err("a conflicted path cannot be keyed");
+    match &err {
+        GitError::ConflictedTree { path } => assert_eq!(path, "src/a.ts"),
+        other => panic!("expected ConflictedTree, got {other}"),
+    }
+    assert!(
+        err.to_string().contains("unmerged"),
+        "the message a user reads has to name the condition: {err}"
+    );
+
+    // And the whole resolution refuses too, rather than returning a snapshot
+    // that silently omitted the conflicted path.
+    let refused = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD".into()),
+        &Revision::Worktree,
+    )
+    .expect_err("resolution carries the refusal out");
+    assert!(
+        matches!(refused, ResolveError::Git(GitError::ConflictedTree { .. })),
+        "{refused}"
+    );
+
+    repo.try_run(&["checkout", "--force", "HEAD", "--", "src/a.ts"]);
 }
 
 // ---------------------------------------------------------------------------

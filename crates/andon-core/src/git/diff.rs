@@ -40,7 +40,10 @@ pub enum ChangeStatus {
     Copied,
     /// Type changed, e.g. a file became a symlink or a gitlink.
     TypeChanged,
-    /// Unmerged. Only reachable mid-conflict, which resolution refuses first.
+    /// Unmerged. Reachable from a raw diff over a conflicted index; the
+    /// snapshot path refuses such a tree outright
+    /// ([`super::command::GitError::ConflictedTree`]) because a path with
+    /// competing stages has no single content to key on.
     Unmerged,
     /// git reported a letter this version does not know.
     Unknown,

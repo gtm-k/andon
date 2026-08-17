@@ -174,7 +174,7 @@ impl DirtySnapshot {
         let mut entries: BTreeMap<String, DirtyEntry> = BTreeMap::new();
         let mut to_hash: Vec<String> = Vec::new();
 
-        for record in parse_porcelain_v2(&raw) {
+        for record in parse_porcelain_v2(&raw)? {
             let PorcelainEntry {
                 path,
                 status,
@@ -330,12 +330,18 @@ struct PorcelainEntry {
 /// Parse `git status --porcelain=v2 -z`.
 ///
 /// Ordinary changes are `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`; untracked
-/// files are `? <path>`; ignored are `! <path>`; unmerged are `u …`, which
-/// resolution refuses before reaching here. Rename records (`2 …`) carry a second
-/// path in the following NUL field and cannot appear under `--no-renames`, but
-/// the parser skips their extra field anyway rather than desynchronizing if a
-/// future call site drops the flag.
-fn parse_porcelain_v2(raw: &[u8]) -> Vec<PorcelainEntry> {
+/// files are `? <path>`; ignored are `! <path>`. Rename records (`2 …`) carry a
+/// second path in the following NUL field and cannot appear under
+/// `--no-renames`, but the parser skips their extra field anyway rather than
+/// desynchronizing if a future call site drops the flag.
+///
+/// Unmerged records (`u …`) are a **typed refusal**, not a skip. See
+/// [`GitError::ConflictedTree`]: a path with competing stages has no single
+/// content, and a snapshot that quietly omitted it would key the rest of the
+/// tree under a digest claiming to cover all of it. Resolution refuses
+/// in-progress operations before this runs, but it does so from git's marker
+/// files, and an index can hold conflicts after those are gone.
+fn parse_porcelain_v2(raw: &[u8]) -> Result<Vec<PorcelainEntry>, GitError> {
     let mut records = split_nul(raw);
     let mut out = Vec::new();
 
@@ -345,6 +351,18 @@ fn parse_porcelain_v2(raw: &[u8]) -> Vec<PorcelainEntry> {
         let Some(kind) = fields.next() else { continue };
 
         match kind {
+            // `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>` — ten
+            // fields before the path, so the path is recovered with its own
+            // split rather than from the eight-field one above.
+            "u" => {
+                return Err(GitError::ConflictedTree {
+                    path: text
+                        .splitn(11, ' ')
+                        .nth(10)
+                        .unwrap_or(text.as_ref())
+                        .to_string(),
+                })
+            }
             "?" | "!" => {
                 let path = text[2.min(text.len())..].to_string();
                 if path.is_empty() {
@@ -388,12 +406,13 @@ fn parse_porcelain_v2(raw: &[u8]) -> Vec<PorcelainEntry> {
                     untracked: false,
                 });
             }
-            // `u` (unmerged) and the header lines (`#`) are not dirty state we
-            // can key on; resolution refuses a conflicted tree before this runs.
+            // The header lines (`#`), and anything a future git adds. Neither
+            // is dirty state, and an unknown kind carries no path we would key
+            // on — unlike `u`, which is refused above.
             _ => continue,
         }
     }
-    out
+    Ok(out)
 }
 
 fn keep_present(mode: &str) -> Option<String> {
@@ -584,7 +603,7 @@ mod tests {
         // The whole reason for v2 over v1: these two OIDs arrive free, where v1
         // would need a second full scan of the index to learn them.
         let raw = b"1 .M N... 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb src/a.ts\0";
-        let parsed = parse_porcelain_v2(raw);
+        let parsed = parse_porcelain_v2(raw).expect("no unmerged record");
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].path, "src/a.ts");
         assert_eq!(parsed[0].status, ".M");
@@ -596,7 +615,7 @@ mod tests {
     #[test]
     fn a_deleted_path_has_no_worktree_mode() {
         let raw = b"1 .D N... 100644 100644 000000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa src/gone.ts\0";
-        let parsed = parse_porcelain_v2(raw);
+        let parsed = parse_porcelain_v2(raw).expect("no unmerged record");
         assert_eq!(parsed[0].worktree_mode, None);
         assert_eq!(parsed[0].head_mode.as_deref(), Some("100644"));
     }
@@ -604,10 +623,38 @@ mod tests {
     #[test]
     fn an_untracked_file_is_reported_with_its_path_intact() {
         let raw = b"? src/new file.ts\0";
-        let parsed = parse_porcelain_v2(raw);
+        let parsed = parse_porcelain_v2(raw).expect("no unmerged record");
         assert_eq!(parsed[0].path, "src/new file.ts");
         assert!(parsed[0].untracked);
         assert_eq!(parsed[0].head_oid, None);
+    }
+
+    #[test]
+    fn an_unmerged_record_is_refused_and_names_the_path() {
+        // Ten fields precede the path on a `u` record, which is why it gets its
+        // own split. A parser that reused the eight-field one would report a
+        // stage OID as the conflicted path.
+        let raw = b"u UU N... 100644 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccc src/conflicted.ts\0";
+        match parse_porcelain_v2(raw) {
+            Err(GitError::ConflictedTree { path }) => assert_eq!(path, "src/conflicted.ts"),
+            Err(other) => panic!("expected a ConflictedTree refusal, got {other}"),
+            Ok(entries) => panic!(
+                "expected a ConflictedTree refusal, got {} parsed entries",
+                entries.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn one_unmerged_path_refuses_the_whole_snapshot() {
+        // Not "the conflicted entry is dropped and the rest is keyed": the rest
+        // would then be hashed under a digest claiming to describe the whole
+        // tree.
+        let raw = b"1 .M N... 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb src/clean-edit.ts\0u UU N... 100644 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccc src/conflicted.ts\0";
+        assert!(matches!(
+            parse_porcelain_v2(raw),
+            Err(GitError::ConflictedTree { .. })
+        ));
     }
 
     #[test]
@@ -616,7 +663,7 @@ mod tests {
         // consumed the wrong number of NUL fields would attribute every later
         // record to the wrong path — silently.
         let raw = b"2 R. N... 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb R100 new.ts\0old.ts\0? after.ts\0";
-        let parsed = parse_porcelain_v2(raw);
+        let parsed = parse_porcelain_v2(raw).expect("no unmerged record");
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].path, "new.ts");
         assert_eq!(parsed[1].path, "after.ts");

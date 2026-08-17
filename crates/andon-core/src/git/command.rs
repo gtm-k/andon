@@ -199,6 +199,27 @@ pub enum GitError {
         /// The path that was probed.
         path: String,
     },
+    /// The working tree holds an unmerged path: a merge, rebase, or cherry-pick
+    /// left conflict markers and more than one stage of the same file in the
+    /// index.
+    ///
+    /// A refusal rather than a skip. A conflicted path has two or three
+    /// competing contents and no single one that is "what the tree holds", so
+    /// any snapshot that covers it is a snapshot of a state that does not exist.
+    /// Dropping the record silently would key the *rest* of the tree under a
+    /// digest that claims to describe the whole of it —
+    /// [`super::resolve::ResolvedRange::resolve`] refuses in-progress operations
+    /// first, but that check reads git's marker files and a conflict can outlive
+    /// them (`git merge --no-commit` that conflicts, an aborted operation whose
+    /// markers were cleaned while the index was not).
+    #[error(
+        "{path} is unmerged; a conflicted tree has no single content to key on \
+         (resolve the conflict, or abort the operation that created it)"
+    )]
+    ConflictedTree {
+        /// The unmerged path, as git reported it.
+        path: String,
+    },
 }
 
 /// A repository, and the only handle that can spawn git against it.
