@@ -10,7 +10,10 @@
 //!    trusted branch is a stale base or a rebase — `unwitnessed-base-mismatch`,
 //!    a non-tamper outcome that is still not a pass. A base that is *not* an
 //!    ancestor, or is an unknown OID, is `base-fabrication` and forces
-//!    `divergent`.
+//!    `divergent`. Inside this step the base relation is settled *before* the
+//!    head is looked at, so a fabricated base whose head also moved is still
+//!    `base-fabrication` — fabricating two halves of the tuple must not earn
+//!    the gentler outcome that fabricating one earns.
 //! 2. **Regime equality second.** Different engine, grammar, or git versions
 //!    produce legitimately different numbers. `unwitnessed-version-skew`, never
 //!    `divergent` (PREMORTEM S4).
@@ -101,25 +104,13 @@ pub fn classify(
         };
     };
 
-    // Step 1 — tuple equality.
-    if !inputs.head_equal {
-        // A different head is a different change entirely; treat it as the
-        // strongest form of mismatch rather than guessing at intent.
-        return Classification {
-            attestation: Attestation::UnwitnessedBaseMismatch,
-            tamper_signals: Vec::new(),
-            compare: Some(tuple_failure_outcome()),
-        };
-    }
+    // Step 1 — tuple equality. The base relation is settled before the head is
+    // looked at, because tamper evidence outranks a mismatch (PLAN R2-4): a
+    // fabricated base is a fabricated base whether or not the head also moved,
+    // and checking the head first let the loudest signal in the tuple be
+    // absorbed by the quieter one. Fabricating both is not a way to be treated
+    // more gently than fabricating one.
     match inputs.base_relation {
-        BaseRelation::Equal => {}
-        BaseRelation::Ancestor => {
-            return Classification {
-                attestation: Attestation::UnwitnessedBaseMismatch,
-                tamper_signals: Vec::new(),
-                compare: Some(tuple_failure_outcome()),
-            };
-        }
         BaseRelation::NotAncestor | BaseRelation::Unknown => {
             return Classification {
                 attestation: Attestation::Divergent,
@@ -127,6 +118,23 @@ pub fn classify(
                 compare: Some(tuple_failure_outcome()),
             };
         }
+        BaseRelation::Ancestor => {
+            return Classification {
+                attestation: Attestation::UnwitnessedBaseMismatch,
+                tamper_signals: Vec::new(),
+                compare: Some(tuple_failure_outcome()),
+            };
+        }
+        BaseRelation::Equal => {}
+    }
+    if !inputs.head_equal {
+        // A different head on an equal base is a different change entirely;
+        // treat it as a mismatch rather than guessing at intent.
+        return Classification {
+            attestation: Attestation::UnwitnessedBaseMismatch,
+            tamper_signals: Vec::new(),
+            compare: Some(tuple_failure_outcome()),
+        };
     }
 
     // Step 2 — regime equality, over results both sides produced.
@@ -356,6 +364,49 @@ mod tests {
             classify(None, &recompute, fork).attestation,
             Attestation::ConfirmedStatic
         );
+    }
+
+    #[test]
+    fn a_fabricated_base_outranks_a_mismatched_head() {
+        // The precedence corner. With the head checked first, moving the head
+        // as well as forging the base bought the record the non-tamper outcome
+        // — the mismatch demotion absorbed the accusation.
+        let report = sample_record();
+        let recompute = sample_record();
+        for relation in [BaseRelation::NotAncestor, BaseRelation::Unknown] {
+            let out = classify(
+                Some(&report),
+                &recompute,
+                CompareInputs {
+                    base_relation: relation,
+                    head_equal: false,
+                    fork_tier: false,
+                },
+            );
+            assert_eq!(out.attestation, Attestation::Divergent, "{relation:?}");
+            assert_eq!(
+                out.tamper_signals,
+                vec![TamperSignal::BaseFabrication],
+                "{relation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mismatched_head_on_an_equal_base_is_still_a_mismatch() {
+        let report = sample_record();
+        let recompute = sample_record();
+        let out = classify(
+            Some(&report),
+            &recompute,
+            CompareInputs {
+                base_relation: BaseRelation::Equal,
+                head_equal: false,
+                fork_tier: false,
+            },
+        );
+        assert_eq!(out.attestation, Attestation::UnwitnessedBaseMismatch);
+        assert!(out.tamper_signals.is_empty());
     }
 
     /// Give a result a scope the other side will not match, so it cannot pair.
