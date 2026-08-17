@@ -274,8 +274,17 @@ pub enum GitError {
         argv: String,
         /// Which property the path fails.
         detail: String,
-        /// The path rendered lossily — wrong by construction, and the only way
-        /// to tell the operator which file to look at.
+        /// The offending git output rendered lossily — wrong by construction,
+        /// and the only way to point an operator at the file.
+        ///
+        /// Not always the path alone. Where the parser had the path in isolation
+        /// this is the path; where it had a whole record — porcelain v2 hands
+        /// over status letters, modes, and both blob OIDs in the same field as
+        /// the path — this is that record. Deliberately, and not just because
+        /// slicing invalid UTF-8 back to one field is fiddly: the record is
+        /// *more* use to whoever has to find the file than the mangled name is
+        /// on its own. The doc said "the path" and the code always said this;
+        /// the doc was the wrong half.
         lossy: String,
     },
 }

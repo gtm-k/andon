@@ -877,7 +877,14 @@ mod tests {
         let raw = b"1 .M N... 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb src/\xff.ts\0";
         match parse_porcelain_v2(raw) {
             Err(GitError::UnrepresentablePath { lossy, .. }) => {
-                assert!(lossy.contains("src/"), "the operator needs a signpost")
+                // The whole record, not the bare path: on this lane the path
+                // arrives in the same field as the status letters and both blob
+                // OIDs, and all of it helps whoever has to find the file.
+                assert!(lossy.contains("src/"), "the operator needs a signpost");
+                assert!(
+                    lossy.starts_with("1 .M"),
+                    "and the record it came in: {lossy}"
+                );
             }
             Err(other) => panic!("expected UnrepresentablePath, got {other}"),
             Ok(entries) => panic!("expected a refusal, got {} entries", entries.len()),
