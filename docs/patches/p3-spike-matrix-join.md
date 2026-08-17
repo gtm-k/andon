@@ -60,6 +60,12 @@ Two clones of one fixture is not the cross-OS claim — that is what the matrix
 legs are for. It is the claim that the plumbing in this patch works, which is
 the part a patch file can be wrong about.
 
+Re-run after repair round 1, which moved both engines' measurement regimes
+(clones `rules2`, tamper rule pack 2) and therefore every digest. Same two exit
+zeros, same 14 and 9. The counts are exact — `compare-records` treats
+`--expect-results` as equality — so if either moves, this patch's numbers move
+with it.
+
 ---
 
 ## Patch 1 — `.github/workflows/spike-matrix.yml`
