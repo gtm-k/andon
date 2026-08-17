@@ -1,0 +1,311 @@
+# Evidence registry for the static-metrics engine (P2).
+#
+# Eight claim tuples against the enforced budget of 24 (PREMORTEM S2, policy
+# `registry.claim_budget`). Ten metrics cite them: size and parse health are
+# language-agnostic and share one claim each; cyclomatic and cognitive
+# complexity are claim-scoped per language, because the evidence is.
+#
+# WHY THE COMPLEXITY IDS CARRY A LANGUAGE
+# ---------------------------------------
+# A metric declaration maps to exactly one claim, and a claim is scoped to one
+# implementation at one version in one language predicting one outcome
+# (PRE-DECISIONS: "claim-scoped, never family-wide"). A single
+# `static.cognitive-complexity` citing the TypeScript claim while emitting
+# Python numbers would be the overstatement this registry exists to prevent, so
+# the ids are suffixed and each cites its own language's claim. The illustration
+# in `registry/README.md` predates the three-language reality.
+#
+# TIERS COME FROM THE COMMITTED CATALOGUE
+# ---------------------------------------
+# `docs/metric-families.csv` is this repository's evidence record and grades
+# size **A**, cyclomatic **B**, cognitive **B**. Those gradings are reproduced
+# here rather than re-judged. Where a claim extrapolates beyond its source's
+# population — and cognitive complexity's validation population is dominated by
+# Java — the extrapolation is named in `does_not_predict` rather than hidden in
+# a tier. That is what the honesty field is for.
+#
+# Every `citation_ref` below was resolved at doi.org on 2026-08-17 and its title
+# and venue checked against the record. One candidate DOI was rejected in the
+# process for resolving to an unrelated paper.
+#
+# EXPIRY STAGGER IS A CROSS-PHASE CONSTRAINT
+# ------------------------------------------
+# The lint's limit of three claims per calendar month
+# (policy `registry.max_claims_expiring_per_month`) applies to the **merged**
+# registry, not to this file — so staggering has to be done against what the
+# other engine files claim, which no single phase's lint run can see.
+#
+# P4 has taken 2027-01, -02, -04, -06, -09 and -10. This file therefore uses
+# 2027-03, -05, -07 and -08, two per month:
+#
+#   2027-03   sloc, parse-health
+#   2027-05   cyclomatic: typescript, javascript
+#   2027-07   cyclomatic: python, cognitive: typescript
+#   2027-08   cognitive: javascript, python
+#
+# Two per month rather than the permitted three, and in months nobody else has
+# touched, so that P3's seven claims and the two held back for P5b/P9 still have
+# a free slot in every month of the year. A phase that fills its months to the
+# cap has not staggered, it has just not overflowed yet — and the phase that
+# discovers the overflow is the one that has to renegotiate somebody else's
+# dates.
+#
+# Re-review is a pull request against this file; see `registry/README.md`.
+
+schema_version = 1
+engine = "static-metrics"
+family = "static"
+
+# ----------------------------------------------------------------- metrics
+
+[[metric]]
+metric_id = "static.sloc"
+claim_id = "andon.static.sloc@1|any|maintenance-effort"
+# A control variable, never a target. Almost every "sophisticated" metric is
+# partly re-measuring size, so an agent asked to reduce a line count optimizes
+# the confound (PREMORTEM A4).
+class = "context-informational"
+deterministic = true
+
+[[metric]]
+metric_id = "static.parse-errors"
+claim_id = "andon.static.parse-health@1|any|parse-completeness"
+# Diff-actionable on purpose. A file the change made unparsable is the agent's
+# to fix, and rising parse errors are the PREMORTEM T3 evasion route — the one
+# static metric that must stay able to reach MED+ on a degraded file.
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "static.parse-missing"
+claim_id = "andon.static.parse-health@1|any|parse-completeness"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "static.unmeasured-files"
+claim_id = "andon.static.parse-health@1|any|parse-completeness"
+# Usually a fact about the repository rather than about the change: a file whose
+# bytes are not in the object database, or are not UTF-8. Reported so the
+# undercount is visible, not so it can block.
+class = "context-informational"
+deterministic = true
+
+[[metric]]
+metric_id = "static.unmeasured-file"
+claim_id = "andon.static.parse-health@1|any|parse-completeness"
+# Diff-actionable, unlike the change-scope count above: this one names a
+# specific file in the change, and a file the change made unreadable is the
+# change's to fix. Without it a file can leave measurement entirely and the only
+# trace is a counter going up — which is PREMORTEM T3 in its purest form.
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "static.cyclomatic-complexity.typescript"
+claim_id = "andon.static.cyclomatic@1|typescript|minimum-test-paths"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "static.cyclomatic-complexity.javascript"
+claim_id = "andon.static.cyclomatic@1|javascript|minimum-test-paths"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "static.cyclomatic-complexity.python"
+claim_id = "andon.static.cyclomatic@1|python|minimum-test-paths"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "static.cognitive-complexity.typescript"
+claim_id = "andon.static.cognitive@1|typescript|comprehension-time"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "static.cognitive-complexity.javascript"
+claim_id = "andon.static.cognitive@1|javascript|comprehension-time"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "static.cognitive-complexity.python"
+claim_id = "andon.static.cognitive@1|python|comprehension-time"
+class = "diff-actionable"
+deterministic = true
+
+# ------------------------------------------------------------------ claims
+
+[[claim]]
+claim_id = "andon.static.sloc@1|any|maintenance-effort"
+implementation = "andon.static.sloc"
+implementation_version = "1"
+language = "any"
+outcome = "maintenance-effort"
+tier = "A"
+citation = "Sjoberg, Yamashita, Anda, Mockus & Dyba, IEEE Trans. Software Engineering 39(8):1144-1156, 2013"
+citation_ref = "10.1109/TSE.2012.89"
+population = "professional maintenance work on Java systems, with twelve code smells assessed against measured effort; the finding this claim rests on is the one recorded in docs/metric-families.csv"
+effect = "after adjusting for file size, none of twelve code smells predicted maintenance effort; only size and low cohesion did"
+does_not_predict = [
+    "that a smaller file is a better file — size is the confound to control for, not the thing to reduce",
+    "defect density in this file",
+    "comprehension time",
+    "anything at all about a repository-level total, which is dominated by how much software exists",
+]
+owner = "gtm-k"
+expiry = "2027-03-02"
+
+[[claim]]
+claim_id = "andon.static.parse-health@1|any|parse-completeness"
+implementation = "andon.static.parse-health"
+implementation_version = "1"
+language = "any"
+outcome = "parse-completeness"
+tier = "N"
+citation = "None. An instrument reading, introduced by PREMORTEM T3."
+# No `citation_ref`. The field is optional and P10a's registry automation
+# resolves the ones that are there, so a pointer at this repository's own docs
+# would be a link that fails a check designed to find broken citations — and
+# would dress an instrument reading as a cited one. There is no source because
+# there is no claim.
+population = "none - no study underlies this number; it is a property of this engine's parse of this file at the pinned grammar version"
+effect = "none claimed; the count of ERROR and MISSING nodes tree-sitter produced, and the count of changed files that produced no measurement at all"
+does_not_predict = [
+    "code quality, in any direction",
+    "that the author wrote invalid code — a pinned grammar predating a language feature produces the same reading",
+    "defect density, maintainability, or review effort",
+]
+owner = "gtm-k"
+expiry = "2027-03-16"
+
+[[claim]]
+claim_id = "andon.static.cyclomatic@1|typescript|minimum-test-paths"
+implementation = "andon.static.cyclomatic"
+implementation_version = "1"
+language = "typescript"
+outcome = "minimum-test-paths"
+tier = "B"
+citation = "Landman, Serebrenik, Bouwers & Vinju, J. Software: Evolution and Process 28(7):589-618, 2016"
+citation_ref = "10.1002/smr.1760"
+population = "17.6M Java methods and 6.3M C functions; no TypeScript was studied"
+effect = "cyclomatic complexity correlates with SLOC but not strongly enough at method level to be redundant with it"
+does_not_predict = [
+    "defect density",
+    "comprehension time — cognitive complexity is the metric with human-subject validation for that",
+    "maintenance effort",
+    "anything at a repository-level average, where the correlation with size dominates",
+    "behaviour in TypeScript specifically: the studied corpora were Java and C, and this claim extrapolates the definition to a language nobody measured it in",
+]
+owner = "gtm-k"
+expiry = "2027-05-04"
+
+[[claim]]
+claim_id = "andon.static.cyclomatic@1|javascript|minimum-test-paths"
+implementation = "andon.static.cyclomatic"
+implementation_version = "1"
+language = "javascript"
+outcome = "minimum-test-paths"
+tier = "B"
+citation = "Landman, Serebrenik, Bouwers & Vinju, J. Software: Evolution and Process 28(7):589-618, 2016"
+citation_ref = "10.1002/smr.1760"
+population = "17.6M Java methods and 6.3M C functions; no JavaScript was studied"
+effect = "cyclomatic complexity correlates with SLOC but not strongly enough at method level to be redundant with it"
+does_not_predict = [
+    "defect density",
+    "comprehension time",
+    "maintenance effort",
+    "anything at a repository-level average",
+    "behaviour in JavaScript specifically: the studied corpora were Java and C, and this claim extrapolates the definition to a language nobody measured it in",
+]
+owner = "gtm-k"
+expiry = "2027-05-18"
+
+[[claim]]
+claim_id = "andon.static.cyclomatic@1|python|minimum-test-paths"
+implementation = "andon.static.cyclomatic"
+implementation_version = "1"
+language = "python"
+outcome = "minimum-test-paths"
+tier = "B"
+citation = "Landman, Serebrenik, Bouwers & Vinju, J. Software: Evolution and Process 28(7):589-618, 2016"
+citation_ref = "10.1002/smr.1760"
+population = "17.6M Java methods and 6.3M C functions; no Python was studied"
+effect = "cyclomatic complexity correlates with SLOC but not strongly enough at method level to be redundant with it"
+does_not_predict = [
+    "defect density",
+    "comprehension time",
+    "maintenance effort",
+    "anything at a repository-level average",
+    "behaviour in Python specifically: the studied corpora were Java and C, and this claim extrapolates the definition to a language nobody measured it in",
+]
+owner = "gtm-k"
+expiry = "2027-07-06"
+
+[[claim]]
+claim_id = "andon.static.cognitive@1|typescript|comprehension-time"
+implementation = "andon.static.cognitive"
+implementation_version = "1"
+language = "typescript"
+outcome = "comprehension-time"
+tier = "B"
+citation = "Munoz Baron, Wyrich & Wagner, ESEM 2020"
+citation_ref = "10.1145/3382494.3410636"
+population = "meta-analysis over 427 code snippets and roughly 24k human ratings drawn from 27 studies; the primary studies are dominated by Java"
+effect = "correlates with the time humans take to comprehend a snippet, and with their subjective ratings; mixed for correctness and for physiological measures"
+does_not_predict = [
+    "defect density",
+    "correctness",
+    "review effort",
+    "comprehension time in TypeScript specifically: the validation population is dominated by Java, and this claim extrapolates the model across languages",
+    "the published model exactly: this implementation does not apply the JavaScript declarative-outer exception, so a function whose body is wholly a nested declaration reads one nesting level higher here than the specification says",
+    "comprehension time under this crate's clean-room implementation unless it agrees with the published model — the claim is scoped to andon.static.cognitive@1 and is wrong if it does not",
+]
+owner = "gtm-k"
+expiry = "2027-07-20"
+
+[[claim]]
+claim_id = "andon.static.cognitive@1|javascript|comprehension-time"
+implementation = "andon.static.cognitive"
+implementation_version = "1"
+language = "javascript"
+outcome = "comprehension-time"
+tier = "B"
+citation = "Munoz Baron, Wyrich & Wagner, ESEM 2020"
+citation_ref = "10.1145/3382494.3410636"
+population = "meta-analysis over 427 code snippets and roughly 24k human ratings drawn from 27 studies; the primary studies are dominated by Java"
+effect = "correlates with the time humans take to comprehend a snippet, and with their subjective ratings; mixed for correctness and for physiological measures"
+does_not_predict = [
+    "defect density",
+    "correctness",
+    "review effort",
+    "comprehension time in JavaScript specifically: the validation population is dominated by Java, and this claim extrapolates the model across languages",
+    "the published model exactly: this implementation does not apply the JavaScript declarative-outer exception, so a function whose body is wholly a nested declaration reads one nesting level higher here than the specification says",
+    "comprehension time under this crate's clean-room implementation unless it agrees with the published model",
+]
+owner = "gtm-k"
+expiry = "2027-08-03"
+
+[[claim]]
+claim_id = "andon.static.cognitive@1|python|comprehension-time"
+implementation = "andon.static.cognitive"
+implementation_version = "1"
+language = "python"
+outcome = "comprehension-time"
+tier = "B"
+citation = "Munoz Baron, Wyrich & Wagner, ESEM 2020"
+citation_ref = "10.1145/3382494.3410636"
+population = "meta-analysis over 427 code snippets and roughly 24k human ratings drawn from 27 studies; the primary studies are dominated by Java"
+effect = "correlates with the time humans take to comprehend a snippet, and with their subjective ratings; mixed for correctness and for physiological measures"
+does_not_predict = [
+    "defect density",
+    "correctness",
+    "review effort",
+    "comprehension time in Python specifically: the validation population is dominated by Java, and this claim extrapolates the model across languages",
+    "comprehension time under this crate's clean-room implementation unless it agrees with the published model",
+]
+owner = "gtm-k"
+expiry = "2027-08-17"

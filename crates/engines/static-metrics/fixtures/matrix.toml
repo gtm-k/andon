@@ -1,0 +1,144 @@
+# The cross-OS determinism fixture for the static family (PLAN B4).
+#
+# Every file here exists to break one specific way of getting cross-OS
+# determinism wrong. Deleting one does not make the fixture smaller, it makes it
+# blind:
+#
+#   src/clean.ts        LF throughout. The control.
+#   src/crlf.ts         CRLF in the blob. A Windows checkout leaves it alone and
+#                       mangles everything else, which is the point.
+#   src/mixed.py        Both endings in one file, which no normalization fixes.
+#   src/伝票/計測.py    A non-ASCII path. CJK rather than accented Latin: macOS
+#                       normalizes filenames to NFD, so `ü` would decompose on
+#                       one leg and not the others and the digest would differ on
+#                       a fixture nobody tampered with. CJK has no decomposed
+#                       form. (Same reasoning as fixtures/honest/determinism.)
+#   src/tail.js         No final newline. An off-by-one in line counting lands
+#                       here.
+#   src/broken.ts       Does not parse. `completeness: parse-degraded` is INSIDE
+#                       the per-result digest input, so this file is what proves
+#                       three operating systems agree about WHICH file was
+#                       degraded and by how much — not merely that clean files
+#                       agree.
+#   src/lib.rs          The tokenization tier: a raw string containing `//`, a
+#                       character literal holding `/`, and a lifetime. Size only,
+#                       and no parse-health results at all.
+#   docs/notes.md       Out of scope. Must produce no results AND must not count
+#                       as unmeasured — this engine never claimed markdown.
+#   src/gone.tsx        Deleted in the head commit. A deletion is not an
+#                       undercount; there is nothing there to measure.
+#
+# There is deliberately NO .gitattributes. Each leg clones with its runner's own
+# git config, so on Windows the working tree fills with CRLF nobody committed.
+# The compared lane reads blobs, so the digests must agree regardless.
+
+schema_version = 1
+name = "static-determinism"
+rationale = "Static-metric per-result digests must be byte-identical on Linux, macOS and Windows, over content and paths chosen to break every known route to divergence — including a file the parser only half understands."
+branch = "main"
+
+# The floor, stated here rather than read off whatever a run produced. Legs that
+# each measured nothing agree perfectly about nothing. `tests/matrix_fixture.rs`
+# holds the engine to this number, and the matrix workflow passes it to
+# `andon-spike compare-records --expect-results`.
+#
+# The accounting, so a change to it has to be argued rather than re-run:
+#
+#   1   change scope        static.unmeasured-files
+#   3   src/clean.ts        sloc + parse-errors + parse-missing
+#   6                       two functions x (sloc, cyclomatic, cognitive)
+#   3   src/crlf.ts         file scope
+#   3                       one function
+#   3   src/mixed.py        file scope
+#   3                       one function
+#   3   src/伝票/計測.py    file scope
+#   3                       one function
+#   3   src/tail.js         file scope
+#   3                       one function
+#   3   src/broken.ts       file scope
+#   3                       ONE function — the parser recovers `ok()` from the
+#                           wreckage and the garbage below it does not become a
+#                           second one. Every one of these three is
+#                           `parse-degraded`; the parse-errors count beside them
+#                           is not, because counting ERROR nodes over a broken
+#                           tree is exact.
+#   1   src/lib.rs          sloc only: the tokenization tier reports no parse
+#                           health, because there was no parse.
+#   0   docs/notes.md       out of scope, and NOT unmeasured
+#   0   src/gone.tsx        deleted; nothing there to measure
+#   ---
+#   41
+expect_result_count = 41
+
+# --------------------------------------------------------------- base commit
+
+[[commit]]
+label = "base"
+message = "fixture: the base tree"
+
+[[commit.file]]
+path = "src/clean.ts"
+text = "// A clean TypeScript file, LF throughout.\nexport function classify(value: number): string {\n  if (value > 10) {\n    return \"big\";\n  }\n  return \"small\";\n}\n"
+
+[[commit.file]]
+path = "src/crlf.ts"
+text = "// CRLF in the blob, on purpose.\r\nexport function shout(text: string): string {\r\n  return text.toUpperCase();\r\n}\r\n"
+
+[[commit.file]]
+path = "src/mixed.py"
+text = "# Both line endings, in one file.\r\ndef classify(value):\n    if value > 10:\r\n        return \"big\"\n    return \"small\"\r\n"
+
+[[commit.file]]
+path = "src/伝票/計測.py"
+text = "# A non-ASCII path. The path is inside the per-result digest.\ndef total(rows):\n    return sum(rows)\n"
+
+[[commit.file]]
+path = "src/lib.rs"
+text = "//! The tokenization tier.\n\npub fn describe(text: &str) -> &str {\n    let pattern = r\"// not a comment\";\n    if text.is_empty() { pattern } else { text }\n}\n"
+
+[[commit.file]]
+path = "src/gone.tsx"
+text = "export const Widget = () => null;\n"
+
+[[commit.file]]
+path = "docs/notes.md"
+text = "# Notes\n\nThis file is out of scope for the static family.\n"
+
+# --------------------------------------------------------------- head commit
+
+[[commit]]
+label = "change"
+message = "fixture: the measured change"
+remove = ["src/gone.tsx"]
+
+[[commit.file]]
+path = "src/clean.ts"
+text = "// A clean TypeScript file, LF throughout.\nexport function classify(value: number): string {\n  if (value > 10) {\n    return \"big\";\n  }\n  return \"small\";\n}\n\nexport function summarize(rows: number[]): number {\n  let total = 0;\n  for (const row of rows) {\n    if (row > 0 && row < 100) {\n      total += row;\n    }\n  }\n  return total;\n}\n"
+
+[[commit.file]]
+path = "src/crlf.ts"
+text = "// CRLF in the blob, on purpose.\r\nexport function shout(text: string): string {\r\n  if (text.length === 0) {\r\n    return \"\";\r\n  }\r\n  return text.toUpperCase();\r\n}\r\n"
+
+[[commit.file]]
+path = "src/mixed.py"
+text = "# Both line endings, in one file.\r\ndef classify(value):\n    if value > 10:\r\n        return \"big\"\n    elif value > 5:\r\n        return \"medium\"\n    return \"small\"\r\n"
+
+[[commit.file]]
+path = "src/伝票/計測.py"
+text = "# A non-ASCII path. The path is inside the per-result digest.\ndef total(rows):\n    if not rows:\n        return 0\n    return sum(rows)\n"
+
+[[commit.file]]
+path = "src/tail.js"
+text = "// No terminator on the last line.\nexport function last(xs) {\n  return xs[xs.length - 1];\n}"
+
+[[commit.file]]
+path = "src/broken.ts"
+text = "// The parser will recover, and will say what it could not read.\nexport function ok(a: number): number {\n  return a;\n}\n\nfunction )( @@@ ][ {\n"
+
+[[commit.file]]
+path = "src/lib.rs"
+text = "//! The tokenization tier.\n\npub fn describe<'a>(text: &'a str) -> &'a str {\n    let pattern = r\"// not a comment\";\n    let slash = '/';\n    let _ = slash;\n    if text.is_empty() { pattern } else { text }\n}\n"
+
+[[commit.file]]
+path = "docs/notes.md"
+text = "# Notes\n\nThis file is out of scope for the static family, and changing it must not\nproduce a result or an unmeasured count.\n"

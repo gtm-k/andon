@@ -1,0 +1,84 @@
+schema_version = 1
+recorded_at = "2026-08-17"
+run_ref = "local re-record for the p2-static-2 spec revision"
+
+[regime]
+javascript = "0.23.1"
+python = "0.23.6"
+spec_revision = "p2-static-2"
+tree-sitter = "0.25.10"
+tsx = "0.23.2"
+typescript = "0.23.2"
+
+[[language]]
+name = "typescript"
+files = 221
+degraded_files = 4
+error_nodes = 29
+missing_nodes = 4
+total_nodes = 70045
+unreadable_files = 0
+
+[[language]]
+name = "tsx"
+files = 14
+degraded_files = 0
+error_nodes = 0
+missing_nodes = 0
+total_nodes = 2408
+unreadable_files = 0
+
+[[language]]
+name = "javascript"
+files = 131
+degraded_files = 0
+error_nodes = 0
+missing_nodes = 0
+total_nodes = 50832
+unreadable_files = 0
+
+[[language]]
+name = "python"
+files = 34
+degraded_files = 0
+error_nodes = 0
+missing_nodes = 0
+total_nodes = 98568
+unreadable_files = 0
+
+[[language]]
+name = "rust"
+files = 37
+degraded_files = 0
+error_nodes = 0
+missing_nodes = 0
+total_nodes = 0
+unreadable_files = 0
+
+[[degraded]]
+repo = "type-fest"
+path = "source/internal/index.d.ts"
+language = "typescript"
+error_nodes = 8
+missing_nodes = 0
+
+[[degraded]]
+repo = "swr"
+path = "src/_internal/types.ts"
+language = "typescript"
+error_nodes = 3
+missing_nodes = 2
+
+[[degraded]]
+repo = "swr"
+path = "src/infinite/types.ts"
+language = "typescript"
+error_nodes = 5
+missing_nodes = 1
+
+[[degraded]]
+repo = "swr"
+path = "src/mutation/types.ts"
+language = "typescript"
+error_nodes = 13
+missing_nodes = 1
