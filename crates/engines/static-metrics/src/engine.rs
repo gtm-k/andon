@@ -26,6 +26,22 @@
 //! A deleted file is not unmeasured; there is nothing there to measure. A
 //! markdown file is not unmeasured; this engine never claimed it. Widening the
 //! count to either would turn a real signal into a number that is always large.
+//!
+//! # How many results this emits, and whose problem that is
+//!
+//! Every outermost function in every changed file gets three results. A change
+//! touching one two-thousand-line module therefore produces a few hundred, and
+//! the engine makes no attempt to rank or truncate them — deliberately. An
+//! engine that decided which functions were worth reporting would be making a
+//! policy decision without a policy, and the two consumers want opposite things:
+//! the verifier needs **every** result, because a digest compare over a filtered
+//! set is a compare an agent can duck by making its change large.
+//!
+//! So filtering lives downstream, where the budget is: P0's agent-mode profile
+//! is a named schema view with an enforced token bound, and P5a's assembly is
+//! what selects for it. Noted here as a P5a-entry consideration rather than
+//! discovered there — the shape of a static payload on a large change is a fact
+//! about this engine, and P5a should not have to find it out by measuring one.
 
 use std::collections::BTreeMap;
 
