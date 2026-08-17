@@ -18,6 +18,7 @@
 //! deep file into a refusal, which is a measurement the change controls; the
 //! worklist turns it into a measurement.
 
+use andon_static_metrics::lang::INDENT_STACK_LIMIT_PYTHON;
 use andon_static_metrics::{measure_blob, Language};
 
 /// Deep enough to have killed the recursive walker twice over.
@@ -39,13 +40,17 @@ fn nested_ifs_ecma() -> String {
 /// Python nests through *expressions* here rather than through indentation.
 ///
 /// Not a stylistic choice: `tree-sitter-python`'s external scanner keeps a
-/// fixed-size indent stack and stops understanding a file somewhere between 60
-/// and 80 levels of indentation — long before any depth that would trouble a
-/// walker. Chained conditional expressions reach the same tree depth on one
-/// line, so this test measures what it is meant to measure (the walk) rather
-/// than the grammar's limit. That limit has its own test below, because it is a
-/// real property of the pinned grammar and somebody will otherwise rediscover it
-/// as a mystery.
+/// fixed-size indent stack and stops understanding a file past
+/// [`INDENT_STACK_LIMIT_PYTHON`] levels of indentation. Chained conditional
+/// expressions reach the same tree depth on one line, so this test measures what
+/// it is meant to measure (the walk) rather than the grammar's limit. That limit
+/// has its own test below, because it is a real property of the pinned grammar
+/// and somebody will otherwise rediscover it as a mystery.
+///
+/// The two are independent on purpose. Before the wave-1 pin convergence the
+/// grammar gave out around 64 levels, well below this file's `DEPTH` of 2000;
+/// after it, at 512, still below. Either way a walker test that nested through
+/// indentation would be measuring the scanner and calling it a walk.
 fn nested_ternaries_python() -> String {
     let mut source = String::from("def f(a):\n    return ");
     for _ in 0..DEPTH {
@@ -137,43 +142,89 @@ fn deeply_nested_functions_measure_rather_than_abort() {
     assert_eq!(facts.functions[0].name, "f0");
 }
 
+/// A Python file nested `levels` deep through indentation alone, and legal on
+/// every line.
+fn indented_python(levels: usize, indent: &str) -> String {
+    let mut source = String::from("def f(a):\n");
+    for level in 0..levels {
+        source.push_str(&indent.repeat(level + 1));
+        source.push_str("if a:\n");
+    }
+    source.push_str(&indent.repeat(levels + 1));
+    source.push_str("g()\n");
+    source
+}
+
 #[test]
 fn the_python_grammar_has_an_indentation_limit_and_it_degrades_honestly() {
-    // A property of `tree-sitter-python` 0.23.6, not of this crate: past roughly
-    // 64 levels of indentation its external scanner's indent stack gives out and
-    // the file stops parsing. Pinned because the failure is silent in the worst
-    // way — the file still yields a tree, and without parse health it would still
-    // yield numbers.
+    // A property of the pinned `tree-sitter-python`, not of this crate: past
+    // `INDENT_STACK_LIMIT_PYTHON` levels its external scanner's indent stack
+    // gives out and the file stops parsing. Pinned because the failure is silent
+    // in the worst way — the file still yields a tree, and without parse health
+    // it would still yield numbers.
+    //
+    // Asserted on BOTH sides of the boundary, which is the part that regresses
+    // quietly. A one-sided test that only checks "deep enough degrades" stays
+    // green when a grammar bump moves the limit anywhere below the depth it
+    // happens to use — which is exactly what the 0.23.6 -> 0.25.0 convergence
+    // did, an eightfold move from ~64 to 512 that a one-sided test at 100 levels
+    // would have reported as "still degraded, nothing to see".
     //
     // What this crate owes such a file is what it owes any degraded parse: an
     // ERROR count, `parse-degraded` on everything computed from it, and a
     // process still running. Not a crash, and not a fabricated zero.
-    let mut source = String::from("def f(a):\n");
-    for level in 0..100 {
-        source.push_str(&"    ".repeat(level + 1));
-        source.push_str("if a:\n");
-    }
-    source.push_str(&"    ".repeat(101));
-    source.push_str("g()\n");
-
-    let facts = measure_blob(Language::Python, source.as_bytes()).expect("the parse still returns");
+    let at = indented_python(INDENT_STACK_LIMIT_PYTHON, "    ");
+    let facts = measure_blob(Language::Python, at.as_bytes()).expect("the parse still returns");
     let health = facts.health.expect("python reports health");
     assert!(
         health.is_degraded(),
-        "the grammar gave up and parse health must say so: {health:?}"
+        "the indent stack now holds more than {INDENT_STACK_LIMIT_PYTHON} levels: {health:?}"
     );
     assert!(health.error_nodes > 0);
 
-    // Shallow enough to be inside the grammar's reach, for contrast: the same
-    // shape at 40 levels is understood completely.
-    let mut shallow = String::from("def f(a):\n");
-    for level in 0..40 {
-        shallow.push_str(&"    ".repeat(level + 1));
-        shallow.push_str("if a:\n");
+    // And the file really is legal Python — no invalid token anywhere. That is
+    // what makes whitespace a deniable route into degradation.
+    assert!(at.is_ascii());
+
+    // One level below, and the same shape is understood completely. This is the
+    // side that catches a bump downward.
+    let below = indented_python(INDENT_STACK_LIMIT_PYTHON - 1, "    ");
+    let facts = measure_blob(Language::Python, below.as_bytes()).expect("parses");
+    assert!(
+        !facts.health.expect("health").is_degraded(),
+        "the indent stack now holds fewer than {INDENT_STACK_LIMIT_PYTHON} levels"
+    );
+    assert_eq!(
+        facts.functions[0].cyclomatic,
+        INDENT_STACK_LIMIT_PYTHON as u64
+    );
+}
+
+#[test]
+fn the_indent_limit_counts_levels_rather_than_columns() {
+    // Bisection during the wave-1 convergence put the boundary at the same 512
+    // for four-space, one-space and tab indentation. Worth an assertion rather
+    // than a note: if it were a column or byte budget, an attacker could reach
+    // degradation in far fewer levels by indenting wide, and the constant above
+    // would be describing the wrong thing.
+    for indent in ["    ", " ", "\t"] {
+        let below = indented_python(INDENT_STACK_LIMIT_PYTHON - 1, indent);
+        let at = indented_python(INDENT_STACK_LIMIT_PYTHON, indent);
+        assert!(
+            !measure_blob(Language::Python, below.as_bytes())
+                .expect("parses")
+                .health
+                .expect("health")
+                .is_degraded(),
+            "{indent:?} degraded one level below the limit"
+        );
+        assert!(
+            measure_blob(Language::Python, at.as_bytes())
+                .expect("parses")
+                .health
+                .expect("health")
+                .is_degraded(),
+            "{indent:?} survived at the limit"
+        );
     }
-    shallow.push_str(&"    ".repeat(41));
-    shallow.push_str("g()\n");
-    let facts = measure_blob(Language::Python, shallow.as_bytes()).expect("parses");
-    assert!(!facts.health.expect("health").is_degraded());
-    assert_eq!(facts.functions[0].cyclomatic, 41);
 }

@@ -68,8 +68,12 @@ pub struct ParseErrorDelta;
 ///
 /// Measured on this crate's pin, `tree-sitter-python 0.25.0`, by bisection:
 /// **512 levels**, identical for four-space, one-space, and tab indentation —
-/// so it is a count of levels rather than of columns or bytes. P2 reports ~64 on
-/// `0.23.6`, an eightfold difference between two pins of the same grammar.
+/// so it is a count of levels rather than of columns or bytes. The static engine
+/// reported ~64 on `0.23.6` — an eightfold difference between two pins of the
+/// same grammar, and for one wave the two engines genuinely disagreed about
+/// whether the same file was degraded. The wave-1 integration converged them
+/// (PLAN.md P3 execution (e)); `andon-static-metrics` bisected the same 512
+/// independently and holds it in `lang::INDENT_STACK_LIMIT_PYTHON`.
 ///
 /// Two consequences worth stating rather than discovering:
 ///

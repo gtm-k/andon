@@ -33,8 +33,8 @@
 //! arrives `parse-degraded` and capped below MED+. A consumer keyed on deltas
 //! alone sees nothing. `tests/preseeded_degradation.rs` reproduces it, including
 //! a route that needs no invalid syntax at all: `tree-sitter-python` gives up
-//! past roughly 64 levels of indentation, so a Python file can be degraded with
-//! whitespace.
+//! past [`crate::lang::INDENT_STACK_LIMIT_PYTHON`] levels of indentation, so a
+//! Python file can be degraded with whitespace.
 //!
 //! What this engine owes is evidence a delta-blind consumer can key on, and it
 //! provides it: the **absolute** per-file ERROR and MISSING counts are emitted

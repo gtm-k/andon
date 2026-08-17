@@ -34,6 +34,7 @@ use andon_core::git::{ChangedSet, ResolvedRange, Revision};
 use andon_core::policy::Policy;
 use andon_core::schema::enums::Completeness;
 use andon_core::schema::payload::{MeasurementResult, MetricValue, ScopeKind};
+use andon_static_metrics::lang::INDENT_STACK_LIMIT_PYTHON;
 use andon_static_metrics::metrics::{METRIC_PARSE_ERRORS, METRIC_PARSE_MISSING};
 use andon_static_metrics::StaticMetricsEngine;
 
@@ -162,18 +163,25 @@ fn parse_health_results_are_emitted_for_a_clean_file_too() {
 #[test]
 fn indenting_python_past_the_grammars_limit_is_the_same_shape() {
     // A concrete route into the shape that needs no invalid syntax at all:
-    // `tree-sitter-python` stops understanding a file past roughly 64 levels of
-    // indentation, so an attacker can degrade a Python file with whitespace and
-    // nothing else. The engine's answer is the same — the ERROR count is
-    // reported and path-attributed — and naming the route here is what stops it
-    // being rediscovered as a surprise.
+    // `tree-sitter-python` stops understanding a file past
+    // `INDENT_STACK_LIMIT_PYTHON` levels of indentation, so an attacker can
+    // degrade a Python file with whitespace and nothing else. The engine's
+    // answer is the same — the ERROR count is reported and path-attributed —
+    // and naming the route here is what stops it being rediscovered as a
+    // surprise.
+    //
+    // The depth is taken from the constant rather than written out, because the
+    // limit is a property of the pin: it moved from ~64 to 512 at the wave-1
+    // convergence, and a literal here would have made this test go quiet at the
+    // exact moment the route it describes changed shape.
     let mut repo = common::Repo::init();
+    let levels = INDENT_STACK_LIMIT_PYTHON;
     let mut deep = String::from("def f(a):\n");
-    for level in 0..100 {
+    for level in 0..levels {
         deep.push_str(&"    ".repeat(level + 1));
         deep.push_str("if a:\n");
     }
-    deep.push_str(&"    ".repeat(101));
+    deep.push_str(&"    ".repeat(levels + 1));
     deep.push_str("g()\n");
 
     repo.write("src/deep.py", deep.as_bytes());

@@ -39,6 +39,39 @@ existing.
 Neither is fixable by choosing a better pin: **0.23.2 is the latest release of
 `tree-sitter-typescript`.** Every other language measures zero degraded files.
 
+### What the grammar bump found: nothing, and that is the result
+
+The wave-1 integration converged this crate's pins upward with P3's — runtime
+`0.25.10 → 0.26.12`, JavaScript `0.23.1 → 0.25.0`, Python `0.23.6 → 0.25.0`,
+TypeScript unchanged because 0.23.2 is still the newest release (re-checked
+against crates.io at integration). A grammar move is a regime change, so this
+corpus was re-run.
+
+**Every number is byte-identical to the run above.** Same 221 TypeScript files,
+same 4 degraded, same 29 ERROR and 4 MISSING nodes, the same four paths with the
+same per-file counts; same zero for TSX, JavaScript, Python and Rust; and the
+`total_nodes` totals unchanged in every language. Only the `[regime]` stamp in
+`baseline.toml` moved.
+
+Two things follow, and they point in opposite directions:
+
+- **The corpus budget did not improve.** The two named TypeScript gaps are
+  properties of `tree-sitter-typescript` 0.23.2, which this bump did not touch,
+  so it could not have closed them and did not. There is no win to record here.
+  The re-check the section above asks for at each grammar bump has been done, and
+  the answer is no.
+- **The bump is measurably inert on this corpus, which is the strongest
+  determinism evidence the corpus has produced.** JavaScript and Python moved a
+  whole minor line and two runtime minors, over 181 real files and 149,400
+  nodes, and not one count changed. That is a regime change with no counting
+  change underneath it — exactly the case `measurement_regime` exists to make
+  visible without pretending it is a difference.
+
+The older argument for staying on the 0.23 line — that a bump "buys nothing
+measurable" — turns out to have been correct about the outcome. It was overtaken
+anyway, by workspace compatibility rather than by evidence; `src/lang.rs` records
+why.
+
 The consequence is bounded and visible by design rather than by luck. Results
 from those files are `completeness: parse-degraded`, cannot reach MED+, and carry
 the caveat naming their ERROR and MISSING counts — so a number computed over a

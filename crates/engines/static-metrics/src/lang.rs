@@ -77,6 +77,30 @@ pub const JAVASCRIPT_GRAMMAR_VERSION: &str = "0.25.0";
 /// Version of the vendored-by-pin Python grammar crate.
 pub const PYTHON_GRAMMAR_VERSION: &str = "0.25.0";
 
+/// Levels of indentation `tree-sitter-python`'s external scanner holds before
+/// its indent stack gives out and the file stops parsing.
+///
+/// A property of the pin, not of Python, which is why it lives beside the
+/// versions and moves with them. Whitespace alone can therefore make a file
+/// unreadable to every static engine on legal source — the most deniable route
+/// into the pre-seeded-degradation shape in [`crate::health`], since nothing in
+/// the diff looks like an error because nothing is one.
+///
+/// **Bisected against the parser on this pin, not read from a changelog:** 511
+/// levels parse clean, 512 degrade, and the boundary is identical for
+/// four-space, one-space and tab indentation — so it counts levels rather than
+/// columns or bytes. `tests/deep_input.rs` asserts both sides, so a bump in
+/// either direction is a red test rather than a silently different measurement.
+///
+/// It moved eightfold at the wave-1 integration: `0.23.6` gave out around 64
+/// levels, `0.25.0` holds 511. That is worth stating plainly because it means
+/// the same Python file is degraded under one pin and clean under the other,
+/// which is exactly the disagreement `measurement_regime` exists to expose.
+/// This crate and `andon-engine-tamper` now share the pin and therefore agree —
+/// see that crate's `INDENT_STACK_LIMIT_PYTHON`, bisected independently to the
+/// same 512.
+pub const INDENT_STACK_LIMIT_PYTHON: usize = 512;
+
 /// Revision of the metric definitions in this crate.
 ///
 /// Bumped whenever a counting rule changes: what a source line is, which nodes
