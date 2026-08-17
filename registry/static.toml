@@ -137,7 +137,11 @@ language = "any"
 outcome = "parse-completeness"
 tier = "N"
 citation = "None. An instrument reading, introduced by PREMORTEM T3."
-citation_ref = "https://github.com/gtm-k/andon/blob/main/docs/trust-boundary.md"
+# No `citation_ref`. The field is optional and P10a's registry automation
+# resolves the ones that are there, so a pointer at this repository's own docs
+# would be a link that fails a check designed to find broken citations — and
+# would dress an instrument reading as a cited one. There is no source because
+# there is no claim.
 population = "none - no study underlies this number; it is a property of this engine's parse of this file at the pinned grammar version"
 effect = "none claimed; the count of ERROR and MISSING nodes tree-sitter produced, and the count of changed files that produced no measurement at all"
 does_not_predict = [
