@@ -1,0 +1,120 @@
+# The perf gate (PREMORTEM T6): fast-lane latency on a ~100k-file repository.
+#
+# Execution strategy is user decision D2, "dispatch-at-gates":
+#
+#   Linux   runs on every push. It is the cheap leg and the early warning.
+#   Windows runs only on workflow_dispatch, at each phase-review gate. It is the
+#           expensive leg — process creation there costs around ninety
+#           milliseconds against a few on Linux, which makes it the platform the
+#           spawn budget actually binds on — and running it per push would spend
+#           Actions minutes the conserve rule reserves for gates.
+#
+# "Standing" means required green at every gate, not on every push. Dispatch the
+# Windows leg before signing off a phase.
+#
+# Action pinning follows ci.yml: every third-party action, GitHub's own
+# included, is pinned by commit SHA with the tag in a trailing comment. A tag is
+# a mutable pointer, and this is a project whose product is trust.
+#
+# The fixture is regenerated rather than cached. Generation is `git fast-import`
+# and takes a few seconds; restoring a hundred thousand files from a cache
+# tarball is not obviously faster, and a cached fixture is one more thing that
+# can be stale in a way the pins exist to prevent.
+
+name: perf
+
+on:
+  push:
+  workflow_dispatch:
+
+# No `paths:` filter, deliberately. Narrowing the Linux leg to the files that
+# "obviously" affect latency would conserve a little more, and would also be the
+# phase quietly reinterpreting D2 — which says Linux on push — on the strength of
+# a guess about which edits can move a number. ci.yml runs unfiltered on push for
+# the same reason.
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: perf gate (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Toolchain and git versions
+        run: |
+          rustc --version
+          cargo --version
+          git --version
+
+      # Also the pin check: the generator verifies the repository it builds
+      # against fixtures/perf/expected.toml and fails if a single OID differs.
+      # That is the cross-platform half of the determinism claim — the pins were
+      # recorded on Windows, so a green Linux run here is the evidence that the
+      # fixture is the same fixture everywhere.
+      - name: Generate the fixture and verify its pins
+        run: ./fixtures/perf/generate.sh
+
+      # Release, always. A debug build breaches every budget on optimization
+      # alone, and the harness refuses to run under one rather than reporting a
+      # meaningless red.
+      - name: Perf gate
+        run: |
+          set -o pipefail
+          cargo test --release -p andon-core --test perf_gate -- \
+            --ignored --nocapture | tee perf-results.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### Perf gate — linux'
+            echo '```'
+            sed -n '/perf gate —/,$p' perf-results.txt || echo 'no results captured'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    name: perf gate (windows)
+    # D2: the expensive leg runs at phase-review gates, never on push. The
+    # condition is on the event rather than on an input so that dispatching the
+    # workflow is the whole of the ceremony.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Toolchain and git versions
+        run: |
+          rustc --version
+          cargo --version
+          git --version
+
+      - name: Generate the fixture and verify its pins
+        run: ./fixtures/perf/generate.sh
+
+      - name: Perf gate
+        run: |
+          set -o pipefail
+          cargo test --release -p andon-core --test perf_gate -- \
+            --ignored --nocapture | tee perf-results.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### Perf gate — windows'
+            echo '```'
+            sed -n '/perf gate —/,$p' perf-results.txt || echo 'no results captured'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

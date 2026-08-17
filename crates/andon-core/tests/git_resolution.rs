@@ -682,3 +682,120 @@ fn a_submodules_internal_dirtiness_does_not_churn_the_outer_key() {
         "--ignore-submodules=dirty keeps a vendored checkout from churning every key"
     );
 }
+
+// ---------------------------------------------------------------------------
+// changed sets derived from a dirty tree
+// ---------------------------------------------------------------------------
+//
+// These cover the path where `ChangedSet` comes from the snapshot rather than
+// from its own `diff-index` — the arrangement that keeps a dirty measurement to
+// one scan of the working tree (PREMORTEM T6) and keeps the changed set and the
+// cache key describing the same instant.
+
+#[test]
+fn a_worktree_head_lists_dirty_files_and_offers_no_blobs_for_unstaged_bytes() {
+    let dir = scratch("worktree-changed");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"one\n", "base");
+    repo.commit_file("src/b.ts", b"two\n", "second");
+
+    repo.write("src/a.ts", b"edited\n");
+    repo.write("src/new.ts", b"brand new\n");
+
+    let range = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD".into()),
+        &Revision::Worktree,
+    )
+    .unwrap();
+    let changed = ChangedSet::enumerate(repo.git(), &range).unwrap();
+
+    let paths: Vec<&str> = changed.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["src/a.ts", "src/new.ts"],
+        "sorted, and dirty only"
+    );
+    assert_eq!(changed.entries[0].status, ChangeStatus::Modified);
+    assert_eq!(
+        changed.entries[1].status,
+        ChangeStatus::Added,
+        "an untracked file is part of the change the author is making"
+    );
+
+    // The load-bearing half. Neither file is staged, so neither has bytes in the
+    // object database — and the index still holds HEAD's content, so offering
+    // its OID here would hand back the *pre-edit* bytes labelled as current.
+    assert!(
+        changed.entries.iter().all(|e| e.readable_blob().is_none()),
+        "unstaged bytes have no blob and belong to the advisory lane"
+    );
+    assert!(changed.read_head_blobs(repo.git()).unwrap().is_empty());
+}
+
+#[test]
+fn staged_content_does_have_a_readable_blob() {
+    // The complement: once staged, the bytes are a real object, so they are
+    // blob-addressable and the compared lane can reach them.
+    let dir = scratch("index-changed");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"one\n", "base");
+    repo.write("src/a.ts", b"staged edit\n");
+    repo.add_all();
+
+    let range = ResolvedRange::resolve(repo.git(), &Revision::Rev("HEAD".into()), &Revision::Index)
+        .unwrap();
+    let changed = ChangedSet::enumerate(repo.git(), &range).unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed.entries[0].path, "src/a.ts");
+
+    let blobs = changed.read_head_blobs(repo.git()).unwrap();
+    assert_eq!(blobs.len(), 1);
+    assert_eq!(blobs[0].1.bytes(), b"staged edit\n");
+    assert_eq!(
+        blobs[0].1.lane(),
+        ContentLane::Compared,
+        "a staged blob is checkout-independent like any other"
+    );
+}
+
+#[test]
+fn a_worktree_deletion_is_listed_without_a_blob() {
+    let dir = scratch("worktree-delete");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"one\n", "base");
+    repo.remove("src/a.ts");
+
+    let range = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD".into()),
+        &Revision::Worktree,
+    )
+    .unwrap();
+    let changed = ChangedSet::enumerate(repo.git(), &range).unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed.entries[0].status, ChangeStatus::Deleted);
+    assert_eq!(changed.entries[0].readable_blob(), None);
+    assert!(
+        changed.entries[0].src_oid.is_some(),
+        "the base side is still a real blob: that is what was deleted"
+    );
+}
+
+#[test]
+fn a_clean_worktree_produces_an_empty_change_and_a_stable_key() {
+    let dir = scratch("clean-worktree");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"one\n", "base");
+
+    let range = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD".into()),
+        &Revision::Worktree,
+    )
+    .unwrap();
+    assert!(ChangedSet::enumerate(repo.git(), &range)
+        .unwrap()
+        .is_empty());
+    assert!(range.head.snapshot().expect("dirty endpoint").is_empty());
+}
