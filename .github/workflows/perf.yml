@@ -20,6 +20,14 @@
 # and takes a few seconds; restoring a hundred thousand files from a cache
 # tarball is not obviously faster, and a cached fixture is one more thing that
 # can be stale in a way the pins exist to prevent.
+#
+# Both dirty-tree legs are gated, each against its own budget key in
+# `.andon.toml [perf]`: the accelerated one against `fast_lane_warm_p95_ms`, the
+# one with no watching fsmonitor daemon against
+# `fast_lane_warm_fallback_p95_ms`. So the two platforms gate different things
+# and both are real gates — builtin fsmonitor does not exist on Linux, where the
+# fallback leg is the only one that runs and the fsmonitor leg reports why it did
+# not, and Windows runs both. Neither leg is ever skipped silently.
 
 name: perf
 

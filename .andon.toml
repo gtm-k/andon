@@ -41,6 +41,13 @@ bytes_per_token = 4
 # Budgets live in policy so that changing one is a reviewable edit rather than a
 # quiet ratchet in a benchmark harness (PREMORTEM T6). P1's perf gate reads them.
 fast_lane_warm_p95_ms = 1000
+# The disclosed no-fsmonitor budget on the 100k-file fixture. Builtin fsmonitor
+# does not exist on Linux and can decline anywhere, so the un-accelerated
+# dirty-tree path is what a real fraction of users run — measured at 1306.9 ms on
+# the reference Windows machine against 194 ms with a watching daemon. Both legs
+# are gated, each against its own key; holding this one to 1000 ms would mean
+# either a permanently red gate or, as happened, a number nobody was checking.
+fast_lane_warm_fallback_p95_ms = 2000
 fast_lane_cold_cap_ms = 10000
 max_git_spawns_per_measure = 64
 

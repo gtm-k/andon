@@ -149,8 +149,25 @@ impl Default for AgentPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct PerfPolicy {
-    /// Warm-cache p95 target for the fast lane.
+    /// Warm-cache p95 target for the fast lane, with a watching fsmonitor
+    /// daemon. The headline number.
     pub fast_lane_warm_p95_ms: u32,
+    /// Warm-cache p95 target for the dirty-tree path with **no** watching
+    /// fsmonitor daemon.
+    ///
+    /// A second budget rather than a second-class one. Builtin fsmonitor is
+    /// absent on Linux and can decline anywhere, so the un-accelerated
+    /// arrangement is what a real fraction of users run — and on a 100k-file
+    /// repository it costs the best part of a second more than the accelerated
+    /// one. Holding it to the headline budget would mean either a red gate on
+    /// every Linux run or the number quietly not being gated at all, and the
+    /// second is what happened: 1306.9 ms went unreported against a 1000 ms
+    /// figure the gate was passing.
+    ///
+    /// So it is disclosed, gated, and separate. Raising either is a ledgered
+    /// policy edit; the gap between them is the cost of not having a daemon, and
+    /// it is meant to be visible.
+    pub fast_lane_warm_fallback_p95_ms: u32,
     /// Hard cold cap; past it the fast lane spills to async with
     /// `completeness: partial` (APPROACH graft 4).
     pub fast_lane_cold_cap_ms: u32,
@@ -163,6 +180,7 @@ impl Default for PerfPolicy {
     fn default() -> Self {
         Self {
             fast_lane_warm_p95_ms: 1000,
+            fast_lane_warm_fallback_p95_ms: 2000,
             fast_lane_cold_cap_ms: 10_000,
             max_git_spawns_per_measure: 64,
         }

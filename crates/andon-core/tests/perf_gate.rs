@@ -37,6 +37,15 @@
 //! constant, watch the gate go green — is exactly the failure PLAN P1 calls
 //! "ratchet-proof" (`[policy.perf]`).
 //!
+//! The dirty-tree path has **two** budgets and **both gate**: the accelerated
+//! arrangement against `fast_lane_warm_p95_ms`, the one with no watching
+//! fsmonitor daemon against `fast_lane_warm_fallback_p95_ms`. There is a second
+//! ratchet besides nudging a constant, and it is subtler: choosing which leg the
+//! budget applies to. That is how the un-accelerated path came to be measured at
+//! 1306.9 ms while the gate was green on a 1000 ms figure — the number was
+//! printed and nothing asserted it. A leg that genuinely cannot run on a
+//! platform reports why; it never disappears.
+//!
 //! # Spawn count
 //!
 //! Asserted, not observed. A regression that turns one batched `cat-file` into
@@ -122,6 +131,14 @@ fn policy() -> Policy {
     let path = workspace_root().join(".andon.toml");
     Policy::from_toml(&std::fs::read_to_string(&path).expect("policy is readable"))
         .expect("policy parses")
+}
+
+/// One dirty-tree arrangement, its own budget, and whether it could run here.
+struct DirtyLeg {
+    label: &'static str,
+    budget: f64,
+    runnable: bool,
+    summary: Pass,
 }
 
 /// What one fast-lane git pass cost.
@@ -249,11 +266,13 @@ fn the_fast_lane_stays_inside_its_policy_budgets() {
     let repo = fixture.join("repo");
     let policy = policy();
     let warm_budget = policy.perf.fast_lane_warm_p95_ms as f64;
+    let fallback_budget = policy.perf.fast_lane_warm_fallback_p95_ms as f64;
     let cold_budget = policy.perf.fast_lane_cold_cap_ms as f64;
     let spawn_budget = policy.perf.max_git_spawns_per_measure;
 
     println!("\nperf gate — budgets from .andon.toml [perf]");
     println!("  warm p95 <= {warm_budget} ms, cold <= {cold_budget} ms, spawns <= {spawn_budget}");
+    println!("  warm dirty, no watching fsmonitor daemon: p95 <= {fallback_budget} ms");
     println!("  fixture: {}", repo.display());
     println!(
         "  git: {}\n",
@@ -334,17 +353,23 @@ spawn count is flat at {flat} across 1, 50, and 1000 changed files"
 
     // ---- warm dirty: the incremental keying path, which is T6 proper --------
     //
-    // Both arrangements are measured, and which one *gates* is decided
-    // afterwards from what the fsmonitor daemon actually did. PLAN P1 says
-    // "fsmonitor where available", so the gate belongs on the arrangement the
-    // tool really ships with on this platform — but "available" has to be
-    // observed rather than assumed, and the un-accelerated number is reported
-    // either way because it is what a platform without the daemon pays.
+    // Two arrangements, two budgets, and **both gate**. The earlier shape picked
+    // one leg to gate and reported the other, which is how the un-accelerated
+    // path came to be 1306.9 ms against a 1000 ms figure on a green gate: the
+    // number was printed, and nothing was asserting it.
+    //
+    // "Which leg gates" was the wrong question. Both arrangements ship — builtin
+    // fsmonitor does not exist on Linux and can decline anywhere — so each is
+    // held to the budget that describes it, and a leg that genuinely cannot run
+    // here says why rather than disappearing.
     let git = Git::open(&repo).expect("repo opens");
     dirty_the_worktree(&repo, &manifest.dirty_paths);
 
-    let mut legs: Vec<(&str, Pass, bool)> = Vec::new();
-    for (label, fsmonitor) in [("warm-dirty-nofsm", "false"), ("warm-dirty-fsm", "true")] {
+    let mut legs: Vec<DirtyLeg> = Vec::new();
+    for (label, fsmonitor, budget) in [
+        ("warm-dirty-nofsm", "false", fallback_budget),
+        ("warm-dirty-fsm", "true", warm_budget),
+    ] {
         git.cmd(["config", "core.fsmonitor", fsmonitor])
             .output()
             .expect("set fsmonitor");
@@ -364,63 +389,65 @@ spawn count is flat at {flat} across 1, 50, and 1000 changed files"
             last = pass(&repo, &base, &head, &store, &policy);
             samples.push(last.elapsed);
         }
-        // Asked while the daemon is still configured and warm, which is the only
-        // moment the answer means anything.
+        // The committed series asserts this and the dirty legs did not, which
+        // left the warm dirty numbers proving less than they looked like they
+        // did: a leg that missed its cache on every pass would be timing a cold
+        // path under a warm label.
+        assert!(
+            last.cache_hit,
+            "{label}: a warm run must hit the cache it populated, or the \
+             incremental keying path is not what is being measured"
+        );
         let watching = fsmonitor == "true" && fsmonitor_is_watching(&git);
-        legs.push((
+        legs.push(DirtyLeg {
             label,
-            Pass {
+            budget,
+            // The fsmonitor leg is only runnable where a daemon actually
+            // watches. Asked while it is still configured and warm, which is the
+            // only moment the answer means anything.
+            runnable: fsmonitor == "false" || watching,
+            summary: Pass {
                 elapsed: p95(samples),
                 ..last
             },
-            watching,
-        ));
+        });
     }
 
-    let accelerated = legs.iter().any(|(_, _, watching)| *watching);
-    println!(
-        "
-  fsmonitor: {}",
-        if accelerated {
-            "watching this repository — the fsmonitor leg gates, the other is reported"
-        } else {
-            "not watching (unsupported here, or it declined) — the un-accelerated leg gates"
-        }
-    );
-
-    for (label, summary, watching) in &legs {
-        let gates = if accelerated {
-            *watching
-        } else {
-            *label == "warm-dirty-nofsm"
-        };
-        let mut informational = Vec::new();
-        let sink = if gates {
-            &mut failures
-        } else {
-            &mut informational
-        };
-        report(label, summary, warm_budget, sink, spawn_budget);
-        if !gates {
-            // Said out loud rather than swallowed, and with the headroom spelt
-            // out: a leg that passes by two percent is a leg worth watching, and
-            // whoever reads this gate should learn that here and not from a user.
-            let elapsed = ms(summary.elapsed);
-            let headroom = 100.0 * (1.0 - elapsed / warm_budget);
-            println!("  NOTE: {label} is not gated, and is worth reading anyway.");
-            println!(
-                "        {elapsed:.0} ms against a {warm_budget} ms budget ({headroom:.0}% headroom)."
+    println!();
+    for leg in &legs {
+        if leg.runnable {
+            report(
+                leg.label,
+                &leg.summary,
+                leg.budget,
+                &mut failures,
+                spawn_budget,
             );
-            println!("        This is what a platform with no watching fsmonitor daemon pays on a");
-            println!("        100k-file repository.");
-            if !informational.is_empty() {
-                println!(
-                    "  NOTE: and it is over budget: {}",
-                    informational.join("; ")
-                );
-            }
+        } else {
+            // Not silently skipped. A leg that vanishes from a gate's output is
+            // indistinguishable from a leg that passed, and the reason it could
+            // not run is the thing a reader needs.
+            println!(
+                "{:<14} {:>8} {:>7} {:>10} {:>9} {:>7} {:>9}",
+                leg.label, "-", "-", "-", "not run", "-", "-"
+            );
+            println!(
+                "  NOTE: {} did not run: `fsmonitor--daemon status` does not report a daemon",
+                leg.label
+            );
+            println!("        watching this repository, so there is nothing to measure here.");
+            println!("        Builtin fsmonitor needs git 2.37+ and does not exist on Linux.");
+            println!(
+                "        Its {} ms budget is therefore untested on this platform, and the",
+                leg.budget
+            );
+            println!("        un-accelerated leg above is what this platform actually pays.");
         }
     }
+    assert!(
+        legs.iter().any(|leg| leg.runnable),
+        "neither dirty leg ran, so the T6 path was not measured at all"
+    );
 
     // Leave no daemon behind: `core.fsmonitor=true` starts a background process,
     // and a CI runner that ends with one still holding the repository open is a

@@ -169,3 +169,16 @@ change.
 `schema_version` is `1`. A change to any published type is a plan change, not a
 phase decision: `schemas/*` is P0-owned, and later phases touch it only where
 their PLAN.md row says so, serialized, with a version bump and a changelog line.
+
+Pre-release, "v1" is still being defined rather than maintained, so an additive
+field with a default is a v1 definition change and not a v1 → v2 migration. That
+is the precedent P0 set with `CompareOutcome.flag_disagreements` (decision log,
+2026-08-17). It ends at the first release, after which the sentence above is the
+whole rule.
+
+### Changes to the v1 definition
+
+| Schema | Change | Phase | Why |
+|---|---|---|---|
+| `payload-v1` | `CompareOutcome.flag_disagreements` added, required, always present | P0 | Verifier-authoritative compare membership (decision log E2). |
+| `policy-v1` | `[perf] fast_lane_warm_fallback_p95_ms` added, default `2000` | P1 | The dirty-tree path without a watching fsmonitor daemon is a shipped arrangement with its own cost, and it needs a budget of its own to be gated rather than merely printed. Ledgered policy decision, orchestrator pre-approved. |
