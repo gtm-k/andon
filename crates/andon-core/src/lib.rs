@@ -12,6 +12,10 @@
 //!   is the trust mechanism, so there is exactly one serializer.
 //! - [`compare`] — how a self-report and a recompute become an attestation
 //!   value, in the order that keeps honest changes out of the tamper bucket.
+//! - [`git`] — the plumbing: base/head resolution, blob-only content reads for
+//!   the compared lane, and one hygienic path to every `git` subprocess.
+//! - [`cache`] — the fast-lane cache key and store, keyed so that cost scales
+//!   with the diff rather than the repository (PREMORTEM T6).
 //! - [`engine`] — the `MeasureEngine` trait every measurement enters through.
 //! - [`registry`] — evidence claims, and the lint that fails the build when a
 //!   metric has none.
@@ -32,10 +36,12 @@
 #![deny(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod cache;
 pub mod canonical;
 pub mod compare;
 pub mod date;
 pub mod engine;
+pub mod git;
 pub mod policy;
 pub mod registry;
 pub mod schema;

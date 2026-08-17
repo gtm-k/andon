@@ -18,3 +18,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"
+# Test-only. The git tests build real repositories — there is no way to prove
+# that a hostile gitconfig changes nothing without a repository and a hostile
+# gitconfig — and each needs its own directory that disappears afterwards.
+tempfile = "3"
