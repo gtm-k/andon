@@ -83,15 +83,27 @@ jobs:
       # compiles for minutes) and rather than a third-party action (an
       # unreviewed dependency in a repository whose product is trust). The
       # version is pinned so the gate cannot change under us.
+      #
+      # A pinned version is not a pinned artifact: a release asset can be
+      # deleted and re-uploaded under the same tag, and the fetch itself is one
+      # more thing to trust. The checksum below is the artifact pin, verified
+      # before extraction so a substituted tarball is never unpacked, let alone
+      # run. `set -euo pipefail` makes the check fail the job.
+      #
+      # Recorded 2026-08-17 from the published asset, cross-checked against the
+      # `digest` field GitHub's own release API reports for it. Recompute when
+      # CARGO_DENY_VERSION changes; the two must move together.
       - name: Install cargo-deny
         env:
           CARGO_DENY_VERSION: 0.20.2
+          CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
         run: |
           set -euo pipefail
           archive="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
           curl -fsSL --retry 3 \
             "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${archive}.tar.gz" \
             -o cargo-deny.tar.gz
+          echo "${CARGO_DENY_SHA256}  cargo-deny.tar.gz" | sha256sum -c -
           tar -xzf cargo-deny.tar.gz
           install -m 0755 "${archive}/cargo-deny" /usr/local/bin/cargo-deny
           cargo-deny --version
