@@ -12,20 +12,33 @@
 # working directory — and scored against a budget stated in
 # `fixtures/parse-corpus/corpus.toml` before the corpus was first run.
 #
-# EXECUTION MODE: dispatch only (user decision D2)
+# EXECUTION MODE: Linux on relevant pushes, plus dispatch (user decision D2)
 #
-# This job clones six repositories and parses several hundred files. It runs at
-# phase-review gates, on `workflow_dispatch`, and nowhere else.
+# D2 puts **Linux checks on push** and holds only the macOS and Windows legs and
+# the perf gate back for `workflow_dispatch` at phase-review gates. This is a
+# Linux job, so a push trigger is inside D2 rather than an exception to it — but
+# it is scoped by path to the three things that can change a parse: the engine
+# crate, the corpus manifest, and the lockfile that resolves the grammars.
+# Editing a README does not clone six repositories.
 #
-# PLAN P2 also requires it to "re-run per grammar bump", and that requirement is
-# NOT implemented as a `push` path filter. A path filter fires on every commit
-# touching the engine crate, does not fire when a transitive change moves the
-# grammar, and cannot tell whether anybody looked at the result. Instead
+# There is also a mechanical reason it cannot be dispatch-only, learned the hard
+# way at P2 and worth writing down because `spike-matrix.yml` records a narrower
+# version of it: **GitHub only registers workflows that exist on the DEFAULT
+# branch.** `gh workflow run --ref <branch>` does work on an unmerged branch —
+# for a workflow already on `main`, where it picks up that branch's version of
+# the file. A workflow file that is *new* on a feature branch and carries only
+# `workflow_dispatch` is invisible to the API and cannot be run at all before it
+# merges, which for a phase gate means it cannot be green before the review that
+# would merge it.
+#
+# PLAN P2 additionally requires this job to "re-run per grammar bump". The path
+# filter is not what implements that. A path filter cannot fire when a transitive
+# change moves the grammar and cannot tell whether anybody looked at the result;
 # `fixtures/parse-corpus/baseline.toml` records the regime its numbers were taken
 # under, and `tests/corpus_baseline.rs` fails when that stamp and the engine's
-# current regime disagree — so a grammar bump turns the ordinary `cargo test` red
-# on every push until this job has been dispatched and its baseline committed.
-# The requirement is enforced where it costs nothing.
+# current regime disagree. A grammar bump turns the ordinary `cargo test` red on
+# every push until this job has run and its baseline is committed. That is the
+# enforcement; the trigger below is the convenience.
 #
 # WHY THE FETCH IS SHAPED THE WAY IT IS
 #
@@ -38,6 +51,12 @@ name: parse-corpus
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'crates/engines/static-metrics/**'
+      - 'fixtures/parse-corpus/**'
+      - 'Cargo.lock'
+      - '.github/workflows/parse-corpus.yml'
 
 permissions:
   contents: read

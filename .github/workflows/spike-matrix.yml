@@ -40,10 +40,18 @@
 #
 # There is no commit-message escape hatch. One was added on the theory that a
 # workflow living only on a feature branch might not be dispatchable before it
-# reached the default branch; that theory was tested and is false —
-# `gh workflow run --ref <branch>` works on an unmerged branch. A second way to
-# trigger the expensive legs, justified by a hazard that does not exist, is a
-# second policy for someone to mistake for the first.
+# reached the default branch; that theory was tested and is false *for this
+# file* — `gh workflow run --ref <branch>` works on an unmerged branch. A second
+# way to trigger the expensive legs, justified by a hazard that does not exist,
+# is a second policy for someone to mistake for the first.
+#
+# The precise rule, sharpened at P2 where it bit: GitHub registers workflows
+# from the DEFAULT branch. Dispatching `--ref <branch>` then runs that branch's
+# version of an already-registered file, which is why this one is dispatchable
+# pre-merge and stayed so. A workflow file that is *new* on a feature branch and
+# carries only `workflow_dispatch` is not registered at all and cannot be run
+# before it merges — see `parse-corpus.yml`, which needs a push trigger partly
+# for that reason.
 #
 # WHY THE FIXTURE IS BUILT ONCE AND SHIPPED
 #
