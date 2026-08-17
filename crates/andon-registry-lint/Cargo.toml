@@ -1,0 +1,16 @@
+[package]
+name = "andon-registry-lint"
+description = "Standalone lint for the Andon evidence registry: fails the build when a metric has no claim behind it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "andon-registry-lint"
+path = "src/main.rs"
+
+[dependencies]
+andon-core = { workspace = true }

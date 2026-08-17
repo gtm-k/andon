@@ -121,7 +121,9 @@ pub enum Completeness {
 }
 
 /// Finding severity. "MED+" throughout the plan means `Medium` or above.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Severity {
     /// Reported for context; never acted on.
@@ -145,7 +147,9 @@ impl Severity {
 
 /// The five engine families. Fixed in v1: every `MeasurementRegime` variant and
 /// every registry file maps onto exactly one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum EngineFamily {
     /// tree-sitter size and complexity metrics (P2).

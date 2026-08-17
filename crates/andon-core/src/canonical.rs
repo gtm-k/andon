@@ -216,11 +216,7 @@ pub fn format_es6_double(x: f64) -> Result<String, CanonicalError> {
         body.push_str(&exp.abs().to_string());
     }
 
-    Ok(if negative {
-        format!("-{body}")
-    } else {
-        body
-    })
+    Ok(if negative { format!("-{body}") } else { body })
 }
 
 /// Returns the shortest round-tripping decimal digit string for a positive
@@ -296,7 +292,10 @@ mod tests {
     fn keys_are_sorted_and_whitespace_is_stripped() {
         let value = json!({ "b": 1, "a": 2, "C": 3 });
         // Uppercase sorts before lowercase in UTF-16 code unit order.
-        assert_eq!(to_canonical_string(&value).unwrap(), r#"{"C":3,"a":2,"b":1}"#);
+        assert_eq!(
+            to_canonical_string(&value).unwrap(),
+            r#"{"C":3,"a":2,"b":1}"#
+        );
     }
 
     #[test]
@@ -323,7 +322,9 @@ mod tests {
     fn digest_is_stable_and_hex() {
         let d = digest(&json!({ "a": 1 })).unwrap();
         assert_eq!(d.len(), 64);
-        assert!(d.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(d
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
         assert_eq!(d, digest(&json!({ "a": 1 })).unwrap());
     }
 }

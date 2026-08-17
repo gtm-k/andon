@@ -1,0 +1,297 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Claim": {
+      "additionalProperties": false,
+      "description": "A claim tuple: this implementation, at this version, in this language, predicts this outcome.\n\nClaim-scoped, never family-wide (PRE-DECISIONS hard constraint). \"Cyclomatic complexity predicts defects\" is not a claim this registry can express, and that is the point.",
+      "properties": {
+        "citation": {
+          "description": "Human-readable citation.",
+          "type": "string"
+        },
+        "citation_ref": {
+          "description": "DOI or stable URL, checked for resolution by the P10a registry-PR gate.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "claim_id": {
+          "description": "Canonical form `implementation@version|language|outcome`, so the id and the tuple can never drift apart.",
+          "type": "string"
+        },
+        "does_not_predict": {
+          "description": "The honesty field: what this number is *not* evidence for. Required and non-empty — a claim that predicts everything predicts nothing.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "effect": {
+          "description": "The measured effect, in the source's own terms.",
+          "type": "string"
+        },
+        "expiry": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Date"
+            }
+          ],
+          "description": "Re-review date. Past it the claim demotes to stale, visibly."
+        },
+        "implementation": {
+          "description": "The measuring implementation, e.g. `andon.static.cognitive`. Claims are scoped to an implementation because two tools computing \"cognitive complexity\" do not compute the same number.",
+          "type": "string"
+        },
+        "implementation_version": {
+          "description": "Version of that implementation the evidence was established against.",
+          "type": "string"
+        },
+        "language": {
+          "description": "Language the claim is scoped to, or `any` for language-agnostic families.",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "The outcome predicted, e.g. `comprehension-time`.",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Who re-reviews this claim at expiry.",
+          "type": "string"
+        },
+        "population": {
+          "description": "The studied population, e.g. \"17.6M Java methods\".",
+          "type": "string"
+        },
+        "tier": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EvidenceTier"
+            }
+          ],
+          "description": "Evidence strength, graded as in `docs/metric-families.csv`."
+        }
+      },
+      "required": [
+        "citation",
+        "claim_id",
+        "does_not_predict",
+        "effect",
+        "expiry",
+        "implementation",
+        "implementation_version",
+        "language",
+        "outcome",
+        "owner",
+        "population",
+        "tier"
+      ],
+      "type": "object"
+    },
+    "Date": {
+      "description": "A calendar date, `YYYY-MM-DD`. No time, no zone.",
+      "properties": {
+        "day": {
+          "description": "Day of month, 1-31, validated against the month and leap year.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "month": {
+          "description": "Month, 1-12.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "year": {
+          "description": "Proleptic Gregorian year.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "day",
+        "month",
+        "year"
+      ],
+      "type": "object"
+    },
+    "EngineFamily": {
+      "description": "The five engine families. Fixed in v1: every `MeasurementRegime` variant and every registry file maps onto exactly one.",
+      "oneOf": [
+        {
+          "description": "tree-sitter size and complexity metrics (P2).",
+          "enum": [
+            "static"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Token-level duplication detection (P3).",
+          "enum": [
+            "clones"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Static gaming detectors (P3).",
+          "enum": [
+            "tamper"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "git-history signals: churn, age, ownership, coupling (P4).",
+          "enum": [
+            "process"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Coverage-report parsing, negative signal only (P4).",
+          "enum": [
+            "artifacts"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "EvidenceTier": {
+      "description": "Evidence strength for a claim, as graded in `docs/metric-families.csv`.",
+      "oneOf": [
+        {
+          "description": "Validated against outcomes at scale.",
+          "enum": [
+            "A"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Published validation, narrower population or weaker linkage.",
+          "enum": [
+            "B"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Weak or contested on its own.",
+          "enum": [
+            "C"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Critiqued; not to be used as a headline.",
+          "enum": [
+            "D"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Novel and unvalidated. Motivated by evidence, not yet supported by it.",
+          "enum": [
+            "N"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "MetricClass": {
+      "description": "Whether a finding is something the agent that made the change can act on.\n\nThe uninstall loop of PREMORTEM A4 comes from blocking on metrics nobody can fix in the diff. Policy may only escalate to MED+ on `diff-actionable` metrics, and `context-informational` findings are exempt from the iteration counter.",
+      "oneOf": [
+        {
+          "description": "Fixable inside the change being measured.",
+          "enum": [
+            "diff-actionable"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "True and worth knowing, but about the surrounding code. Never blocks.",
+          "enum": [
+            "context-informational"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "MetricDecl": {
+      "additionalProperties": false,
+      "description": "A metric declaration — the manifest half of the drift check.",
+      "properties": {
+        "claim_id": {
+          "description": "The claim tuple it cites. Must resolve, or the lint fails the build.",
+          "type": "string"
+        },
+        "class": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MetricClass"
+            }
+          ],
+          "description": "Whether the agent can act on it inside its own change."
+        },
+        "deterministic": {
+          "description": "Whether it belongs in the digest compare set.",
+          "type": "boolean"
+        },
+        "metric_id": {
+          "description": "Stable metric id the engine emits.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claim_id",
+        "class",
+        "deterministic",
+        "metric_id"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "One engine's registry file, e.g. `registry/static.toml`.",
+  "properties": {
+    "claim": {
+      "default": [],
+      "description": "Claim tuples the metrics cite. Disjoint per engine so that phases running in parallel never edit the same file (PLAN R2-2).",
+      "items": {
+        "$ref": "#/definitions/Claim"
+      },
+      "type": "array"
+    },
+    "engine": {
+      "description": "Engine id; must match the engine's descriptor.",
+      "type": "string"
+    },
+    "family": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/EngineFamily"
+        }
+      ],
+      "description": "Family; must match the engine's descriptor."
+    },
+    "metric": {
+      "default": [],
+      "description": "Metrics this engine emits.",
+      "items": {
+        "$ref": "#/definitions/MetricDecl"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "description": "Registry schema version. Only `1` is accepted.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "engine",
+    "family",
+    "schema_version"
+  ],
+  "title": "EngineRegistryFile",
+  "type": "object"
+}

@@ -1,0 +1,520 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentFinding": {
+      "description": "One finding, trimmed for an agent's context.",
+      "properties": {
+        "claim_id": {
+          "description": "The claim its number stands on.",
+          "type": "string"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MetricValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Change against the base, where one is meaningful."
+        },
+        "diff_actionable": {
+          "description": "True when the agent can fix this inside the change it just made. A `false` here is the agent's signal not to grind (PREMORTEM A4).",
+          "type": "boolean"
+        },
+        "evidence_stale": {
+          "description": "True when the claim behind this number is past its expiry (PREMORTEM S2).",
+          "type": "boolean"
+        },
+        "evidence_tier": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EvidenceTier"
+            }
+          ],
+          "description": "Evidence strength behind the claim."
+        },
+        "metric_id": {
+          "description": "Which metric fired.",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Rendered location, e.g. `src/index.ts:handleRequest`.",
+          "type": "string"
+        },
+        "severity": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Severity"
+            }
+          ],
+          "description": "How serious."
+        },
+        "value": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MetricValue"
+            }
+          ],
+          "description": "The measured value."
+        }
+      },
+      "required": [
+        "claim_id",
+        "diff_actionable",
+        "evidence_stale",
+        "evidence_tier",
+        "metric_id",
+        "scope",
+        "severity",
+        "value"
+      ],
+      "type": "object"
+    },
+    "Attestation": {
+      "description": "How much trust a measurement record has earned.\n\nA self-reported record starts life unattested; CI moves it. Only `confirmed` and `confirmed-static` are passes. The `unwitnessed-*` values are explicitly **not** tamper accusations — conflating them with `divergent` is the false-divergence epidemic of PREMORTEM T1/Story 1.",
+      "oneOf": [
+        {
+          "description": "CI recomputed the deterministic compare set and every per-result digest matched.",
+          "enum": [
+            "confirmed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Fork tier (PREMORTEM T5): CI recomputed from an unprivileged job with no self-report available to compare against. A pass, labelled as the weaker one it is.",
+          "enum": [
+            "confirmed-static"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Digests disagree on an equal `(base_oid, head_oid)` tuple at an equal measurement regime — or a tamper signal fired. The first-class tamper outcome.",
+          "enum": [
+            "divergent"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "No CI recompute happened. Neutral, not negative.",
+          "enum": [
+            "unwitnessed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The regimes differ (engine, grammar, or git version skew), so the digests were never comparable. Never `divergent` — PREMORTEM S4.",
+          "enum": [
+            "unwitnessed-version-skew"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The claimed base is an ancestor of the trusted branch — a stale base or a rebase, not an attack. A non-tamper outcome that is still **not a pass**: the record stays self-reported and never counts downstream (PLAN R2-4).",
+          "enum": [
+            "unwitnessed-base-mismatch"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Completeness": {
+      "description": "How complete a measurement is. Absence of data is always said out loud rather than reported as a zero.",
+      "oneOf": [
+        {
+          "description": "Everything the engine set out to measure was measured.",
+          "enum": [
+            "complete"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The fast lane hit its cold cap and spilled to async, or an engine was skipped. Some results are missing and named as missing.",
+          "enum": [
+            "partial"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The parser produced ERROR/MISSING nodes over part of the input. Results so marked never drive MED+ and never carry full-confidence claims (PREMORTEM T3).",
+          "enum": [
+            "parse-degraded"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The inputs needed did not exist — a shallow clone with no history for a process metric, for instance. Never a fabricated zero (PLAN P4).",
+          "enum": [
+            "unwitnessed"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "EvidenceTier": {
+      "description": "Evidence strength for a claim, as graded in `docs/metric-families.csv`.",
+      "oneOf": [
+        {
+          "description": "Validated against outcomes at scale.",
+          "enum": [
+            "A"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Published validation, narrower population or weaker linkage.",
+          "enum": [
+            "B"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Weak or contested on its own.",
+          "enum": [
+            "C"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Critiqued; not to be used as a headline.",
+          "enum": [
+            "D"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Novel and unvalidated. Motivated by evidence, not yet supported by it.",
+          "enum": [
+            "N"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "IterationState": {
+      "description": "Loop-iteration accounting, per branch, held in tool state so it survives session restarts (APPROACH graft 5).",
+      "properties": {
+        "cap": {
+          "description": "From the policy field, never a hardcode.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "count": {
+          "description": "Passes taken on this branch so far.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "escalated": {
+          "description": "True once the cap fired and the verdict became `escalate_to_human`.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cap",
+        "count",
+        "escalated"
+      ],
+      "type": "object"
+    },
+    "MetricValue": {
+      "description": "A measured value.\n\nAdjacently tagged so the type is explicit on the wire and a consumer never has to guess whether `3` was a count or a rounded ratio. Counts are integers and stay exact through canonical serialization (PLAN P5b: \"counts always exact\"); `Ratio` is the only float, and it is quantized on the way out and on the way back in.",
+      "oneOf": [
+        {
+          "description": "An exact non-negative count.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "count"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An exact signed quantity, e.g. a delta.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "integer"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A proportion or rate, finite and quantized to [`RATIO_DECIMAL_PLACES`].",
+          "properties": {
+            "kind": {
+              "enum": [
+                "ratio"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An elapsed time.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "duration"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "properties": {
+                "millis": {
+                  "description": "Elapsed milliseconds.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "millis"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A boolean outcome, e.g. whether a detector fired.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "flag"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A categorical or free-text value.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "text"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Severity": {
+      "description": "Finding severity. \"MED+\" throughout the plan means `Medium` or above.",
+      "oneOf": [
+        {
+          "description": "Reported for context; never acted on.",
+          "enum": [
+            "info"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Worth mentioning. Advises, never blocks.",
+          "enum": [
+            "low"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The bottom of the MED+ band.",
+          "enum": [
+            "medium"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A strong finding on a diff-actionable metric.",
+          "enum": [
+            "high"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Tamper signals and test failures under conservative defaults.",
+          "enum": [
+            "critical"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Verdict": {
+      "description": "What an actor is told to do about a change.\n\nDeliberately categorical: PRE-DECISIONS non-goal 1 bars a composite score, forever. There is no numeric quality value anywhere in this schema for an agent to optimize against.",
+      "oneOf": [
+        {
+          "description": "Nothing above the policy's advisory floor.",
+          "enum": [
+            "pass"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Findings worth reporting that must not stop the line.",
+          "enum": [
+            "advise"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The line stops. Reserved for tamper signals, test failures, and MED+ findings on diff-actionable metrics.",
+          "enum": [
+            "block"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The iteration cap fired, or a finding is real but not agent-fixable. A human decides; the agent must not keep grinding (PREMORTEM A4/S6).",
+          "enum": [
+            "escalate_to_human"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "The bounded, agent-facing view of a measurement.",
+  "properties": {
+    "attestation": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Attestation"
+        }
+      ],
+      "description": "How much trust the measurement has earned."
+    },
+    "base_oid": {
+      "description": "Base commit measured against.",
+      "type": "string"
+    },
+    "completeness": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Completeness"
+        }
+      ],
+      "description": "How complete the measurement behind it was."
+    },
+    "counts_downstream": {
+      "description": "Whether this measurement may count downstream. Stated outright so an agent does not have to know which attestation values are passes.",
+      "type": "boolean"
+    },
+    "findings": {
+      "description": "Findings, worst first, cut to fit the budget.",
+      "items": {
+        "$ref": "#/definitions/AgentFinding"
+      },
+      "type": "array"
+    },
+    "head_oid": {
+      "description": "Head commit measured.",
+      "type": "string"
+    },
+    "iteration": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/IterationState"
+        }
+      ],
+      "description": "Where the agent is against its iteration cap."
+    },
+    "profile": {
+      "description": "Always [`PROFILE_NAME`].",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Payload schema version this view belongs to.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "total_findings": {
+      "description": "How many findings the full record held.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "truncated": {
+      "description": "True when findings were dropped to stay inside the budget.",
+      "type": "boolean"
+    },
+    "verdict": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Verdict"
+        }
+      ],
+      "description": "What to do about the change."
+    }
+  },
+  "required": [
+    "attestation",
+    "base_oid",
+    "completeness",
+    "counts_downstream",
+    "findings",
+    "head_oid",
+    "iteration",
+    "profile",
+    "schema_version",
+    "total_findings",
+    "truncated",
+    "verdict"
+  ],
+  "title": "AgentProfile",
+  "type": "object"
+}

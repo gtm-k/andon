@@ -1,0 +1,24 @@
+# Fixture for andon-registry-lint. MUST REJECT: claim_id does not match the tuple it is built from.
+schema_version = 1
+engine = "static-metrics"
+family = "static"
+
+[[metric]]
+metric_id = "static.cognitive-complexity"
+claim_id = "andon.static.cognitive@1|typescript|comprehension"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.static.cognitive@1|typescript|comprehension"
+implementation = "andon.static.cognitive"
+implementation_version = "1"
+language = "typescript"
+outcome = "comprehension-time"
+tier = "B"
+citation = "Munoz Baron, Wyrich & Wagner, ESEM 2020"
+population = "427 snippets"
+effect = "correlates with time-to-comprehend"
+does_not_predict = ["defect density"]
+owner = "gtm-k"
+expiry = "2027-03-15"

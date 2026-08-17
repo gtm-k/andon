@@ -1,0 +1,390 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "AgentPolicy": {
+      "additionalProperties": false,
+      "description": "Agent-mode payload budget.",
+      "properties": {
+        "bytes_per_token": {
+          "default": 4,
+          "description": "Divisor converting the token budget into a byte budget. Deliberately a fixed estimate rather than a real tokenizer: a guardrail that is stable across models beats one that is accurate for one of them.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profile_token_budget": {
+          "default": 1500,
+          "description": "Token ceiling for the agent-mode profile.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "EvidenceTier": {
+      "description": "Evidence strength for a claim, as graded in `docs/metric-families.csv`.",
+      "oneOf": [
+        {
+          "description": "Validated against outcomes at scale.",
+          "enum": [
+            "A"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Published validation, narrower population or weaker linkage.",
+          "enum": [
+            "B"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Weak or contested on its own.",
+          "enum": [
+            "C"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Critiqued; not to be used as a headline.",
+          "enum": [
+            "D"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Novel and unvalidated. Motivated by evidence, not yet supported by it.",
+          "enum": [
+            "N"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "HistoryPolicy": {
+      "additionalProperties": false,
+      "description": "History window for process metrics. Part of the process `measurement_regime`.",
+      "properties": {
+        "window_days": {
+          "default": 365,
+          "description": "Days of history the process family reads. Stamped into the process `measurement_regime`, so changing it makes old and new numbers incomparable rather than silently different.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "LoopPolicy": {
+      "additionalProperties": false,
+      "description": "Agent-loop guardrails.",
+      "properties": {
+        "count_context_informational": {
+          "default": false,
+          "description": "Whether context-informational findings advance the counter. Default `false`: an agent must not burn its budget on what it cannot fix.",
+          "type": "boolean"
+        },
+        "iteration_cap": {
+          "default": 3,
+          "description": "Passes around the loop before `escalate_to_human`. A policy field, never a constant in the verdict code.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "PerfPolicy": {
+      "additionalProperties": false,
+      "description": "Latency budgets. Here rather than in the perf harness so that changing one is a ledgered policy edit and not a quiet ratchet (PREMORTEM T6).",
+      "properties": {
+        "fast_lane_cold_cap_ms": {
+          "default": 10000,
+          "description": "Hard cold cap; past it the fast lane spills to async with `completeness: partial` (APPROACH graft 4).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fast_lane_warm_p95_ms": {
+          "default": 1000,
+          "description": "Warm-cache p95 target for the fast lane.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_git_spawns_per_measure": {
+          "default": 64,
+          "description": "Asserted, not observed: a regression that doubles git spawns shows up here before it shows up as latency on someone else's machine.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "RegistryPolicy": {
+      "additionalProperties": false,
+      "description": "Evidence-registry governance.",
+      "properties": {
+        "claim_budget": {
+          "default": 24,
+          "description": "Enforced count. Exceeding it fails the lint, and therefore the build.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_claims_expiring_per_month": {
+          "default": 3,
+          "description": "Expiry stagger bound, enforced by the lint.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "SelfMeasureBinary": {
+      "description": "Which binary performs self-measurement.",
+      "oneOf": [
+        {
+          "description": "The rule: measure with the last attested release, so a broken detector cannot bless its own fix.",
+          "enum": [
+            "last-attested-release"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The bootstrap exception: legal only until the first attested release exists (decision log, 2026-08-16).",
+          "enum": [
+            "current-build"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "SelfMeasurePolicy": {
+      "additionalProperties": false,
+      "description": "How Andon measures itself (PREMORTEM S3).",
+      "properties": {
+        "binary": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SelfMeasureBinary"
+            }
+          ],
+          "default": "last-attested-release",
+          "description": "Which binary is allowed to measure this repository."
+        },
+        "excluded_paths": {
+          "default": [
+            "fixtures/gamed/**",
+            "fixtures/adversarial/**",
+            "crates/andon-registry-lint/tests/fixtures/**"
+          ],
+          "description": "Paths excluded from self-measurement — the adversarial fixtures, which exist to fire the tamper suite and would otherwise block every build. Declared here rather than hidden in the runner, so the exclusion is reviewable and the drift signal has something to compare against.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "exclusion_drift_signal": {
+          "default": true,
+          "description": "Emit a finding when the excluded set grows. An exclusion list that quietly widens is how dogfood circularity stops being visible.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Severity": {
+      "description": "Finding severity. \"MED+\" throughout the plan means `Medium` or above.",
+      "oneOf": [
+        {
+          "description": "Reported for context; never acted on.",
+          "enum": [
+            "info"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Worth mentioning. Advises, never blocks.",
+          "enum": [
+            "low"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The bottom of the MED+ band.",
+          "enum": [
+            "medium"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A strong finding on a diff-actionable metric.",
+          "enum": [
+            "high"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Tamper signals and test failures under conservative defaults.",
+          "enum": [
+            "critical"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "SeverityPolicy": {
+      "additionalProperties": false,
+      "description": "What is allowed to stop the line.",
+      "properties": {
+        "block_on_tamper": {
+          "default": true,
+          "description": "A tamper signal blocks. Conservative default, and the product's point.",
+          "type": "boolean"
+        },
+        "block_on_test_failure": {
+          "default": true,
+          "description": "A failing test suite blocks.",
+          "type": "boolean"
+        },
+        "max_severity_for_c_tier": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Severity"
+            }
+          ],
+          "default": "low",
+          "description": "The strongest severity a C-tier claim may reach. Weak evidence advises."
+        },
+        "med_plus_requires_diff_actionable": {
+          "default": true,
+          "description": "MED+ severity requires a diff-actionable metric. Blocking on something the agent cannot fix is the uninstall loop of PREMORTEM A4.",
+          "type": "boolean"
+        },
+        "med_plus_tiers": {
+          "default": [
+            "A",
+            "B"
+          ],
+          "description": "Evidence tiers that may reach MED+ at all.",
+          "items": {
+            "$ref": "#/definitions/EvidenceTier"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "The whole of `.andon.toml`.",
+  "properties": {
+    "agent": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AgentPolicy"
+        }
+      ],
+      "default": {
+        "bytes_per_token": 4,
+        "profile_token_budget": 1500
+      },
+      "description": "Agent-mode payload budget."
+    },
+    "history": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/HistoryPolicy"
+        }
+      ],
+      "default": {
+        "window_days": 365
+      },
+      "description": "History window for the process family."
+    },
+    "loop": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/LoopPolicy"
+        }
+      ],
+      "default": {
+        "count_context_informational": false,
+        "iteration_cap": 3
+      },
+      "description": "Agent-loop guardrails, including the iteration cap."
+    },
+    "perf": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/PerfPolicy"
+        }
+      ],
+      "default": {
+        "fast_lane_cold_cap_ms": 10000,
+        "fast_lane_warm_p95_ms": 1000,
+        "max_git_spawns_per_measure": 64
+      },
+      "description": "Latency and spawn budgets, ledgered rather than hardcoded."
+    },
+    "registry": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RegistryPolicy"
+        }
+      ],
+      "default": {
+        "claim_budget": 24,
+        "max_claims_expiring_per_month": 3
+      },
+      "description": "Evidence-registry governance: claim budget and expiry stagger."
+    },
+    "schema_version": {
+      "default": 1,
+      "description": "Policy schema version. Only `1` is accepted.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "self_measure": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SelfMeasurePolicy"
+        }
+      ],
+      "default": {
+        "binary": "last-attested-release",
+        "excluded_paths": [
+          "fixtures/gamed/**",
+          "fixtures/adversarial/**",
+          "crates/andon-registry-lint/tests/fixtures/**"
+        ],
+        "exclusion_drift_signal": true
+      },
+      "description": "Rules for Andon measuring itself."
+    },
+    "severity": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SeverityPolicy"
+        }
+      ],
+      "default": {
+        "block_on_tamper": true,
+        "block_on_test_failure": true,
+        "max_severity_for_c_tier": "low",
+        "med_plus_requires_diff_actionable": true,
+        "med_plus_tiers": [
+          "A",
+          "B"
+        ]
+      },
+      "description": "What may block, and what evidence is strong enough to."
+    }
+  },
+  "title": "Policy",
+  "type": "object"
+}

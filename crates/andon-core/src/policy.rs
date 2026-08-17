@@ -308,7 +308,10 @@ mod tests {
 
     #[test]
     fn an_empty_file_yields_the_conservative_defaults() {
-        assert_eq!(Policy::from_toml("schema_version = 1").unwrap(), Policy::default());
+        assert_eq!(
+            Policy::from_toml("schema_version = 1").unwrap(),
+            Policy::default()
+        );
     }
 
     #[test]

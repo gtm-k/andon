@@ -11,7 +11,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A calendar date, `YYYY-MM-DD`. No time, no zone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(try_from = "String", into = "String")]
 pub struct Date {
     // Field order carries the Ord derive: year, then month, then day.
@@ -171,7 +173,13 @@ mod tests {
         assert_eq!(Date::from_days_since_epoch(0).to_string(), "1970-01-01");
         assert_eq!(Date::from_days_since_epoch(-1).to_string(), "1969-12-31");
         // 2000-03-01, just past the leap day of a 400-year leap year.
-        assert_eq!(Date::from_days_since_epoch(11_017).to_string(), "2000-03-01");
-        assert_eq!(Date::from_days_since_epoch(19_723).to_string(), "2024-01-01");
+        assert_eq!(
+            Date::from_days_since_epoch(11_017).to_string(),
+            "2000-03-01"
+        );
+        assert_eq!(
+            Date::from_days_since_epoch(19_723).to_string(),
+            "2024-01-01"
+        );
     }
 }

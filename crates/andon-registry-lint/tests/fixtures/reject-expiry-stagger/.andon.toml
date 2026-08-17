@@ -1,0 +1,5 @@
+schema_version = 1
+
+[registry]
+claim_budget = 24
+max_claims_expiring_per_month = 1

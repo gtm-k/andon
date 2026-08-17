@@ -325,7 +325,10 @@ pub fn lint(
                 report.diagnostics.push(Diagnostic::error(
                     "registry.duplicate-metric",
                     path,
-                    format!("metric_id '{}' is declared more than once", metric.metric_id),
+                    format!(
+                        "metric_id '{}' is declared more than once",
+                        metric.metric_id
+                    ),
                 ));
             }
             registry
@@ -436,10 +439,8 @@ impl Registry {
             .map(|m| (m.metric_id.as_str(), m))
             .collect();
         let emitted = engine.metrics();
-        let emitted_map: BTreeMap<&str, &crate::engine::MetricDescriptor> = emitted
-            .iter()
-            .map(|m| (m.metric_id.as_str(), m))
-            .collect();
+        let emitted_map: BTreeMap<&str, &crate::engine::MetricDescriptor> =
+            emitted.iter().map(|m| (m.metric_id.as_str(), m)).collect();
 
         for (metric_id, descriptor) in &emitted_map {
             match declared.get(metric_id) {

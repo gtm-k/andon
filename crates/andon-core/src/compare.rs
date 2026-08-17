@@ -293,9 +293,8 @@ mod tests {
         let report = sample_record();
         let mut recompute = sample_record();
         // Same change, older grammar, and a digest that therefore disagrees.
-        if let crate::schema::regime::MeasurementRegime::Static {
-            engine_version, ..
-        } = &mut recompute.results[0].measurement_regime
+        if let crate::schema::regime::MeasurementRegime::Static { engine_version, .. } =
+            &mut recompute.results[0].measurement_regime
         {
             *engine_version = "0.0.1-old".to_string();
         }

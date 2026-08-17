@@ -1,0 +1,25 @@
+# Fixture for andon-registry-lint. MUST REJECT: the metric cites version 2 of the implementation; the registry only carries version 1, so the claim does not resolve.
+schema_version = 1
+engine = "static-metrics"
+family = "static"
+
+[[metric]]
+metric_id = "static.cognitive-complexity"
+claim_id = "andon.static.cognitive@2|typescript|comprehension-time"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.static.cognitive@1|typescript|comprehension-time"
+implementation = "andon.static.cognitive"
+implementation_version = "1"
+language = "typescript"
+outcome = "comprehension-time"
+tier = "B"
+citation = "Munoz Baron, Wyrich & Wagner, ESEM 2020"
+citation_ref = "10.1145/3382494.3410636"
+population = "427 snippets, ~24k human ratings, 27 studies"
+effect = "correlates with time-to-comprehend and subjective ratings"
+does_not_predict = ["defect density", "correctness", "review effort"]
+owner = "gtm-k"
+expiry = "2027-03-15"
