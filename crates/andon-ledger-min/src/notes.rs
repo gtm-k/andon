@@ -91,6 +91,29 @@ pub enum NotesError {
         #[source]
         source: serde_json::Error,
     },
+    /// The remote could not answer, which is not the same as having no ledger.
+    ///
+    /// Kept apart from every other error because the whole point is that it must
+    /// not be mistaken for `Ok(false)`. See [`Notes::fetch`].
+    #[error(
+        "could not reach {remote} for {notes_ref}: {source}\n\
+         a transport failure is not an empty ledger — treating it as one would let \
+         a network error report `unwitnessed` on a head that has self-reports"
+    )]
+    Transport {
+        /// The remote that was asked.
+        remote: String,
+        /// The ref that was being fetched.
+        notes_ref: String,
+        /// What git said.
+        ///
+        /// Boxed: `GitError` carries three owned strings on its widest variant,
+        /// and inlining it here made every `Result` in this module pay for the
+        /// rarest failure it has. `clippy::result_large_err` is the thing that
+        /// noticed.
+        #[source]
+        source: Box<GitError>,
+    },
     /// The temporary file holding a note body could not be written.
     #[error("could not stage a note body at {path}: {source}")]
     Staging {
@@ -240,10 +263,43 @@ impl<'a> Notes<'a> {
     ///
     /// `false` means the remote has no such ref yet, which is the first-push
     /// case and not a failure.
+    ///
+    /// # Why this asks twice
+    ///
+    /// `git fetch` collapses two entirely different answers into one nonzero
+    /// exit: *the remote has no such ref* and *the remote could not be reached*.
+    /// Mapping both to "no ledger here" is a fail-open, and the failure it opens
+    /// is specific and bad: a dead remote, an expired token, or a DNS blip makes
+    /// the verifier read an empty local ledger and report `unwitnessed` on a
+    /// head that **does** have self-reports. Absence of evidence would have been
+    /// manufactured by a network error, and `unwitnessed` is a neutral notice
+    /// nobody investigates.
+    ///
+    /// So `ls-remote` is asked first, where the two cases are distinguishable:
+    /// exit 0 with empty output means the ref genuinely is not there, and a
+    /// nonzero exit means the remote could not answer. The second becomes
+    /// [`NotesError::Transport`] — loud, typed, and fatal to the caller — so a
+    /// workflow's fetch step goes red rather than a verification quietly
+    /// proceeding over a ledger it never managed to read.
     pub fn fetch(&self, remote: &str) -> Result<bool, NotesError> {
-        let refspec = format!("+{}:{}", self.notes_ref, self.tracking_ref());
-        Ok(self
+        let transport = |source: GitError| NotesError::Transport {
+            remote: remote.to_string(),
+            notes_ref: self.notes_ref.clone(),
+            source: Box::new(source),
+        };
+        let listing = self
             .git
+            .cmd(["ls-remote", remote, &self.notes_ref])
+            .text()
+            .map_err(transport)?;
+        if listing.trim().is_empty() {
+            return Ok(false);
+        }
+
+        // The ref exists on the remote, so from here a failure is a real one and
+        // is not swallowed.
+        let refspec = format!("+{}:{}", self.notes_ref, self.tracking_ref());
+        self.git
             .cmd([
                 "fetch",
                 "--no-tags",
@@ -255,7 +311,9 @@ impl<'a> Notes<'a> {
                 remote,
                 &refspec,
             ])
-            .succeeds()?)
+            .output()
+            .map_err(transport)?;
+        Ok(true)
     }
 
     /// Merge the tracking ref into the working ref with `cat_sort_uniq`.

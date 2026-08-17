@@ -203,3 +203,54 @@ fn an_honest_run_carries_no_skew_or_escalation_marker() {
         reason_codes(&outcome)
     );
 }
+
+// ---------------------------------------------------------------------------
+// P15-R2: a transport failure is not an empty ledger
+// ---------------------------------------------------------------------------
+
+/// A remote that cannot be reached is an error, not an absent ledger.
+///
+/// The fail-open this closes is quiet and specific: `git fetch` exits nonzero
+/// both when a ref is missing and when the remote is unreachable, so mapping
+/// every nonzero exit to "no ledger" lets a dead remote, an expired token, or a
+/// DNS blip manufacture an absence. The verifier then reads an empty local
+/// ledger and reports `unwitnessed` — a neutral notice nobody investigates — on
+/// a head that has self-reports sitting on the remote.
+#[test]
+fn an_unreachable_remote_is_a_typed_error_rather_than_an_empty_ledger() {
+    let (git, _head, _trusted) = staged("honest/moving-main/manifest.toml", "dead-remote");
+    let nowhere = dest("dead-remote").join("no-such-remote.git");
+    assert!(
+        !nowhere.exists(),
+        "the test needs a remote that is not there"
+    );
+
+    let err = Notes::measure(&git)
+        .fetch(&nowhere.to_string_lossy())
+        .expect_err("an unreachable remote must not report an empty ledger");
+    let message = err.to_string();
+    assert!(
+        message.contains("not an empty ledger"),
+        "the refusal must say why it refuses: {message}"
+    );
+}
+
+/// A reachable remote that simply has no ledger yet is a clean, quiet `false`.
+///
+/// The other half, and the reason the fix is `ls-remote` rather than "treat
+/// every failure as fatal": the first push in any repository's life happens
+/// against a remote with no notes refs, and that must not be an error.
+#[test]
+fn a_reachable_remote_without_the_ref_reports_a_clean_absence() {
+    let (git, _head, _trusted) = staged("honest/moving-main/manifest.toml", "empty-remote");
+    let remote = dest("empty-remote").join("origin.git");
+    git.cmd(["init", "--quiet", "--bare", "--initial-branch", "main"])
+        .arg(&remote)
+        .output()
+        .expect("create an empty remote");
+
+    let found = Notes::measure(&git)
+        .fetch(&remote.to_string_lossy())
+        .expect("a reachable remote with no ledger is not a failure");
+    assert!(!found, "there is genuinely nothing there yet");
+}

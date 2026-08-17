@@ -168,8 +168,16 @@ runs:
         REMOTE: ${{ inputs.fetch-notes-from }}
       run: |
         set -euo pipefail
-        # A missing ledger is an answer, not a failure: it becomes `unwitnessed`.
-        # So the fetch reports what it found and the run continues either way.
+        # A missing ledger is an answer, not a failure: it becomes `unwitnessed`,
+        # and the fetch reports the absence and carries on.
+        #
+        # A remote that could not be *reached* is a different thing, and this
+        # step is where the run stops for it. `andon-spike notes fetch` exits
+        # non-zero on a transport failure rather than reporting an empty ledger,
+        # so `set -e` fails the job here — before the verifier can mistake a
+        # network error for an agent that never measured, and report
+        # `unwitnessed` on a head whose self-reports it simply failed to
+        # download.
         for ref in measure attest; do
           "$SPIKE" notes fetch --repo "$REPO_PATH" --ref "$ref" --remote "$REMOTE"
           "$SPIKE" notes merge --repo "$REPO_PATH" --ref "$ref"
