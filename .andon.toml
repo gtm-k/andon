@@ -72,6 +72,13 @@ binary = "last-attested-release"
 excluded_paths = [
     "fixtures/gamed/**",
     "fixtures/adversarial/**",
+    # The should-pass corpus is legitimate-looking changes that must NOT fire —
+    # which means it is full of suppressions, deleted tests, and loosened
+    # configs on purpose. Measuring it would report the false-positive corpus as
+    # a true positive (PREMORTEM S3).
+    "fixtures/honest/corpus/**",
+    # The cross-OS matrix specimen fires all seven detectors by construction.
+    "fixtures/matrix/**",
     "crates/andon-registry-lint/tests/fixtures/**",
 ]
 exclusion_drift_signal = true
