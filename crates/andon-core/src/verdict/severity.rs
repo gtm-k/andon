@@ -44,6 +44,14 @@
 //! part it could not read can only hide more. A lower bound above zero is still
 //! evidence. The reported severity stays capped, honestly; the line still stops.
 //!
+//! There is a second route to the same cap, and in the shipped configuration it
+//! is the *usual* one: every claim in `registry/tamper.toml` is tier N, N is not
+//! in the default `med_plus_tiers`, and so the tier ceiling caps **every** tamper
+//! firing at `Low` — complete parses included, with no degradation anywhere. A
+//! severity-keyed rule would therefore not merely be muzzled by a parked parse
+//! error; it would never stop the line for a tamper signal on any change at all.
+//! The flag is not a refinement of the severity path. It is the only path.
+//!
 //! # The one detector that does not stop the line
 //!
 //! `tamper.threshold-config-edit` fires on a loosened quality threshold, and it
@@ -207,6 +215,40 @@ mod tests {
             stops_the_line(&result, &SeverityPolicy::default()),
             "but the fired flag, not the capped severity, decides the line"
         );
+    }
+
+    #[test]
+    fn a_complete_tamper_firing_is_capped_by_its_tier_and_still_stops_the_line() {
+        // The second route to the same place, and under shipped conditions it is
+        // the *common* one. Every claim in `registry/tamper.toml` is tier N, and
+        // N is not in the default `med_plus_tiers`, so `apply` caps every tamper
+        // firing at `Low` — with no degraded parse anywhere in sight.
+        //
+        // Which means a severity-keyed rule would not merely be muzzled by a
+        // parked parse error: it would never stop the line for a tamper signal
+        // at all, on any change, in the shipped configuration. The flag is not a
+        // refinement of the severity path; it is the only path.
+        let mut result = tamper_flag("tamper.test-removal", true);
+        result.completeness = Completeness::Complete;
+        assert_eq!(result.evidence.tier, EvidenceTier::N);
+
+        let policy = Policy::default();
+        assert!(
+            !policy.severity.med_plus_tiers.contains(&EvidenceTier::N),
+            "the premise: tier N is not admitted to the MED+ band"
+        );
+        apply(std::slice::from_mut(&mut result), &policy);
+
+        assert_eq!(
+            result.severity,
+            Severity::Low,
+            "capped by tier, not by parse"
+        );
+        assert!(
+            stops_the_line(&result, &policy.severity),
+            "and the firing still stops the line"
+        );
+        assert!(counts_toward_iteration(&result, &policy));
     }
 
     #[test]

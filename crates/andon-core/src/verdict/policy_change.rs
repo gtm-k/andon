@@ -189,6 +189,26 @@ pub fn evaluate(
 /// Arrays are leaves. Recursing into them would report `excluded_paths.3`
 /// changing when an entry was inserted at position zero, which describes the
 /// serialization rather than the edit.
+///
+/// # Recursion, against the tree-walk policy
+///
+/// The systemic rule is that every tree-walk over PR-controlled input uses an
+/// explicit stack or a typed depth cap, never unbounded recursion — the
+/// exemplar is `clones/src/syntax.rs:229`, and the reason is that a crash on a
+/// large input is a denial of measurement.
+///
+/// This walk recurses, and the cap is the type. Both `Value`s come from
+/// `serde_json::to_value(&Policy)` and never from parsing a file: `Policy` is a
+/// fixed-shape struct three levels deep whose arrays are leaves here, so the
+/// depth is a property of the Rust type and not of the input. A hostile
+/// `.andon.toml` cannot deepen it — `Policy` carries `deny_unknown_fields`, so
+/// any key that is not one of the declared ones fails to parse long before this
+/// function sees a value. The only way to make this walk deeper is to add a
+/// nesting level to `Policy` itself, which is a P0-owned schema edit.
+///
+/// If the input ever becomes a `Value` parsed from a file rather than one
+/// derived from the struct, that argument is void and this needs an explicit
+/// stack.
 fn walk(prefix: &str, before: &Value, after: &Value, out: &mut Vec<PolicyDelta>) {
     if before == after {
         return;

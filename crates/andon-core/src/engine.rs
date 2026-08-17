@@ -176,3 +176,184 @@ pub fn run_engine(
     }
     Ok(results)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::enums::EngineFamily;
+    use crate::testing::{sample_compare_context, sample_regime, sample_result};
+
+    /// An engine that can be told to lie about a family, one lie at a time.
+    ///
+    /// Three places state the same fact — the descriptor, the regime, and the
+    /// stamp on each result — so there are three ways to make them disagree and
+    /// each needs its own case.
+    struct Stamper {
+        descriptor_family: EngineFamily,
+        regime: MeasurementRegime,
+        result_family: EngineFamily,
+        result_regime: MeasurementRegime,
+    }
+
+    impl Default for Stamper {
+        /// Honest: every statement of the family agrees with the others.
+        fn default() -> Self {
+            Stamper {
+                descriptor_family: EngineFamily::Static,
+                regime: sample_regime(),
+                result_family: EngineFamily::Static,
+                result_regime: sample_regime(),
+            }
+        }
+    }
+
+    /// A regime belonging to a family that is not `static`.
+    fn foreign_regime() -> MeasurementRegime {
+        MeasurementRegime::Process {
+            engine_version: "0.1.0".to_string(),
+            git_version: "git version 2.51.0".to_string(),
+            history_window_days: 365,
+        }
+    }
+
+    impl MeasureEngine for Stamper {
+        fn descriptor(&self) -> EngineDescriptor {
+            EngineDescriptor {
+                engine_id: "stamper".to_string(),
+                family: self.descriptor_family,
+                class: EngineClass::StaticSafe,
+                version: "0.1.0".to_string(),
+            }
+        }
+
+        fn metrics(&self) -> Vec<MetricDescriptor> {
+            Vec::new()
+        }
+
+        fn regime(&self) -> MeasurementRegime {
+            self.regime.clone()
+        }
+
+        fn measure(&self, _ctx: &MeasureContext) -> Result<Vec<MeasurementResult>, EngineError> {
+            let mut result = sample_result();
+            result.engine_id = "stamper".to_string();
+            result.family = self.result_family;
+            result.measurement_regime = self.result_regime.clone();
+            // Unsealed, as the trait requires: `run_engine` seals, and the
+            // family check has to happen before it does.
+            result.digest = String::new();
+            Ok(vec![result])
+        }
+    }
+
+    fn context() -> MeasureContext {
+        MeasureContext {
+            compare_context: sample_compare_context(),
+            policy: Policy::default(),
+            changed_paths: Vec::new(),
+            sandbox_available: false,
+        }
+    }
+
+    fn refusal(engine: Stamper) -> String {
+        match run_engine(&engine, &context()) {
+            Err(EngineError::Failed { reason, .. }) => reason,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_honest_engine_runs_and_its_results_are_sealed() {
+        let results = run_engine(&Stamper::default(), &context()).expect("measures");
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].digest.is_empty(), "run_engine seals");
+    }
+
+    #[test]
+    fn an_engine_whose_regime_belongs_to_another_family_is_refused() {
+        // The engine misdeclares itself: descriptor says `static`, regime says
+        // `process`. Caught before it measures anything at all.
+        let reason = refusal(Stamper {
+            regime: foreign_regime(),
+            ..Stamper::default()
+        });
+        assert!(reason.contains("Static"), "{reason}");
+        assert!(reason.contains("Process"), "{reason}");
+    }
+
+    #[test]
+    fn a_result_stamped_with_another_family_is_refused() {
+        // The stamp disagrees with the engine that produced it. Without this,
+        // the result seals with `family: clones` inside the digest input and the
+        // verifier — making the identical mistake — confirms it.
+        let reason = refusal(Stamper {
+            result_family: EngineFamily::Clones,
+            ..Stamper::default()
+        });
+        assert!(reason.contains("static.cognitive-complexity"), "{reason}");
+        assert!(reason.contains("Clones"), "{reason}");
+    }
+
+    #[test]
+    fn a_result_whose_regime_belongs_to_another_family_is_refused() {
+        // The subtlest of the three: descriptor and stamp agree, and the regime
+        // — which is *also* inside the digest input — says something else.
+        let reason = refusal(Stamper {
+            result_regime: foreign_regime(),
+            ..Stamper::default()
+        });
+        assert!(reason.contains("Process"), "{reason}");
+    }
+
+    #[test]
+    fn a_refused_result_is_never_sealed() {
+        // The order matters. A digest computed over a wrong family is a digest
+        // the verifier will reproduce exactly, so the refusal has to land before
+        // `seal` rather than after it.
+        let engine = Stamper {
+            result_family: EngineFamily::Clones,
+            ..Stamper::default()
+        };
+        assert!(run_engine(&engine, &context()).is_err());
+        let unsealed = engine
+            .measure(&context())
+            .expect("the engine itself is happy");
+        assert!(
+            unsealed[0].digest.is_empty(),
+            "nothing sealed a result the boundary refused"
+        );
+    }
+
+    #[test]
+    fn a_code_exec_engine_still_needs_a_sandbox() {
+        // The pre-existing rule, pinned alongside the new one so that a future
+        // edit to this function cannot drop one while satisfying the other.
+        struct Exec;
+        impl MeasureEngine for Exec {
+            fn descriptor(&self) -> EngineDescriptor {
+                EngineDescriptor {
+                    engine_id: "exec".to_string(),
+                    family: EngineFamily::Static,
+                    class: EngineClass::CodeExec,
+                    version: "0.1.0".to_string(),
+                }
+            }
+            fn metrics(&self) -> Vec<MetricDescriptor> {
+                Vec::new()
+            }
+            fn regime(&self) -> MeasurementRegime {
+                sample_regime()
+            }
+            fn measure(
+                &self,
+                _ctx: &MeasureContext,
+            ) -> Result<Vec<MeasurementResult>, EngineError> {
+                panic!("a code-exec engine must never reach `measure` without a sandbox")
+            }
+        }
+        assert!(matches!(
+            run_engine(&Exec, &context()),
+            Err(EngineError::SandboxRequired { .. })
+        ));
+    }
+}
