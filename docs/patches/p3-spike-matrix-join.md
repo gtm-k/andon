@@ -322,8 +322,9 @@ Green means: three OS legs and one verifier produced byte-identical per-result
 digests over 14 tamper results and 9 clone results, on a specimen where all
 seven detectors fired.
 
-Then confirm the registry budget across the merged wave — P3 spends 9 of the 24
-claim tuples (2 clones, 7 tamper), leaving 15 for P2 and P4:
+Then confirm the registry budget across the merged wave — P3 spends 5 of the 24
+claim tuples (1 clones, 4 tamper) against an allocation of 7, and its expiries
+occupy one slot each in 2027-03, -05, -07, -08 and -11:
 
 ```
 cargo run -p andon-registry-lint -- --policy .andon.toml registry/

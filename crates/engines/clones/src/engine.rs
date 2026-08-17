@@ -482,7 +482,10 @@ mod tests {
         let as_of: Date = "2026-08-17".parse().expect("a valid date");
         let registry = registry(as_of).expect("the compiled registry must lint clean");
         assert_eq!(registry.metrics.len(), 5);
-        assert_eq!(registry.claims.len(), 2);
+        // One claim for five metrics: they are one measurement at three
+        // granularities and two framings, and the wave allocation gives P3
+        // seven tuples for both engines (orchestrator directive, 2026-08-17).
+        assert_eq!(registry.claims.len(), 1);
     }
 
     #[test]

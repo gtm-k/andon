@@ -338,7 +338,11 @@ mod tests {
         let as_of: Date = "2026-08-17".parse().expect("a valid date");
         let registry = registry(as_of).expect("the compiled registry must lint clean");
         assert_eq!(registry.metrics.len(), 14);
-        assert_eq!(registry.claims.len(), 7);
+        // Four claims, seven detectors: one claim per *outcome*, because two
+        // detectors asking the same question by different mechanisms do not
+        // need two evidence stories. See registry/tamper.toml on why merging is
+        // honest for tier-N claims and would not be for cited ones.
+        assert_eq!(registry.claims.len(), 4);
     }
 
     #[test]
