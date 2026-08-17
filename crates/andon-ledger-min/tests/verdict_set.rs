@@ -108,7 +108,7 @@ fn every_committed_scenario_produces_the_verdict_it_declares() {
 }
 
 #[test]
-fn the_r2_5_verdict_set_is_present_and_covers_both_directions() {
+fn the_required_fixtures_are_all_present() {
     let names: BTreeSet<String> = manifests()
         .iter()
         .map(|(_, path)| {
@@ -118,9 +118,9 @@ fn the_r2_5_verdict_set_is_present_and_covers_both_directions() {
         })
         .collect();
 
-    // PLAN R2-5's five, plus the E4 flip and the PREMORTEM S4 skew. Named
-    // individually so that deleting one is a failure with a reason attached
-    // rather than a shorter list nobody counts.
+    // PLAN R2-5's five, plus the E4 flip, the PREMORTEM S4 skew, and the two
+    // fixtures repair round 1 added. Named individually so that deleting one is
+    // a failure with a reason attached rather than a shorter list nobody counts.
     for required in [
         "determinism",
         "moving-main",
@@ -128,29 +128,118 @@ fn the_r2_5_verdict_set_is_present_and_covers_both_directions() {
         "version-skew",
         "inflated-metric",
         "flipped-deterministic",
+        "flipped-one-deterministic",
         "fabricated-base",
+        "skewed-forge",
     ] {
         assert!(
             names.contains(required),
-            "the '{required}' fixture is missing; PLAN R2-5 / E4 / PREMORTEM S4 \
-             require it and a suite without it is green for the wrong reason"
+            "the '{required}' fixture is missing; PLAN R2-5 / E4 / PREMORTEM S4 / \
+             P15-R1 require it and a suite without it is green for the wrong reason"
         );
     }
+}
 
-    // A suite of should-pass fixtures proves nothing about a tamper detector,
-    // and a suite of should-fail fixtures proves nothing about false positives.
-    let expectations: Vec<Attestation> = manifests()
+/// Every fixture under `fixtures/gamed/` must expect a **non-pass carrying
+/// evidence**, and every fixture under `fixtures/honest/` must expect **no
+/// accusation**.
+///
+/// This is the direction binding, and it exists because the name check above is
+/// not one. Names bind nothing: defang `gamed/flipped-deterministic` by deleting
+/// its `forge` step and flipping its expectation to `confirmed`, and the fixture
+/// is still called `flipped-deterministic`, still present, still green — and the
+/// suite has quietly stopped testing whether tampering is caught while
+/// continuing to report that it does.
+///
+/// A directory is a claim about direction. `gamed/` says "this must not pass and
+/// the verifier must be able to say why"; `honest/` says "this must never be
+/// accused". Both halves matter: a suite that only bound the gamed side could be
+/// satisfied by a verifier that accused everything.
+#[test]
+fn each_fixture_family_binds_the_direction_of_its_verdict() {
+    for (family, path) in manifests() {
+        let manifest = scenario::load(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let expected = &manifest.verify;
+        let name = &manifest.name;
+
+        match family.as_str() {
+            "gamed" => {
+                assert!(
+                    !expected.expect.counts_downstream(),
+                    "gamed/{name} expects {:?}, which is a pass; a fixture staging an \
+                     attack that is expected to succeed is not a fixture",
+                    expected.expect
+                );
+                // A non-pass on its own is not enough. `unwitnessed` is a
+                // non-pass and it is also what a verifier that did nothing
+                // returns, so an attack fixture has to pin something the
+                // verifier actively *produced*.
+                let evidence = expected.expect_mismatches
+                    || expected.expect_flag_disagreements
+                    || !expected.expect_tamper.is_empty()
+                    || !expected.expect_reason_codes.is_empty();
+                assert!(
+                    evidence,
+                    "gamed/{name} expects {:?} and pins no evidence — no digest \
+                     mismatch, no flag disagreement, no tamper signal, no reason \
+                     code. A verifier that silently did nothing would satisfy it.",
+                    expected.expect
+                );
+            }
+            "honest" => {
+                assert!(
+                    expected.expect_tamper.is_empty(),
+                    "honest/{name} expects tamper signals {:?}; an honest change \
+                     must never be accused (PREMORTEM T1)",
+                    expected.expect_tamper
+                );
+                assert!(
+                    !expected.expect_mismatches,
+                    "honest/{name} expects a digest mismatch; two honest \
+                     measurements of the same change agree, and a fixture that \
+                     says otherwise has stopped being honest"
+                );
+            }
+            other => panic!("fixtures/{other}/ has no declared direction; add one to this test"),
+        }
+    }
+}
+
+/// Both directions are actually represented.
+///
+/// The binding above is vacuous over an empty family: a suite with no `honest/`
+/// fixtures satisfies every honest rule.
+#[test]
+fn the_suite_holds_both_a_should_pass_and_a_should_fail() {
+    let expectations: Vec<(String, Attestation)> = manifests()
         .iter()
-        .map(|(_, path)| scenario::load(path).expect("loads").verify.expect)
+        .map(|(family, path)| {
+            (
+                family.clone(),
+                scenario::load(path).expect("loads").verify.expect,
+            )
+        })
         .collect();
     assert!(
-        expectations.contains(&Attestation::Confirmed),
+        expectations
+            .iter()
+            .any(|(_, e)| *e == Attestation::Confirmed),
         "no should-pass fixture: a detector that never confirms is not a detector"
     );
     assert!(
-        expectations.contains(&Attestation::Divergent),
+        expectations
+            .iter()
+            .any(|(_, e)| *e == Attestation::Divergent),
         "no should-fail fixture: a suite that never catches tampering is green \
          for the wrong reason"
+    );
+    assert!(
+        expectations.iter().any(|(family, _)| family == "gamed"),
+        "the gamed family is empty"
+    );
+    assert!(
+        expectations.iter().any(|(family, _)| family == "honest"),
+        "the honest family is empty"
     );
 }
 
