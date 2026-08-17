@@ -319,7 +319,7 @@ fn a_hostile_repository_config_changes_nothing_either() {
     let neutral: &[(&str, &str)] = &[("GIT_CONFIG_GLOBAL", &empty_global)];
 
     let bare_before = bare_hash_object(repo.path(), PROBE_FILE, neutral);
-    let clean = observe(repo.path(), &base, &head);
+    let clean = serialized(|| observe(repo.path(), &base, &head));
 
     let attrs = write_global_config(dir.path(), "repo.gitattributes", "*.ts text eol=crlf\n");
     let config_path = repo.path().join(".git").join("config");
@@ -341,7 +341,7 @@ fn a_hostile_repository_config_changes_nothing_either() {
 
     assert_eq!(
         clean,
-        observe(repo.path(), &base, &head),
+        serialized(|| observe(repo.path(), &base, &head)),
         "a hostile .git/config must not change one byte of what we read"
     );
 }
@@ -395,7 +395,7 @@ fn a_hostile_environment_changes_nothing_either() {
         "GIT_INDEX_FILE is inert here; the sweep would be untested"
     );
 
-    let clean = observe(repo.path(), &base, &head);
+    let clean = serialized(|| observe(repo.path(), &base, &head));
     let hostile = with_env(
         &[
             ("GIT_CONFIG_COUNT", Some("3".to_string())),
@@ -424,14 +424,15 @@ fn a_hostile_environment_changes_nothing_either() {
 // the one place the pins must not reach
 // ---------------------------------------------------------------------------
 
-/// Run a bare `git` — no pins of ours — with extra `-c` settings, under an
-/// isolated config.
+/// Run a bare `git` — no pins of ours — with extra `-c` settings and an
+/// explicitly supplied config environment.
 ///
 /// The controls below need a git that answers as the machine would, which is
-/// what every other helper in this file is built to prevent. Isolating `HOME`
-/// and the system file is what keeps that from meaning "as *this* machine
-/// would".
-fn bare_git(cwd: &Path, config: &[&str], args: &[&str], empty_global: &str) -> String {
+/// what every other helper in this file is built to prevent. The environment is
+/// swept and then set from `env` rather than inherited, so "as the machine
+/// would" means "as the arm under test says", and not "as whichever test
+/// happened to be running in parallel had left it".
+fn bare_git(cwd: &Path, config: &[&str], args: &[&str], env: &[(&str, String)]) -> String {
     let mut command = std::process::Command::new("git");
     // Swept for the same reason the production path sweeps, and for one more:
     // the environment tests in this file set `GIT_INDEX_FILE` process-wide while
@@ -444,10 +445,10 @@ fn bare_git(cwd: &Path, config: &[&str], args: &[&str], empty_global: &str) -> S
             }
         }
     }
-    command
-        .current_dir(cwd)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", empty_global);
+    command.current_dir(cwd);
+    for (key, value) in env {
+        command.env(key, value);
+    }
     for setting in config {
         command.arg("-c").arg(setting);
     }
@@ -460,15 +461,81 @@ fn bare_git(cwd: &Path, config: &[&str], args: &[&str], empty_global: &str) -> S
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// Which config scope carries `core.autocrlf=true` in one arm of the matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// `etc/gitconfig`. What a fresh Git-for-Windows install actually ships.
+    System,
+    /// `~/.gitconfig`. What a developer who ran `git config --global` has.
+    Global,
+    /// The clone's own `.git/config`, written by `clone -c`.
+    Local,
+}
+
+impl Scope {
+    fn label(self) -> &'static str {
+        match self {
+            Scope::System => "system",
+            Scope::Global => "global",
+            Scope::Local => "local",
+        }
+    }
+}
+
 #[test]
-fn a_conversion_produced_checkout_is_not_reported_dirty() {
+fn a_conversion_produced_checkout_is_not_reported_dirty_in_any_config_scope() {
     // PREMORTEM Story 1 from the other end. Pinning `core.autocrlf=false` fixes
     // the bytes we hash, which is right when the question is what the bytes are
     // and wrong when the question is whether a file was edited: on a clone made
     // with `core.autocrlf=true` — the Git-for-Windows default — every text file
     // on disk carries CRLF that the checkout itself put there.
+    //
+    // Three arms, because git resolves that setting from three files and the
+    // first repair only reached two of them. The system arm is not the exotic
+    // one: `core.autocrlf=true` is what Git for Windows writes into
+    // `etc/gitconfig`, so on a fresh install it is the *only* scope carrying it,
+    // and a repair blind to it leaves the whole failure standing for the most
+    // common Windows setup there is.
+    //
+    // Each arm redirects both `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL` — one
+    // at a fixture carrying the setting, the other at an empty file — so an arm
+    // proves its own scope and cannot be carried by the machine's real config.
+    for scope in [Scope::System, Scope::Global, Scope::Local] {
+        one_conversion_scope(scope);
+    }
+}
+
+/// One arm of the scope matrix: build, clone, and assert the whole property.
+fn one_conversion_scope(scope: Scope) {
+    let label = scope.label();
     let dir = tempfile::tempdir().expect("temp dir");
-    let empty_global = empty_global_config(dir.path());
+
+    let carrying = write_global_config(
+        dir.path(),
+        &format!("{label}-carries.gitconfig"),
+        "[core]\n\tautocrlf = true\n",
+    );
+    let empty = write_global_config(dir.path(), &format!("{label}-empty.gitconfig"), "");
+    // The two file-scope variables are always both set, so whichever scope is
+    // not under test is empty rather than whatever this machine happens to hold.
+    let scope_env: Vec<(&str, String)> = vec![
+        (
+            "GIT_CONFIG_SYSTEM",
+            if scope == Scope::System {
+                carrying.clone()
+            } else {
+                empty.clone()
+            },
+        ),
+        (
+            "GIT_CONFIG_GLOBAL",
+            if scope == Scope::Global {
+                carrying.clone()
+            } else {
+                empty.clone()
+            },
+        ),
+    ];
 
     let origin_path = dir.path().join("origin");
     let origin = TestRepo::init(&origin_path);
@@ -481,105 +548,146 @@ fn a_conversion_produced_checkout_is_not_reported_dirty() {
     origin.add_all();
     let head = origin.commit("two hundred files, committed with LF");
 
-    // `clone -c`, not `-c … clone`: the former writes the setting into the new
-    // repository's config, which is where a real developer's would effectively
-    // live. The latter applies to the clone invocation and vanishes, leaving a
-    // checkout that disagrees with its own git — a different situation, in which
-    // reporting the files as modified is the correct answer.
-    let clone_path = dir.path().join("crlf-clone");
-    bare_git(
-        dir.path(),
-        &[],
-        &[
-            "clone",
-            "--quiet",
-            "-c",
-            "core.autocrlf=true",
-            &origin_path.display().to_string(),
-            &clone_path.display().to_string(),
-        ],
-        &empty_global,
-    );
-    assert!(
-        std::fs::read(clone_path.join("src/f0.ts"))
-            .expect("the clone has the file")
-            .windows(2)
-            .any(|w| w == b"\r\n"),
-        "the clone must actually carry CRLF, or there is no conversion to be \
-         consistent with"
-    );
+    // Two clones, made identically, because the first `status` any git runs
+    // against a fresh conversion checkout **rewrites the index stat cache** —
+    // git records size 0 for a converted entry so that it must compare content,
+    // and a successful comparison replaces that with trustworthy stat data.
+    // Every later reader then trusts the stat and answers "clean" whatever its
+    // own conversion says. That is the flip-flop this fix exists to remove, and
+    // it also means a control and the property under test cannot share a
+    // checkout: whichever ran second would be reading the other's leftovers.
+    // (It is timing-sensitive too — git distrusts stat data written in the same
+    // instant as the index — so sharing one clone fails on a different arm each
+    // run.)
+    //
+    // For the system and global arms the setting is already in force through the
+    // environment, so a plain clone converts. For the local arm `clone -c`
+    // writes it into the new repository's own config — which is the form that
+    // persists. (`-c … clone`, with the flag before the subcommand, would apply
+    // to the clone and then vanish, leaving a checkout that disagrees with its
+    // own git — a different situation, and one where calling the files modified
+    // is the correct answer.)
+    let origin_arg = origin_path.display().to_string();
+    let clone = |name: &str| -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        let mut args = vec!["clone", "--quiet"];
+        if scope == Scope::Local {
+            args.extend(["-c", "core.autocrlf=true"]);
+        }
+        let dest = path.display().to_string();
+        args.extend([origin_arg.as_str(), dest.as_str()]);
+        bare_git(dir.path(), &[], &args, &scope_env);
+        assert!(
+            std::fs::read(path.join("src/f0.ts"))
+                .expect("the clone has the file")
+                .windows(2)
+                .any(|w| w == b"\r\n"),
+            "[{label}] {name} must actually carry CRLF, or there is no conversion \
+             to be consistent with"
+        );
+        // Every file rewritten with the bytes it already holds — what an editor
+        // does when you save without typing. Content is untouched; the mtime
+        // moves, so git cannot take the stat-cache shortcut and has to compare
+        // content, which is the comparison this test is about.
+        //
+        // Without it the counts below are a coin toss. Git distrusts stat data
+        // written in the same instant as the index and trusts anything older, so
+        // on a fresh clone whether a file is re-hashed depends on which side of a
+        // timestamp tick its checkout landed: observed 200, 72, and 0 for the
+        // same arm across three runs.
+        for i in 0..200 {
+            let file = path.join(format!("src/f{i}.ts"));
+            let bytes = std::fs::read(&file).expect("read back");
+            std::fs::write(&file, bytes).expect("rewrite unchanged");
+        }
+        path
+    };
+    let control_path = clone("control-clone");
+    let clone_path = clone("crlf-clone");
 
     let status_args = ["status", "--porcelain=v1", "--untracked-files=all"];
     let clean_lines = |out: &str| out.lines().filter(|l| !l.is_empty()).count();
 
-    // Control 1: the clone's own git considers this tree clean.
-    assert_eq!(
-        clean_lines(&bare_git(&clone_path, &[], &status_args, &empty_global)),
-        0,
-        "the clone's own git must call this tree clean"
-    );
-    // Control 2, and the one that makes the assertions below mean something:
-    // the same question asked under our conversion pins and nothing else calls
-    // every one of the 200 files modified. Without checkout-consistent
-    // detection that is the answer the snapshot would carry.
+    // Control 1, and the one that makes everything below mean something: asked
+    // under our conversion pins and nothing else, a fresh checkout has all 200
+    // files modified. That is the answer the snapshot carried before the fix.
+    // It runs first, on an untouched index, because it is the reading the stat
+    // cache destroys.
     assert_eq!(
         clean_lines(&bare_git(
-            &clone_path,
+            &control_path,
             &["core.autocrlf=false", "core.eol=lf"],
             &status_args,
-            &empty_global,
+            &scope_env,
         )),
         200,
-        "the bait is inert: pinning the conversion off changed nothing here, so \
-         the test below would prove nothing"
+        "[{label}] the bait is inert: pinning the conversion off changed nothing \
+         here, so the assertions below would prove nothing"
     );
-
-    let git = Git::open(&clone_path).expect("the clone is a repository");
-    let snapshot = || DirtySnapshot::incremental(&git, &head, false).expect("snapshot");
-
-    let first = snapshot();
-    assert!(
-        first.is_empty(),
-        "an untouched clone has no dirty state; got {} entries, e.g. {:?}",
-        first.len(),
-        first.entries.keys().take(3).collect::<Vec<_>>()
-    );
+    // Control 2: the clone's own git considers the same tree clean.
     assert_eq!(
-        first.digest(),
-        snapshot().digest(),
-        "two reads of one untouched tree must agree"
+        clean_lines(&bare_git(&control_path, &[], &status_args, &scope_env)),
+        0,
+        "[{label}] the clone's own git must call this tree clean"
     );
 
-    // The flip-flop, which is the sharper half. Our `status` refreshes the index
-    // stat cache as it goes, and so does the clone's; before this fix the
-    // snapshot's answer depended on which of them had written it last.
-    bare_git(&clone_path, &[], &status_args, &empty_global);
-    let after_refresh = snapshot();
-    assert!(after_refresh.is_empty(), "still untouched, still clean");
-    assert_eq!(
-        first.digest(),
-        after_refresh.digest(),
-        "an index refresh by the clone's own git must not move the digest"
-    );
+    // The production path reads the environment of *this* process, so the arm's
+    // redirection has to be process-wide for the rest of the test.
+    let env: Vec<(&str, Option<String>)> = scope_env
+        .iter()
+        .map(|(k, v)| (*k, Some(v.clone())))
+        .collect();
+    with_env(&env, || {
+        let git = Git::open(&clone_path).expect("the clone is a repository");
+        let snapshot = || DirtySnapshot::incremental(&git, &head, false).expect("snapshot");
 
-    // And the property that makes the fix a fix rather than a mute: a real edit
-    // is still a real edit, and it is the only entry.
-    std::fs::write(
-        clone_path.join("src/f7.ts"),
-        b"export const genuinely = 'edited';\r\n",
-    )
-    .expect("write the edit");
-    let edited = snapshot();
-    assert_eq!(
-        edited.entries.keys().collect::<Vec<_>>(),
-        vec!["src/f7.ts"],
-        "exactly the edited file, and nothing the conversion produced"
-    );
-    assert_ne!(
-        first.digest(),
-        edited.digest(),
-        "and the key has to move when the content does"
-    );
+        let first = snapshot();
+        assert!(
+            first.is_empty(),
+            "[{label}] an untouched clone has no dirty state; got {} entries, e.g. {:?}",
+            first.len(),
+            first.entries.keys().take(3).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            first.digest(),
+            snapshot().digest(),
+            "[{label}] two reads of one untouched tree must agree"
+        );
+
+        // The flip-flop, which is the sharper half. Our `status` refreshes the
+        // index stat cache as it goes, and so does the clone's; before this fix
+        // the snapshot's answer depended on which had written it last.
+        bare_git(&clone_path, &[], &status_args, &scope_env);
+        let after_refresh = snapshot();
+        assert!(
+            after_refresh.is_empty(),
+            "[{label}] still untouched, still clean"
+        );
+        assert_eq!(
+            first.digest(),
+            after_refresh.digest(),
+            "[{label}] an index refresh by the clone's own git must not move the digest"
+        );
+
+        // And the property that makes the fix a fix rather than a mute: a real
+        // edit is still a real edit, and it is the only entry.
+        std::fs::write(
+            clone_path.join("src/f7.ts"),
+            b"export const genuinely = 'edited';\r\n",
+        )
+        .expect("write the edit");
+        let edited = snapshot();
+        assert_eq!(
+            edited.entries.keys().collect::<Vec<_>>(),
+            vec!["src/f7.ts"],
+            "[{label}] exactly the edited file, and nothing the conversion produced"
+        );
+        assert_ne!(
+            first.digest(),
+            edited.digest(),
+            "[{label}] and the key has to move when the content does"
+        );
+    });
 }
 
 #[test]
@@ -590,7 +698,13 @@ fn a_staged_change_on_a_converting_checkout_keeps_its_staged_half() {
     // change is real and must survive, which is why the repair corrects the
     // status letter rather than dropping the entry.
     let dir = tempfile::tempdir().expect("temp dir");
-    let empty_global = empty_global_config(dir.path());
+    // Both file scopes emptied, so the local `clone -c` below is the only place
+    // the setting lives and this machine's own config cannot carry the arm.
+    let empty = write_global_config(dir.path(), "staged-empty.gitconfig", "");
+    let scope_env: Vec<(&str, String)> = vec![
+        ("GIT_CONFIG_SYSTEM", empty.clone()),
+        ("GIT_CONFIG_GLOBAL", empty.clone()),
+    ];
 
     let origin_path = dir.path().join("origin");
     let origin = TestRepo::init(&origin_path);
@@ -611,7 +725,7 @@ fn a_staged_change_on_a_converting_checkout_keeps_its_staged_half() {
             &origin_path.display().to_string(),
             &clone_path.display().to_string(),
         ],
-        &empty_global,
+        &scope_env,
     );
 
     std::fs::write(
@@ -619,10 +733,10 @@ fn a_staged_change_on_a_converting_checkout_keeps_its_staged_half() {
         b"export const a = 1;\r\nexport const staged = true;\r\n",
     )
     .expect("write");
-    bare_git(&clone_path, &[], &["add", "src/a.ts"], &empty_global);
+    bare_git(&clone_path, &[], &["add", "src/a.ts"], &scope_env);
 
     let git = Git::open(&clone_path).expect("repository");
-    let snapshot = DirtySnapshot::incremental(&git, &head, false).expect("snapshot");
+    let snapshot = serialized(|| DirtySnapshot::incremental(&git, &head, false).expect("snapshot"));
 
     assert_eq!(
         snapshot.entries.keys().collect::<Vec<_>>(),
@@ -684,13 +798,26 @@ fn opening_a_repository_and_reading_a_change_stays_inside_the_spawn_budget() {
     );
 }
 
+/// Take the environment lock without changing anything.
+///
+/// For tests that only *read* the environment through a git spawn. That used to
+/// be nobody: the pinned path sweeps every `GIT_*` variable, so what the process
+/// carried could not reach git. The checkout-conversion spawn deliberately lets
+/// `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL` through, so any test whose
+/// production call reaches a dirty snapshot is now a reader — and a reader
+/// running in parallel with the scope matrix would see that arm's fixture config
+/// instead of its own neutral one.
+fn serialized<T>(body: impl FnOnce() -> T) -> T {
+    with_env(&[], body)
+}
+
 /// Run `body` with environment variables set, then restore them.
 ///
 /// Rust 2024 marks `set_var` unsafe because it races with other threads reading
 /// the environment. These tests are `#[test]` functions in a binary that runs
 /// them in parallel, so the restoration is not enough on its own — a lock keeps
-/// the mutating tests off each other, and no other test in this file reads the
-/// environment concurrently.
+/// the mutating tests off each other, and [`serialized`] keeps the readers off
+/// them too.
 fn with_env<T>(vars: &[(&str, Option<String>)], body: impl FnOnce() -> T) -> T {
     use std::sync::Mutex;
     static ENV_LOCK: Mutex<()> = Mutex::new(());

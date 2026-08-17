@@ -89,6 +89,14 @@
 //! provenance. What it may decide is **membership** of the dirty set. Every OID
 //! recorded in a snapshot is still hashed under the full pins.
 //!
+//! That relaxation has to reach **every scope**, which the first attempt did not.
+//! It unpinned the three conversion keys and went on suppressing the system
+//! config — and Git for Windows writes `core.autocrlf=true` into
+//! `etc/gitconfig`, so on a fresh install that is the only place the setting
+//! lives. All 200 files came back dirty again, one scope over from where the
+//! fix was looking. The rule is now scope-blind: everything defining this
+//! checkout's conversion speaks, wherever it lives.
+//!
 //! **System files.** `GIT_CONFIG_NOSYSTEM=1` drops `/etc/gitconfig` and
 //! `GIT_ATTR_NOSYSTEM=1` drops the system attributes file. The *global*
 //! gitconfig is deliberately left loadable: `actions/checkout` writes
@@ -169,6 +177,25 @@ pub const PINNED_CONFIG: &[(&str, &str)] = &[
 /// error, never into different bytes, so leaving it pinned off costs nothing and
 /// keeps a hostile config from failing the re-check outright.
 pub const CONVERSION_CONFIG: &[&str] = &["core.autocrlf", "core.eol", "core.attributesFile"];
+
+/// Environment variables that tell git **where** its config lives, as opposed to
+/// what it says.
+///
+/// The distinction is the whole of the exception in
+/// [`Git::cmd_in_checkout_conversion`]: a variable that *locates* a file is part
+/// of how this machine's git resolved the conversion that produced the checkout,
+/// so honouring it on that one spawn is checkout-consistency. A variable that
+/// *injects* config — `GIT_CONFIG_COUNT` and its `KEY_n`/`VALUE_n` — invents
+/// settings no file holds, and stays swept everywhere.
+const CONFIG_LOCATION_ENV: &[&str] = &["GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"];
+
+/// Forced variables that suppress machine-wide inputs to conversion.
+///
+/// Set on every invocation except the checkout-conversion one, where suppressing
+/// them is the bug: a system `core.autocrlf=true` is what Git for Windows
+/// installs by default, and a checkout produced under it is not dirty for having
+/// been.
+const SYSTEM_SUPPRESSION_ENV: &[&str] = &["GIT_CONFIG_NOSYSTEM", "GIT_ATTR_NOSYSTEM"];
 
 /// Environment variables set on every git invocation.
 const FORCED_ENV: &[(&str, &str)] = &[
@@ -449,10 +476,7 @@ impl Git {
     /// speak.
     ///
     /// The deliberate hole, and the second one in this module — see
-    /// [`GitCommand::env`] for the first. [`CONVERSION_CONFIG`] is left off; the
-    /// environment sweep, the system-file suppression, and every other pin stay
-    /// exactly as they are, so what a repository or a `~/.gitconfig` gets to
-    /// decide here is line-ending translation and nothing else.
+    /// [`GitCommand::env`] for the first.
     ///
     /// It answers one question, in one caller: *was this file edited, or does it
     /// merely look edited because the checkout that produced it disagrees with
@@ -461,12 +485,40 @@ impl Git {
     /// OID this produces is ever recorded — it decides membership of the dirty
     /// set, and the members are then hashed under the full pins.
     ///
-    /// `GIT_ATTR_NOSYSTEM=1` stays set. A system-wide attributes file could in
-    /// principle be part of a checkout's conversion, and unsweeping the
-    /// environment to find out would widen this hole from three config keys to
-    /// everything git reads from the machine. The residual is a
-    /// system-attributes checkout still reporting phantom dirt; the trade is
-    /// deliberate.
+    /// # Exactly what is relaxed
+    ///
+    /// One rule covers all of it: **everything that defines this checkout's
+    /// conversion speaks; everything else is pinned or swept.**
+    ///
+    /// - [`CONVERSION_CONFIG`] is not pinned, so the three keys resolve from
+    ///   config files as git normally resolves them.
+    /// - [`SYSTEM_SUPPRESSION_ENV`] is not set, so the *system* config and
+    ///   attributes files are read. This is not a corner: Git for Windows ships
+    ///   `core.autocrlf=true` in `etc/gitconfig`, so on a fresh install the
+    ///   setting that produced the CRLF on disk exists **only** at system scope.
+    ///   Suppressing it left exactly the failure this method was added to fix,
+    ///   one scope over.
+    /// - [`CONFIG_LOCATION_ENV`] survives the sweep, because where a machine
+    ///   keeps its config is part of how it resolved that config. Injection
+    ///   variables — `GIT_CONFIG_COUNT` and its keys and values — do not: they
+    ///   invent settings no file holds. An ambient `GIT_CONFIG_NOSYSTEM` is
+    ///   swept too; it suppresses rather than locates.
+    ///
+    /// Everything else is untouched: the rest of the environment sweep, and
+    /// every other pin. `-c` outranks every config file, so what the relaxation
+    /// above can actually change is line-ending translation.
+    ///
+    /// # What it costs
+    ///
+    /// Attributes select filters, and `hash-object` runs a clean filter. So a
+    /// system or global attributes file naming a `filter` can put a program in
+    /// this spawn's path that the pinned spawn would not have run. The pinned
+    /// spawn already runs filters the *repository's* `.gitattributes` selects —
+    /// filters are a documented part of what "the OID `git add` would give it"
+    /// means — so this widens an existing surface from one config scope to
+    /// three rather than opening a new one. Weighed against a tool that calls
+    /// every file in a default Windows checkout modified, it is the better
+    /// trade, and it is the whole of the residual.
     pub(crate) fn cmd_in_checkout_conversion<I, S>(&self, args: I) -> GitCommand
     where
         I: IntoIterator<Item = S>,
@@ -482,7 +534,7 @@ impl Git {
     {
         let mut command = Command::new("git");
         command.current_dir(&self.workdir);
-        Self::sanitize_env(&mut command);
+        Self::sanitize_env(&mut command, pin_conversion);
         for (key, value) in PINNED_CONFIG {
             if !pin_conversion && CONVERSION_CONFIG.contains(key) {
                 continue;
@@ -510,16 +562,29 @@ impl Git {
     /// Sweeping is the point. Enumerating the dangerous variables means the list
     /// is correct until git adds one, and the failure mode of being wrong is
     /// silent: the measurement still succeeds, it just measured something else.
-    fn sanitize_env(command: &mut Command) {
+    fn sanitize_env(command: &mut Command, pin_conversion: bool) {
         for (key, _) in std::env::vars_os() {
             let Some(key) = key.to_str() else { continue };
             // `GIT_EXEC_PATH` locates git's own subcommands. Some MSYS and
             // container installs set it and break without it.
-            if key.starts_with("GIT_") && key != "GIT_EXEC_PATH" {
-                command.env_remove(key);
+            if key == "GIT_EXEC_PATH" || !key.starts_with("GIT_") {
+                continue;
             }
+            // On the checkout-conversion spawn, the variables that *locate* a
+            // config file survive: where this machine keeps its config is part
+            // of how it decided what to write to disk. `GIT_CONFIG_NOSYSTEM` is
+            // not one of them — it suppresses rather than locates, and an
+            // ambient one would silently reintroduce the blindness this spawn
+            // exists to remove.
+            if !pin_conversion && CONFIG_LOCATION_ENV.contains(&key) {
+                continue;
+            }
+            command.env_remove(key);
         }
         for (key, value) in FORCED_ENV {
+            if !pin_conversion && SYSTEM_SUPPRESSION_ENV.contains(key) {
+                continue;
+            }
             command.env(key, value);
         }
     }
