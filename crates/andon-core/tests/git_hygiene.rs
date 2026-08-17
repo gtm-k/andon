@@ -420,6 +420,223 @@ fn a_hostile_environment_changes_nothing_either() {
     assert_eq!(clean, hostile, "a hostile environment must not reach git");
 }
 
+// ---------------------------------------------------------------------------
+// the one place the pins must not reach
+// ---------------------------------------------------------------------------
+
+/// Run a bare `git` — no pins of ours — with extra `-c` settings, under an
+/// isolated config.
+///
+/// The controls below need a git that answers as the machine would, which is
+/// what every other helper in this file is built to prevent. Isolating `HOME`
+/// and the system file is what keeps that from meaning "as *this* machine
+/// would".
+fn bare_git(cwd: &Path, config: &[&str], args: &[&str], empty_global: &str) -> String {
+    let mut command = std::process::Command::new("git");
+    // Swept for the same reason the production path sweeps, and for one more:
+    // the environment tests in this file set `GIT_INDEX_FILE` process-wide while
+    // they run, and `cargo test` runs test functions in parallel. An inherited
+    // one turns this clone into a failure that depends on scheduling.
+    for (key, _) in std::env::vars_os() {
+        if let Some(key) = key.to_str() {
+            if key.starts_with("GIT_") && key != "GIT_EXEC_PATH" {
+                command.env_remove(key);
+            }
+        }
+    }
+    command
+        .current_dir(cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", empty_global);
+    for setting in config {
+        command.arg("-c").arg(setting);
+    }
+    let out = command.args(args).output().expect("bare git runs");
+    assert!(
+        out.status.success(),
+        "bare git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_conversion_produced_checkout_is_not_reported_dirty() {
+    // PREMORTEM Story 1 from the other end. Pinning `core.autocrlf=false` fixes
+    // the bytes we hash, which is right when the question is what the bytes are
+    // and wrong when the question is whether a file was edited: on a clone made
+    // with `core.autocrlf=true` — the Git-for-Windows default — every text file
+    // on disk carries CRLF that the checkout itself put there.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let empty_global = empty_global_config(dir.path());
+
+    let origin_path = dir.path().join("origin");
+    let origin = TestRepo::init(&origin_path);
+    for i in 0..200 {
+        origin.write(
+            &format!("src/f{i}.ts"),
+            format!("export const v{i} = {i};\nexport const w{i} = {i};\n").as_bytes(),
+        );
+    }
+    origin.add_all();
+    let head = origin.commit("two hundred files, committed with LF");
+
+    // `clone -c`, not `-c … clone`: the former writes the setting into the new
+    // repository's config, which is where a real developer's would effectively
+    // live. The latter applies to the clone invocation and vanishes, leaving a
+    // checkout that disagrees with its own git — a different situation, in which
+    // reporting the files as modified is the correct answer.
+    let clone_path = dir.path().join("crlf-clone");
+    bare_git(
+        dir.path(),
+        &[],
+        &[
+            "clone",
+            "--quiet",
+            "-c",
+            "core.autocrlf=true",
+            &origin_path.display().to_string(),
+            &clone_path.display().to_string(),
+        ],
+        &empty_global,
+    );
+    assert!(
+        std::fs::read(clone_path.join("src/f0.ts"))
+            .expect("the clone has the file")
+            .windows(2)
+            .any(|w| w == b"\r\n"),
+        "the clone must actually carry CRLF, or there is no conversion to be \
+         consistent with"
+    );
+
+    let status_args = ["status", "--porcelain=v1", "--untracked-files=all"];
+    let clean_lines = |out: &str| out.lines().filter(|l| !l.is_empty()).count();
+
+    // Control 1: the clone's own git considers this tree clean.
+    assert_eq!(
+        clean_lines(&bare_git(&clone_path, &[], &status_args, &empty_global)),
+        0,
+        "the clone's own git must call this tree clean"
+    );
+    // Control 2, and the one that makes the assertions below mean something:
+    // the same question asked under our conversion pins and nothing else calls
+    // every one of the 200 files modified. Without checkout-consistent
+    // detection that is the answer the snapshot would carry.
+    assert_eq!(
+        clean_lines(&bare_git(
+            &clone_path,
+            &["core.autocrlf=false", "core.eol=lf"],
+            &status_args,
+            &empty_global,
+        )),
+        200,
+        "the bait is inert: pinning the conversion off changed nothing here, so \
+         the test below would prove nothing"
+    );
+
+    let git = Git::open(&clone_path).expect("the clone is a repository");
+    let snapshot = || DirtySnapshot::incremental(&git, &head, false).expect("snapshot");
+
+    let first = snapshot();
+    assert!(
+        first.is_empty(),
+        "an untouched clone has no dirty state; got {} entries, e.g. {:?}",
+        first.len(),
+        first.entries.keys().take(3).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        first.digest(),
+        snapshot().digest(),
+        "two reads of one untouched tree must agree"
+    );
+
+    // The flip-flop, which is the sharper half. Our `status` refreshes the index
+    // stat cache as it goes, and so does the clone's; before this fix the
+    // snapshot's answer depended on which of them had written it last.
+    bare_git(&clone_path, &[], &status_args, &empty_global);
+    let after_refresh = snapshot();
+    assert!(after_refresh.is_empty(), "still untouched, still clean");
+    assert_eq!(
+        first.digest(),
+        after_refresh.digest(),
+        "an index refresh by the clone's own git must not move the digest"
+    );
+
+    // And the property that makes the fix a fix rather than a mute: a real edit
+    // is still a real edit, and it is the only entry.
+    std::fs::write(
+        clone_path.join("src/f7.ts"),
+        b"export const genuinely = 'edited';\r\n",
+    )
+    .expect("write the edit");
+    let edited = snapshot();
+    assert_eq!(
+        edited.entries.keys().collect::<Vec<_>>(),
+        vec!["src/f7.ts"],
+        "exactly the edited file, and nothing the conversion produced"
+    );
+    assert_ne!(
+        first.digest(),
+        edited.digest(),
+        "and the key has to move when the content does"
+    );
+}
+
+#[test]
+fn a_staged_change_on_a_converting_checkout_keeps_its_staged_half() {
+    // The other half of the correction. A file staged through the clone's own
+    // git has LF in the index and CRLF on disk, so our pins read it as modified
+    // on *both* sides — `MM`. Only the worktree half is phantom: the staged
+    // change is real and must survive, which is why the repair corrects the
+    // status letter rather than dropping the entry.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let empty_global = empty_global_config(dir.path());
+
+    let origin_path = dir.path().join("origin");
+    let origin = TestRepo::init(&origin_path);
+    origin.write("src/a.ts", b"export const a = 1;\n");
+    origin.write("src/b.ts", b"export const b = 2;\n");
+    origin.add_all();
+    let head = origin.commit("base");
+
+    let clone_path = dir.path().join("crlf-clone");
+    bare_git(
+        dir.path(),
+        &[],
+        &[
+            "clone",
+            "--quiet",
+            "-c",
+            "core.autocrlf=true",
+            &origin_path.display().to_string(),
+            &clone_path.display().to_string(),
+        ],
+        &empty_global,
+    );
+
+    std::fs::write(
+        clone_path.join("src/a.ts"),
+        b"export const a = 1;\r\nexport const staged = true;\r\n",
+    )
+    .expect("write");
+    bare_git(&clone_path, &[], &["add", "src/a.ts"], &empty_global);
+
+    let git = Git::open(&clone_path).expect("repository");
+    let snapshot = DirtySnapshot::incremental(&git, &head, false).expect("snapshot");
+
+    assert_eq!(
+        snapshot.entries.keys().collect::<Vec<_>>(),
+        vec!["src/a.ts"],
+        "the untouched file must not be dragged in by conversion"
+    );
+    let entry = &snapshot.entries["src/a.ts"];
+    assert_eq!(
+        entry.status, "M.",
+        "the staged half is real and the worktree half is not"
+    );
+    assert!(entry.is_staged(), "and the entry still reads as staged");
+}
+
 #[test]
 fn the_git_version_is_captured_for_the_payload() {
     // `CompareContext::git_version` and the process `measurement_regime` both

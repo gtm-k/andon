@@ -128,6 +128,28 @@ impl DirtyEntry {
             Some(b'.') | Some(b'?') | Some(b' ') | None
         )
     }
+
+    /// True when git reported the working-tree side as content-modified
+    /// relative to the index.
+    ///
+    /// Porcelain v2's second status character. `.` means "unmodified there",
+    /// which is the case [`super::diff`] needs so that it knows whether the
+    /// index blob still describes what is on disk.
+    pub fn is_worktree_modified(&self) -> bool {
+        self.status.as_bytes().get(1).copied() == Some(b'M')
+    }
+
+    /// Record that the working-tree side turned out to match the index after
+    /// all, leaving the index side of the status untouched.
+    fn clear_worktree_modification(&mut self) {
+        let index_side = self.status.chars().next().unwrap_or('.');
+        self.status = format!("{index_side}.");
+    }
+
+    /// True when the entry now describes no difference from `HEAD` at all.
+    fn is_no_change(&self) -> bool {
+        self.status == ".."
+    }
 }
 
 /// The uncommitted state of a working tree, as a hashable value.
@@ -179,7 +201,6 @@ impl DirtySnapshot {
             .output()?;
 
         let mut entries: BTreeMap<String, DirtyEntry> = BTreeMap::new();
-        let mut to_hash: Vec<String> = Vec::new();
 
         for record in parse_porcelain_v2(&raw)? {
             let PorcelainEntry {
@@ -203,15 +224,6 @@ impl DirtySnapshot {
                 }
             }
 
-            let deleted = worktree_mode.is_none();
-            let gitlink = head_mode.as_deref() == Some(GITLINK_MODE)
-                || worktree_mode.as_deref() == Some(GITLINK_MODE);
-            // A deleted path has no bytes to hash, and a gitlink's "content" is
-            // another repository's commit.
-            if !staged_only && !deleted && !gitlink {
-                to_hash.push(path.clone());
-            }
-
             entries.insert(
                 path,
                 DirtyEntry {
@@ -225,6 +237,22 @@ impl DirtySnapshot {
             );
         }
 
+        if !staged_only {
+            drop_conversion_phantoms(git, &mut entries)?;
+        }
+
+        // Only what survived detection gets hashed, and it gets hashed under the
+        // full pins. A deleted path has no bytes to hash, and a gitlink's
+        // "content" is another repository's commit.
+        let to_hash: Vec<String> = if staged_only {
+            Vec::new()
+        } else {
+            entries
+                .iter()
+                .filter(|(_, e)| !e.is_deleted() && !e.is_gitlink())
+                .map(|(path, _)| path.clone())
+                .collect()
+        };
         if !to_hash.is_empty() {
             for (path, oid) in hash_paths(git, &to_hash)? {
                 if let Some(entry) = entries.get_mut(&path) {
@@ -432,6 +460,75 @@ fn keep_nonnull(oid: &str) -> Option<String> {
     (!oid.bytes().all(|b| b == b'0')).then(|| oid.to_string())
 }
 
+/// Remove the dirt that only our pins can see.
+///
+/// # The failure this exists to stop
+///
+/// A clone made with `core.autocrlf=true` — the Git-for-Windows default — has
+/// CRLF on disk for every text file, put there by that conversion. Its own
+/// `git status` is clean. Ours, asking with `core.autocrlf=false` pinned, called
+/// all 200 files of a probe repository modified: the on-disk bytes were produced
+/// by a conversion the question refused to acknowledge.
+///
+/// Two consequences, and the second is worse than the first. The dirty set is
+/// nonsense, so `WORKTREE` measurements on such a checkout enumerate the whole
+/// repository. And the answer is *unstable*: our `status` refreshes the index
+/// stat cache on the way past, so the second run agrees with the clone and the
+/// first does not. One untouched tree, two cache keys.
+///
+/// # What it does
+///
+/// Every entry git reports as worktree-modified against an index blob is a
+/// suspect. One batched `hash-object` — the only invocation in the workspace
+/// that lets the checkout's own conversion speak, see
+/// [`Git::cmd_in_checkout_conversion`] — asks what those files hash to *in the
+/// terms that produced them*. Where that equals the index blob the working-tree
+/// side was never modified, and the status letter is corrected: a `.M` becomes
+/// `..` and the entry is dropped entirely, an `MM` becomes `M.` and keeps its
+/// staged change.
+///
+/// # What it does not do
+///
+/// It never records an OID. Membership of the dirty set is decided here;
+/// everything that survives is hashed under the full pins by the caller, so
+/// PREMORTEM T1 is untouched — no byte reaching a digest was hashed under a
+/// configuration the machine chose.
+///
+/// # Cost
+///
+/// One extra spawn on a dirty `WORKTREE` pass that has suspects, and none on a
+/// clean tree, a commit range, or the `INDEX` sentinel. Batched, so it is one
+/// process whether there is one suspect or a thousand.
+fn drop_conversion_phantoms(
+    git: &Git,
+    entries: &mut BTreeMap<String, DirtyEntry>,
+) -> Result<(), GitError> {
+    let suspects: Vec<String> = entries
+        .iter()
+        .filter(|(_, entry)| {
+            entry.is_worktree_modified()
+                && entry.staged_oid.is_some()
+                && !entry.is_deleted()
+                && !entry.is_gitlink()
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    if suspects.is_empty() {
+        return Ok(());
+    }
+
+    for (path, effective_oid) in hash_paths_as(git, &suspects, Conversion::Checkout)? {
+        let Some(entry) = entries.get_mut(&path) else {
+            continue;
+        };
+        if entry.staged_oid.as_deref() == Some(effective_oid.as_str()) {
+            entry.clear_worktree_modification();
+        }
+    }
+    entries.retain(|_, entry| !entry.is_no_change());
+    Ok(())
+}
+
 /// Every path in the index with its mode and blob OID.
 fn index_entries(git: &Git) -> Result<Vec<(String, String, String)>, GitError> {
     let raw = git.cmd(["ls-files", "-s", "-z"]).output()?;
@@ -461,10 +558,31 @@ fn index_entries(git: &Git) -> Result<Vec<(String, String, String)>, GitError> {
 /// path gets here is the OID `git add` would give it, and staging a file does not
 /// move the cache key.
 fn hash_paths(git: &Git, paths: &[String]) -> Result<Vec<(String, String)>, GitError> {
+    hash_paths_as(git, paths, Conversion::Pinned)
+}
+
+/// Whose line-ending rules a hash is taken under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Conversion {
+    /// This crate's pins. Every OID that is recorded anywhere.
+    Pinned,
+    /// The checkout's own. Detection only — see [`drop_conversion_phantoms`].
+    Checkout,
+}
+
+fn hash_paths_as(
+    git: &Git,
+    paths: &[String],
+    conversion: Conversion,
+) -> Result<Vec<(String, String)>, GitError> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    let mut child = git.cmd(["hash-object", "--stdin-paths"]).spawn_piped()?;
+    let command = match conversion {
+        Conversion::Pinned => git.cmd(["hash-object", "--stdin-paths"]),
+        Conversion::Checkout => git.cmd_in_checkout_conversion(["hash-object", "--stdin-paths"]),
+    };
+    let mut child = command.spawn_piped()?;
     let mut stdin = child.stdin.take().expect("stdin was piped");
 
     // Paths go out on one thread while OIDs come back on another. Writing the

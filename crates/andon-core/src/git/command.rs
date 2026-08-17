@@ -69,6 +69,26 @@
 //! bearing half, and `crates/andon-core/tests/git_hygiene.rs` proves which by
 //! showing each planted setting changing the output of an *unpinned* git first.
 //!
+//! # The one place the conversion pins must not reach
+//!
+//! Pinning `core.autocrlf=false` fixes the bytes we hash, which is the whole
+//! point — *when the question is what the bytes are*. It is the wrong answer to
+//! a different question: **has this file been edited?**
+//!
+//! A clone made with `core.autocrlf=true`, the Git-for-Windows default, has CRLF
+//! on disk for every text file, put there by that conversion and matching the
+//! index exactly as far as that conversion is concerned. Its own `git status` is
+//! clean. Ours, asking with the conversion pinned off, called all 200 files of a
+//! probe repository modified — and then, having refreshed the index stat cache,
+//! called them clean on the next run. Two digests for one untouched tree.
+//!
+//! So [`Git::cmd_in_checkout_conversion`] exists, and exactly one caller uses it:
+//! the suspect re-check in [`super::status`]. The symmetry is the one already
+//! argued for `core.excludesFile` above — a setting that produced the bytes on
+//! disk is not a setting to neutralize when the question is about those bytes'
+//! provenance. What it may decide is **membership** of the dirty set. Every OID
+//! recorded in a snapshot is still hashed under the full pins.
+//!
 //! **System files.** `GIT_CONFIG_NOSYSTEM=1` drops `/etc/gitconfig` and
 //! `GIT_ATTR_NOSYSTEM=1` drops the system attributes file. The *global*
 //! gitconfig is deliberately left loadable: `actions/checkout` writes
@@ -140,6 +160,15 @@ pub const PINNED_CONFIG: &[(&str, &str)] = &[
     ("gc.autoDetach", "false"),
     ("maintenance.auto", "false"),
 ];
+
+/// The pinned keys that decide check-in conversion.
+///
+/// A named group because one code path has to *not* apply them — see
+/// [`Git::cmd_in_checkout_conversion`] and the module docs. `core.safecrlf` is
+/// deliberately absent: it only ever turns a conversion into a warning or an
+/// error, never into different bytes, so leaving it pinned off costs nothing and
+/// keeps a hostile config from failing the re-check outright.
+pub const CONVERSION_CONFIG: &[&str] = &["core.autocrlf", "core.eol", "core.attributesFile"];
 
 /// Environment variables set on every git invocation.
 const FORCED_ENV: &[(&str, &str)] = &[
@@ -402,10 +431,51 @@ impl Git {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        self.build(args, true)
+    }
+
+    /// Build an invocation that lets the checkout's own check-in conversion
+    /// speak.
+    ///
+    /// The deliberate hole, and the second one in this module — see
+    /// [`GitCommand::env`] for the first. [`CONVERSION_CONFIG`] is left off; the
+    /// environment sweep, the system-file suppression, and every other pin stay
+    /// exactly as they are, so what a repository or a `~/.gitconfig` gets to
+    /// decide here is line-ending translation and nothing else.
+    ///
+    /// It answers one question, in one caller: *was this file edited, or does it
+    /// merely look edited because the checkout that produced it disagrees with
+    /// our pins about line endings?* An answer to that has to be given in the
+    /// checkout's own terms, because the checkout is what wrote the bytes. No
+    /// OID this produces is ever recorded — it decides membership of the dirty
+    /// set, and the members are then hashed under the full pins.
+    ///
+    /// `GIT_ATTR_NOSYSTEM=1` stays set. A system-wide attributes file could in
+    /// principle be part of a checkout's conversion, and unsweeping the
+    /// environment to find out would widen this hole from three config keys to
+    /// everything git reads from the machine. The residual is a
+    /// system-attributes checkout still reporting phantom dirt; the trade is
+    /// deliberate.
+    pub(crate) fn cmd_in_checkout_conversion<I, S>(&self, args: I) -> GitCommand
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.build(args, false)
+    }
+
+    fn build<I, S>(&self, args: I, pin_conversion: bool) -> GitCommand
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let mut command = Command::new("git");
         command.current_dir(&self.workdir);
         Self::sanitize_env(&mut command);
         for (key, value) in PINNED_CONFIG {
+            if !pin_conversion && CONVERSION_CONFIG.contains(key) {
+                continue;
+            }
             command.arg("-c").arg(format!("{key}={value}"));
         }
         // Belt to the `GIT_NO_REPLACE_OBJECTS` brace: the flag works on git
@@ -603,6 +673,25 @@ mod tests {
                 "{key} must stay pinned: PREMORTEM T1"
             );
         }
+    }
+
+    #[test]
+    fn every_conversion_key_is_actually_pinned_in_the_first_place() {
+        // `CONVERSION_CONFIG` is subtracted from `PINNED_CONFIG` by name. A
+        // typo, or a rename on one side only, would silently subtract nothing —
+        // and the suspect re-check would then ask the same pinned question
+        // twice and always agree with itself.
+        for key in CONVERSION_CONFIG {
+            assert!(
+                PINNED_CONFIG.iter().any(|(k, _)| k == key),
+                "{key} is named as a conversion pin but is not pinned"
+            );
+        }
+        assert!(
+            !CONVERSION_CONFIG.contains(&"core.safecrlf"),
+            "safecrlf only ever turns a conversion into an error, so unpinning \
+             it would let a hostile config fail the re-check rather than answer it"
+        );
     }
 
     #[test]
