@@ -23,6 +23,10 @@
 //!   metric has none.
 //! - [`policy`] — `.andon.toml`, where every threshold lives so that changing
 //!   one is a reviewable edit.
+//! - [`payload`] — where five engines' results become one record, and the
+//!   registry gate that no number gets past without evidence.
+//! - [`verdict`] — the four categorical words, the severity policy behind them,
+//!   and the per-branch loop counter.
 //! - [`selfmeasure`] — the rules for Andon measuring Andon.
 //!
 //! ## The property the whole design rests on
@@ -45,8 +49,10 @@ pub mod date;
 pub mod engine;
 pub mod git;
 pub mod parse_health;
+pub mod payload;
 pub mod policy;
 pub mod registry;
 pub mod schema;
 pub mod selfmeasure;
 pub mod testing;
+pub mod verdict;
