@@ -277,3 +277,54 @@ fn a_verifier_pointed_at_the_wrong_checkout_refuses_rather_than_reporting_a_mism
         "the refusal must name the mistake it is guarding against: {message}"
     );
 }
+
+/// The action-smoke matrix in `spike-matrix.yml` must list every fixture.
+///
+/// A GitHub Actions matrix cannot read a directory, so the scenario list is
+/// hand-enumerated in YAML — and a hand-enumerated list beside a directory that
+/// grows is a list that falls behind. A fixture added without a line in the
+/// workflow is still exercised in-process by this suite, so everything stays
+/// green while the *action's own YAML path* silently stops covering it. That is
+/// exactly how the E4 fixture could end up proven only through Rust.
+///
+/// Parsed with a line scan rather than a YAML library: pulling a parser into the
+/// dependency graph to read one list would be a supply-chain cost for a guard,
+/// and `cargo deny check sources` is a gate this workspace takes seriously.
+#[test]
+fn the_action_smoke_matrix_lists_every_fixture() {
+    let workflow = repo_root().join(".github/workflows/spike-matrix.yml");
+    let text = std::fs::read_to_string(&workflow)
+        .unwrap_or_else(|e| panic!("read {}: {e}", workflow.display()));
+
+    let listed: BTreeSet<String> = text
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("- scenario: ")
+                .map(|name| name.trim().to_string())
+        })
+        .collect();
+    assert!(
+        !listed.is_empty(),
+        "no `- scenario:` entries found in {}; the guard would be vacuous",
+        workflow.display()
+    );
+
+    let on_disk: BTreeSet<String> = manifests()
+        .iter()
+        .map(|(_, path)| scenario::load(path).expect("loads").name)
+        .collect();
+
+    let missing: Vec<&String> = on_disk.difference(&listed).collect();
+    assert!(
+        missing.is_empty(),
+        "fixtures with no action-smoke leg: {missing:?} — they are tested \
+         in-process and never through the composite action's YAML"
+    );
+    let stale: Vec<&String> = listed.difference(&on_disk).collect();
+    assert!(
+        stale.is_empty(),
+        "action-smoke legs with no fixture: {stale:?} — the job would fail at \
+         `scenario prepare` on a manifest that is not there"
+    );
+}

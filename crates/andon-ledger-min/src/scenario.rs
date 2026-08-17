@@ -347,6 +347,10 @@ pub struct Prepared {
     pub trusted_branch: String,
     /// The committed expectation, as a wire string.
     pub expect: Attestation,
+    /// The result count the manifest declares, when it declares one. Carried
+    /// into the JSON so the matrix workflow can assert a floor without
+    /// re-parsing TOML in bash.
+    pub expect_result_count: Option<usize>,
     /// Every label, resolved to an OID. Useful when a run has to be debugged
     /// from CI output alone.
     pub labels: BTreeMap<String, String>,
@@ -377,6 +381,7 @@ pub fn prepare(
         head,
         trusted_branch: manifest.trusted_branch.clone(),
         expect: manifest.verify.expect,
+        expect_result_count: manifest.verify.expect_result_count,
         labels: ctx.labels,
     })
 }

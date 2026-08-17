@@ -14,6 +14,7 @@
 //! andon-spike scenario check   --manifest <FILE> --repo <DIR>
 //! andon-spike digests --record <FILE>
 //! andon-spike compare-records --leg <LABEL>=<FILE> --leg <LABEL>=<FILE> [...]
+//!                             [--expect-results <N>]
 //! andon-spike notes <list|migrate|fetch|merge|push> --repo <PATH> [...]
 //!
 //! --base defaults to merge-base against the trusted branch:
@@ -336,7 +337,12 @@ fn cmd_compare_records(flags: &Flags) -> Result<ExitCode, String> {
         let record = records::read(Path::new(path)).map_err(|e| e.to_string())?;
         legs.push((label.to_string(), record));
     }
-    let compared = records::compare(&legs).map_err(|e| e.to_string())?;
+    let expected_results = flags
+        .get("expect-results")
+        .map(str::parse::<usize>)
+        .transpose()
+        .map_err(|e| format!("--expect-results wants a number: {e}"))?;
+    let compared = records::compare(&legs, expected_results).map_err(|e| e.to_string())?;
 
     println!("legs: {}", compared.legs.join(", "));
     for row in &compared.rows {

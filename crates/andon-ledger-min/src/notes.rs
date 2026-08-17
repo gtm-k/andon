@@ -114,6 +114,44 @@ pub enum NotesError {
         #[source]
         source: Box<GitError>,
     },
+    /// Every push attempt was rejected.
+    ///
+    /// Named rather than folded into [`NotesError::Git`] so the failure says
+    /// what it was doing: PLAN P8 turns exhausted retries into a red,
+    /// user-visible failure with a fault-injection test, and it needs something
+    /// to match on.
+    #[error("pushing {notes_ref} to {remote} was rejected on all {attempts} attempt(s): {source}")]
+    PushRejected {
+        /// The ref that could not be pushed.
+        notes_ref: String,
+        /// The remote it was pushed to.
+        remote: String,
+        /// How many attempts were made.
+        attempts: u32,
+        /// The last rejection git reported.
+        #[source]
+        source: Box<GitError>,
+    },
+    /// A push was rejected and the recovery from it failed too.
+    ///
+    /// Both halves, because the second one is not the cause. See
+    /// [`Notes::push_with_retry`].
+    #[error(
+        "pushing {notes_ref} to {remote} was rejected ({push}), \
+         and recovering from that rejection failed: {source}"
+    )]
+    PushRecovery {
+        /// The ref that could not be pushed.
+        notes_ref: String,
+        /// The remote it was pushed to.
+        remote: String,
+        /// What the rejected push said — the cause, kept in the message so it
+        /// cannot be displaced by the recovery failure.
+        push: String,
+        /// What went wrong while recovering.
+        #[source]
+        source: Box<NotesError>,
+    },
     /// The temporary file holding a note body could not be written.
     #[error("could not stage a note body at {path}: {source}")]
     Staging {
@@ -373,6 +411,15 @@ impl<'a> Notes<'a> {
     /// the attempts are exhausted the caller gets git's own stderr inside a
     /// [`GitError::Failed`]. PLAN P8 turns that into a red, user-visible failure
     /// with a fault-injection test; this is the mechanism it will extend.
+    /// # Attribution
+    ///
+    /// The recovery path — fetch, then merge — can fail on its own, and when it
+    /// does its error must not stand in for the push failure that caused the
+    /// recovery to be attempted. Propagating it with `?` did exactly that: a
+    /// remote that went away mid-retry surfaced as a transport error with no
+    /// mention of the rejected push, so an operator read "could not reach
+    /// origin" about a situation whose first fact was "origin rejected this
+    /// push". Both are reported now, with the push named as the cause.
     pub fn push_with_retry(&self, remote: &str, attempts: u32) -> Result<u32, NotesError> {
         let refspec = format!("{}:{}", self.notes_ref, self.notes_ref);
         let mut last: Option<GitError> = None;
@@ -380,15 +427,25 @@ impl<'a> Notes<'a> {
             match self.git.cmd(["push", remote, &refspec]).output() {
                 Ok(_) => return Ok(attempt),
                 Err(err) => {
+                    let push = err.to_string();
                     last = Some(err);
-                    self.fetch(remote)?;
-                    self.merge_tracking()?;
+                    if let Err(recovery) = self.fetch(remote).and_then(|_| self.merge_tracking()) {
+                        return Err(NotesError::PushRecovery {
+                            notes_ref: self.notes_ref.clone(),
+                            remote: remote.to_string(),
+                            push,
+                            source: Box::new(recovery),
+                        });
+                    }
                 }
             }
         }
-        Err(NotesError::Git(
-            last.expect("at least one attempt was made"),
-        ))
+        Err(NotesError::PushRejected {
+            notes_ref: self.notes_ref.clone(),
+            remote: remote.to_string(),
+            attempts: attempts.max(1),
+            source: Box::new(last.expect("at least one attempt was made")),
+        })
     }
 
     fn ref_flag(&self) -> String {

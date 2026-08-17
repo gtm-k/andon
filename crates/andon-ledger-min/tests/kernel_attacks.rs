@@ -401,3 +401,75 @@ fn migrating_onto_a_commit_that_already_has_a_record_keeps_both() {
     // not grow the ledger with copies of what it already holds.
     assert_eq!(notes.migrate(&head, &landed).expect("migrate again"), 2);
 }
+
+// ---------------------------------------------------------------------------
+// P15-R6: attribution, and reading the decisive report
+// ---------------------------------------------------------------------------
+
+/// `base_relation` describes the report that decided the outcome.
+///
+/// It used to describe `reports[0]`, which is a different record whenever more
+/// than one report is present — and note order is not stable in the first place,
+/// because `cat_sort_uniq` sorts lines when two ledgers merge. So the field
+/// could describe an honest record while the verdict came from a forged one,
+/// which is a diagnostic pointing at the wrong evidence.
+///
+/// Staged so the two disagree: the honest report is first in the note and the
+/// fabricated-base report is the decisive one.
+#[test]
+fn the_reported_base_relation_belongs_to_the_decisive_report() {
+    use andon_core::compare::BaseRelation;
+
+    let (git, head, trusted) = staged("gamed/fabricated-base/manifest.toml", "decisive-relation");
+    append_report(
+        &git,
+        &head,
+        &trusted,
+        &andon_ledger_min::spike::engine_version(),
+    );
+
+    // Put the honest record first, which is what a merged ledger may well do.
+    let notes = Notes::measure(&git);
+    let mut records = notes.read(&head).expect("read");
+    assert_eq!(records.len(), 2);
+    records.reverse();
+    notes.write(&head, &records).expect("reorder the ledger");
+
+    let outcome = run_verify(&git, &head, &trusted);
+    assert_eq!(
+        outcome.attestation,
+        Attestation::Divergent,
+        "the forged record still decides the outcome"
+    );
+    assert_eq!(
+        outcome.base_relation,
+        Some(BaseRelation::NotAncestor),
+        "the relation must be the decisive report's, not whichever came first"
+    );
+}
+
+/// A push failure is not masked by the failure of its own recovery.
+///
+/// `push_with_retry` answers a rejected push by fetching and merging, and that
+/// recovery can fail too. Propagating the recovery error with `?` replaced the
+/// cause with a consequence: an operator read "could not reach origin" about a
+/// situation whose first fact was that origin rejected the push. Both facts are
+/// in the message now, with the push named as the cause.
+#[test]
+fn a_failed_recovery_does_not_displace_the_push_failure_that_caused_it() {
+    let (git, _head, _trusted) = staged("honest/moving-main/manifest.toml", "push-attribution");
+    let nowhere = dest("push-attribution").join("no-such-remote.git");
+
+    let err = Notes::measure(&git)
+        .push_with_retry(&nowhere.to_string_lossy(), 3)
+        .expect_err("pushing to a remote that is not there must fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("was rejected"),
+        "the push failure must be named as the cause: {message}"
+    );
+    assert!(
+        message.contains("recovering from that rejection failed"),
+        "and the recovery failure must be reported alongside it: {message}"
+    );
+}

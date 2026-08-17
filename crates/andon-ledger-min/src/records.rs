@@ -155,14 +155,34 @@ pub struct CrossRow {
 /// Compare per-result digests across legs.
 ///
 /// The first leg is the reference only for ordering; disagreement is symmetric
-/// and reported as such.
-pub fn compare(legs: &[(String, MeasurementRecord)]) -> Result<CrossCompare, RecordError> {
+/// and reported as such. `expected_results` is the count the fixture manifest
+/// declares — see the note inside on why an observed count would prove nothing.
+pub fn compare(
+    legs: &[(String, MeasurementRecord)],
+    expected_results: Option<usize>,
+) -> Result<CrossCompare, RecordError> {
     let mut problems = Vec::new();
     if legs.len() < 2 {
         problems.push(format!(
             "a cross-leg comparison needs at least two records, got {}",
             legs.len()
         ));
+    }
+
+    // The floor, stated by the caller from the fixture manifest rather than
+    // read off whatever the run produced. Four legs that each measured nothing
+    // agree perfectly about nothing, and every assertion below would be
+    // vacuously true — an engine that silently stopped emitting results would
+    // turn this workflow green rather than red.
+    if let Some(wanted) = expected_results {
+        for (label, record) in legs {
+            if record.results.len() != wanted {
+                problems.push(format!(
+                    "{label} produced {} result(s); the fixture declares {wanted}",
+                    record.results.len()
+                ));
+            }
+        }
     }
 
     // Tuple equality first: every digest binds `(base_oid, head_oid)`, so a leg
@@ -247,11 +267,14 @@ mod tests {
 
     #[test]
     fn identical_records_agree() {
-        let compared = compare(&[
-            ("linux".to_string(), sample_record()),
-            ("windows".to_string(), sample_record()),
-            ("macos".to_string(), sample_record()),
-        ])
+        let compared = compare(
+            &[
+                ("linux".to_string(), sample_record()),
+                ("windows".to_string(), sample_record()),
+                ("macos".to_string(), sample_record()),
+            ],
+            None,
+        )
         .expect("records compare");
         assert!(compared.agreed(), "{:?}", compared.problems);
         assert!(compared.rows.iter().all(|r| r.agreed));
@@ -261,10 +284,13 @@ mod tests {
     fn a_single_digest_difference_names_the_leg_and_the_metric() {
         let mut windows = sample_record();
         windows.results[0].digest = "0".repeat(64);
-        let compared = compare(&[
-            ("linux".to_string(), sample_record()),
-            ("windows".to_string(), windows),
-        ])
+        let compared = compare(
+            &[
+                ("linux".to_string(), sample_record()),
+                ("windows".to_string(), windows),
+            ],
+            None,
+        )
         .expect("records compare");
         assert!(!compared.agreed());
         let report = compared.problems.join("\n");
@@ -278,10 +304,13 @@ mod tests {
         // the shape of a matrix that passes because one leg measured nothing.
         let mut sparse = sample_record();
         sparse.results.clear();
-        let compared = compare(&[
-            ("linux".to_string(), sample_record()),
-            ("macos".to_string(), sparse),
-        ])
+        let compared = compare(
+            &[
+                ("linux".to_string(), sample_record()),
+                ("macos".to_string(), sparse),
+            ],
+            None,
+        )
         .expect("records compare");
         assert!(!compared.agreed());
         assert!(compared.problems.join("\n").contains("<absent>"));
@@ -291,17 +320,60 @@ mod tests {
     fn legs_that_measured_different_commits_are_refused_before_the_digests() {
         let mut other = sample_record();
         other.compare_context.head_oid = "9".repeat(40);
-        let compared = compare(&[
-            ("linux".to_string(), sample_record()),
-            ("windows".to_string(), other),
-        ])
+        let compared = compare(
+            &[
+                ("linux".to_string(), sample_record()),
+                ("windows".to_string(), other),
+            ],
+            None,
+        )
         .expect("records compare");
         assert!(compared.problems[0].contains("not measuring the same change"));
     }
 
     #[test]
+    fn a_leg_short_of_the_declared_result_count_fails_the_comparison() {
+        // Four legs that each measured nothing agree perfectly about nothing.
+        // Without a floor stated by the fixture, an engine that silently stopped
+        // emitting results would turn the matrix green rather than red.
+        let mut empty = sample_record();
+        empty.results.clear();
+        let compared = compare(
+            &[
+                ("linux".to_string(), sample_record()),
+                ("macos".to_string(), empty),
+            ],
+            Some(1),
+        )
+        .expect("records compare");
+        assert!(!compared.agreed());
+        assert!(
+            compared
+                .problems
+                .iter()
+                .any(|p| p.contains("the fixture declares 1")),
+            "{:?}",
+            compared.problems
+        );
+    }
+
+    #[test]
+    fn a_floor_the_legs_meet_is_not_a_complaint() {
+        let compared = compare(
+            &[
+                ("linux".to_string(), sample_record()),
+                ("macos".to_string(), sample_record()),
+            ],
+            Some(1),
+        )
+        .expect("records compare");
+        assert!(compared.agreed(), "{:?}", compared.problems);
+    }
+
+    #[test]
     fn one_record_is_not_a_comparison() {
-        let compared = compare(&[("linux".to_string(), sample_record())]).expect("records compare");
+        let compared =
+            compare(&[("linux".to_string(), sample_record())], None).expect("records compare");
         assert!(!compared.agreed(), "a single leg proves nothing");
     }
 }

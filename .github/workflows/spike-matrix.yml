@@ -19,10 +19,12 @@
 # Actions conserve rule at zero new spend, and it matters most for macOS, which
 # bills ten minutes for every one.
 #
-# `[spike-matrix]` in a commit message triggers the expensive legs too. It is
-# not a second policy: dispatching is still the deliberate act, and the marker
-# exists so that a workflow living only on a feature branch can be exercised
-# before it reaches the default branch.
+# There is no commit-message escape hatch. One was added on the theory that a
+# workflow living only on a feature branch might not be dispatchable before it
+# reached the default branch; that theory was tested and is false —
+# `gh workflow run --ref <branch>` works on an unmerged branch. A second way to
+# trigger the expensive legs, justified by a hazard that does not exist, is a
+# second policy for someone to mistake for the first.
 #
 # WHY THE FIXTURE IS BUILT ONCE AND SHIPPED
 #
@@ -89,12 +91,11 @@ jobs:
   build-fixture:
     name: build the determinism fixture
     runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, '[spike-matrix]')
+    if: github.event_name == 'workflow_dispatch'
     outputs:
       head: ${{ steps.fixture.outputs.head }}
       trusted-branch: ${{ steps.fixture.outputs.trusted_branch }}
+      expect-results: ${{ steps.fixture.outputs.expect_results }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -112,6 +113,10 @@ jobs:
             --json fixture.json
           echo "head=$(jq -r .head fixture.json)" >> "$GITHUB_OUTPUT"
           echo "trusted_branch=$(jq -r .trusted_branch fixture.json)" >> "$GITHUB_OUTPUT"
+          # The floor comes from the manifest, never from what this run
+          # happened to measure. `jq -e` fails the step if the manifest does
+          # not declare one, so the assertion cannot quietly become optional.
+          echo "expect_results=$(jq -e -r .expect_result_count fixture.json)" >> "$GITHUB_OUTPUT"
 
           # `--mirror` so every ref travels, then the ledger refs are dropped:
           # each leg must write its OWN self-report, and shipping the Linux
@@ -252,13 +257,11 @@ jobs:
             --leg linux=legs/record-ubuntu-latest/record-ubuntu-latest.json \
             --leg macos=legs/record-macos-latest/record-macos-latest.json \
             --leg windows=legs/record-windows-latest/record-windows-latest.json \
-            --leg verifier=record-verifier.json
+            --leg verifier=record-verifier.json             --expect-results "${{ needs.build-fixture.outputs.expect-results }}"
 
   scenarios:
     name: verdict set (${{ matrix.os }})
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, '[spike-matrix]')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -288,6 +291,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Hand-enumerated because a matrix cannot read a directory, and
+          # therefore guarded: `tests/verdict_set.rs` asserts this list equals
+          # what is on disk. A fixture added without a line here would be tested
+          # in-process and never through the action's YAML — green, and silently
+          # narrower than it reads.
+          #
           # The first leg deliberately omits `spike-bin`, so the action's own
           # build step is exercised rather than only its verify step.
           - scenario: determinism
@@ -308,7 +317,13 @@ jobs:
           - scenario: flipped-deterministic
             family: gamed
             prebuilt: true
+          - scenario: flipped-one-deterministic
+            family: gamed
+            prebuilt: true
           - scenario: fabricated-base
+            family: gamed
+            prebuilt: true
+          - scenario: skewed-forge
             family: gamed
             prebuilt: true
     steps:
