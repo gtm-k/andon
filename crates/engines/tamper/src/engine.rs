@@ -15,6 +15,31 @@
 //! all widen it. [`TamperEngine::for_change`] reads both sides' blobs and holds
 //! them; `measure` uses the context for the rest. Base-side bytes are needed
 //! here in a way they are not for clones, because every detector is a delta.
+//!
+//! # A detector that did not read all of the change says so
+//!
+//! Every result here is change-scoped, so there is no per-file result to mark
+//! when the parser gives up on a file. What is marked instead is per *detector*,
+//! and the scope is what that detector read: three of the seven parse
+//! (`test-removal`, `assertion-free-test`, `lookup-table-blowup`), and the other
+//! four read bytes — suppression markers, coverage config, threshold config, and
+//! the fault counts themselves — which an ERROR node hides nothing from. Marking
+//! all seven because one file in the change was unparseable would put a caveat
+//! on results a parse failure cannot touch; that is claiming a limitation rather
+//! than disclosing one, and it would widen the blast radius of a degraded file
+//! for nothing. See [`crate::detectors::Outcome::view_health`].
+//!
+//! The case this closes is the whole of PREMORTEM T3 in one sentence: a test
+//! deleted out of a region the parser could not read was never counted at the
+//! base either, so `test-removal` reports no removal — and, before this,
+//! reported it `complete`, on the same file `parse-error-delta` was
+//! simultaneously reporting as degraded. The flag and the magnitude are
+//! unchanged and stay in the digest; what changes is that they stop claiming to
+//! be a complete answer, and the caveat says the error is one-directional.
+//!
+//! `parse-error-delta` is exempt, for the reason `andon_core::parse_health`
+//! gives: a report of a blind spot demoted by the blind spot it reports is the
+//! one signal T3 wants loud, silenced by its own finding.
 
 use std::sync::OnceLock;
 
@@ -23,6 +48,7 @@ use andon_core::engine::{
     EngineDescriptor, EngineError, MeasureContext, MeasureEngine, MetricDescriptor,
 };
 use andon_core::git::{BlobBatch, ChangeStatus, ChangedSet, Git};
+use andon_core::parse_health::{self, ParseHealth};
 use andon_core::registry::{lint, parse_file, EngineRegistryFile, Registry};
 use andon_core::schema::enums::{Completeness, EngineClass, EngineFamily, Severity, TamperSignal};
 use andon_core::schema::payload::{
@@ -248,23 +274,50 @@ impl MeasureEngine for TamperEngine {
             } else {
                 Severity::Info
             };
-            results.push(self.result(
+            let mut flag = self.result(
                 detector.metric_id(),
                 MetricValue::Flag(outcome.fired),
                 severity,
                 evidence_for(detector.metric_id()),
                 &descriptors,
-            ));
-            results.push(self.result(
+            );
+            let mut magnitude = self.result(
                 detector.magnitude_metric_id(),
                 MetricValue::Integer(outcome.magnitude),
                 Severity::Info,
                 evidence_for(detector.magnitude_metric_id()),
                 &descriptors,
-            ));
+            );
+            if outcome.view_health.is_degraded() {
+                let caveat = degraded_view_caveat(outcome.view_health);
+                parse_health::demote_with_caveat(&mut flag, outcome.view_health, caveat.clone());
+                parse_health::demote_with_caveat(&mut magnitude, outcome.view_health, caveat);
+            }
+            results.push(flag);
+            results.push(magnitude);
         }
         Ok(results)
     }
+}
+
+/// The honesty line a detector's results carry when it read a partial tree.
+///
+/// The static engine's caveat says a *number* was computed over a partial tree.
+/// A detector's answer needs the other half said out loud: the error is
+/// one-directional. Code inside a region the parser could not read is code this
+/// detector never examined, so a firing is a lower bound and a silence is not a
+/// finding of absence — which is exactly the shape of the false negative
+/// PREMORTEM T3 describes, and the reason a quiet detector over a degraded view
+/// may not be read as a clean bill of health.
+fn degraded_view_caveat(health: ParseHealth) -> String {
+    format!(
+        "{} all of them ({} ERROR, {} MISSING node(s) in what this detector parsed); \
+         code inside a region the parser could not read was never examined, so this \
+         result is a lower bound and a quiet one is not evidence of absence",
+        parse_health::PARSE_DEGRADED_SET_CAVEAT,
+        health.error_nodes,
+        health.missing_nodes
+    )
 }
 
 impl TamperEngine {

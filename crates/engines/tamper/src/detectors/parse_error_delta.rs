@@ -125,6 +125,20 @@ impl Detector for ParseErrorDelta {
                 ));
             }
         }
+        // No `over_view` on either arm of this detector, deliberately.
+        //
+        // The other six carry the health of what they read, so a number
+        // computed over a tree with an unreadable region in it arrives
+        // `parse-degraded` and capped below MED+. Applying that to *this*
+        // detector would demote the report of the blind spot by the blind spot
+        // it reports: the one signal PREMORTEM T3 wants loud would be capped
+        // exactly when it fires, and a file broken badly enough would silence
+        // the detector that exists to say so. Counting ERROR nodes over a tree
+        // full of ERROR nodes is an exact measurement, not an approximate one.
+        //
+        // The rule is the static engine's, unchanged — `andon_core::parse_health`
+        // states it, and `static.parse-errors` and `static.parse-missing` are
+        // exempt there for the same reason.
         if delta > 0 {
             return Outcome::fired(delta, findings);
         }

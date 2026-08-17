@@ -15,6 +15,7 @@
 //! answer a function of the bytes, which is what lets the results into the
 //! digest compare set.
 
+use andon_core::parse_health::ParseHealth;
 use tree_sitter::{Node, Parser, Tree};
 
 /// Version of the detector rule pack: the patterns, keys, and thresholds the
@@ -178,11 +179,52 @@ impl Parsed {
     /// opposite ways: an ERROR is a region the parser could not read, a MISSING
     /// is a token it inserted to keep going. PREMORTEM T3 is about the first and
     /// names the second as its sibling.
+    ///
+    /// The parse-error delta is expressed in this sum. [`Parsed::parse_health`]
+    /// is the same walk with the two kept apart, for the demotion — which needs
+    /// to report them separately, and must not change what the delta counts.
     pub fn parse_faults(&self) -> u32 {
         self.nodes()
             .iter()
             .filter(|node| node.is_error() || node.is_missing())
             .count() as u32
+    }
+
+    /// How completely the parser understood this file.
+    ///
+    /// # Why the tamper suite needs this and not only [`Parsed::parse_faults`]
+    ///
+    /// The fault count is what `parse-error-delta` reports. This is what the
+    /// *other* detectors have to carry: a detector that read a tree with an
+    /// unreadable region in it did not see all of the change, and its answer —
+    /// above all a quiet one — is a lower bound rather than a finding of
+    /// absence. `completeness` is the field that says so, and it is inside the
+    /// per-result digest input, so the static engine and this one must agree
+    /// about the same file (PREMORTEM T3).
+    ///
+    /// Node for node identical to the static engine's walk and the clone
+    /// engine's: every node named and anonymous, `MISSING` wherever it appears,
+    /// and nodes inside an `ERROR` subtree counted as ordinary nodes so one
+    /// large unparsable region counts once rather than once per token it
+    /// swallowed. Iterative and allocation-free, unlike [`Parsed::nodes`],
+    /// because this runs per file per detector and this crate has already had
+    /// one per-node cost turn into a denial of measurement
+    /// ([`MAX_ANCESTOR_WALK`]).
+    pub fn parse_health(&self) -> ParseHealth {
+        let mut health = ParseHealth::default();
+        let mut stack = vec![self.tree.root_node()];
+        while let Some(node) = stack.pop() {
+            health.total_nodes += 1;
+            if node.is_error() {
+                health.error_nodes += 1;
+            }
+            if node.is_missing() {
+                health.missing_nodes += 1;
+            }
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+        health
     }
 
     /// The 1-based line a byte offset falls on.
@@ -378,6 +420,31 @@ mod tests {
         assert_eq!(clean.parse_faults(), 0);
         let broken = Parsed::new("a.ts", b"function f( { !!! \n").unwrap();
         assert!(broken.parse_faults() > 0);
+    }
+
+    #[test]
+    fn health_separates_the_two_faults_the_delta_adds_together() {
+        let clean = Parsed::new("a.ts", b"const x: number = 1;\n").unwrap();
+        assert!(!clean.parse_health().is_degraded());
+        assert!(clean.parse_health().total_nodes > 0);
+
+        let broken = Parsed::new("a.ts", b"function f( { !!! \n").unwrap();
+        let health = broken.parse_health();
+        assert!(health.is_degraded(), "{health:?}");
+        // The delta's sum and the health's two counts are the same walk, so they
+        // cannot disagree about whether a file is degraded.
+        assert_eq!(
+            broken.parse_faults() as u64,
+            health.error_nodes + health.missing_nodes
+        );
+    }
+
+    #[test]
+    fn an_inserted_token_is_missing_rather_than_an_error() {
+        let health = Parsed::new("a.ts", b"function f() { return 1;\n")
+            .unwrap()
+            .parse_health();
+        assert!(health.missing_nodes > 0, "{health:?}");
     }
 
     #[test]

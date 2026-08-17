@@ -20,6 +20,7 @@ use crate::syntax::{
     ancestors, callee_name, callee_text, each_rows, first_segment, is_curried_inner, last_segment,
     names_a_skip, Parsed,
 };
+use andon_core::parse_health::ParseHealth;
 use andon_core::schema::enums::TamperSignal;
 
 /// The detector.
@@ -58,6 +59,11 @@ impl Detector for TestRemoval {
         let mut after = 0i64;
         let mut skips_added = 0i64;
         let mut findings = Vec::new();
+        // Both sides of every test file this detector reads. The base side is
+        // the one that matters most here: a case deleted out of a region the
+        // parser could not read was never counted at the base either, so the
+        // subtraction below reports no removal at all (PREMORTEM T3).
+        let mut view = ParseHealth::default();
 
         for file in &change.files {
             // A pure move carries its tests with it; counting both sides of it
@@ -73,8 +79,9 @@ impl Detector for TestRemoval {
                 continue;
             }
 
-            let base = count(file.base_path(), file.base_bytes());
-            let head = count(&file.path, file.head_bytes());
+            let (base, base_health) = count(file.base_path(), file.base_bytes());
+            let (head, head_health) = count(&file.path, file.head_bytes());
+            view = view.merge(base_health).merge(head_health);
             before += base.cases as i64;
             after += head.cases as i64;
 
@@ -102,12 +109,12 @@ impl Detector for TestRemoval {
         let removed = (before - after).max(0);
         let magnitude = removed + skips_added;
         if magnitude > 0 {
-            Outcome::fired(magnitude, findings)
+            Outcome::fired(magnitude, findings).over_view(view)
         } else {
             // Reported as the net, negative included: a change that adds tests
             // is worth saying so about, and a magnitude that only ever went one
             // way would make "no removal" and "many additions" the same number.
-            Outcome::quiet(after - before)
+            Outcome::quiet(after - before).over_view(view)
         }
     }
 }
@@ -118,16 +125,24 @@ struct Counts {
     skipped: u32,
 }
 
-/// Count test cases and skipped cases in one file.
-fn count(path: &str, source: &[u8]) -> Counts {
+/// Count test cases and skipped cases in one file, and say how much of the file
+/// the parser understood.
+///
+/// The health travels with the counts because it qualifies them: cases inside a
+/// region the parser could not read are not in `cases`, and nothing downstream
+/// can tell that from a file that genuinely had none. A path no grammar reads
+/// returns a default health — nothing was parsed, so no parse hid anything.
+fn count(path: &str, source: &[u8]) -> (Counts, ParseHealth) {
     let Some(parsed) = Parsed::new(path, source) else {
-        return Counts::default();
+        return (Counts::default(), ParseHealth::default());
     };
-    if parsed.language().is_js_family() {
+    let health = parsed.parse_health();
+    let counts = if parsed.language().is_js_family() {
         count_js(&parsed)
     } else {
         count_python(&parsed)
-    }
+    };
+    (counts, health)
 }
 
 fn count_js(parsed: &Parsed) -> Counts {

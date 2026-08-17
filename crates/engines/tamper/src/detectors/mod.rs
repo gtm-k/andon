@@ -23,6 +23,17 @@
 //! Per-file detectors would fire on refactorings, which is the false-positive
 //! class the should-pass corpus exists to catch (PLAN B5/B6).
 //!
+//! # Three of them can be blinded, and say so
+//!
+//! `test_removal`, `assertion_free_test` and `lookup_table_blowup` read trees;
+//! the rest read bytes. A file the parser could not finish is therefore a
+//! partial view for exactly three of the seven, and each of those carries the
+//! health of what it read in [`Outcome::view_health`], which the engine turns
+//! into `completeness: parse-degraded` on that detector's two results. A firing
+//! over a partial view is a lower bound and a silence is not evidence of
+//! absence; `tests/parse_degraded_view.rs` measures one such silence against the
+//! same deletion in a file that parses.
+//!
 //! # Firing is not accusing
 //!
 //! A detector reports what it saw; policy decides what it is worth, from the
@@ -31,6 +42,7 @@
 //! evolution must not be blocked — and says so in its severity.
 
 use crate::change::ChangeView;
+use andon_core::parse_health::ParseHealth;
 use andon_core::schema::enums::{Severity, TamperSignal};
 
 pub mod assertion_free_test;
@@ -93,6 +105,30 @@ pub struct Outcome {
     /// the same bytes. Keeping both under one signal rather than inventing an
     /// eighth is deliberate: `TamperSignal` is P0-owned schema.
     pub severity: Option<Severity>,
+    /// How completely the parser read *what this detector looked at*.
+    ///
+    /// # Why the detector reports it and not the engine
+    ///
+    /// Three of the seven parse: [`test_removal`] and [`assertion_free_test`]
+    /// read test files, [`lookup_table_blowup`] reads the rest of the source.
+    /// The other three read bytes — suppression markers, coverage config,
+    /// threshold config — and an ERROR node hides nothing from them. Marking all
+    /// seven because one file in the change was unparseable would put a caveat
+    /// on results a parse failure cannot touch, which is over-claiming a
+    /// limitation rather than disclosing one.
+    ///
+    /// So the scope is per detector, and the only place that knows which files a
+    /// detector read is the detector, while it reads them. Accumulated from the
+    /// `Parsed` values `run` already builds — not recomputed from the change
+    /// afterwards, which would be a second file filter to keep in step with the
+    /// first, and a second parse of every file in a crate that has already had
+    /// per-file cost turn into a denial of measurement.
+    ///
+    /// Left at its default by the four that do not parse, and deliberately by
+    /// [`parse_error_delta`]: it *reports* the degradation, and a report of a
+    /// blind spot demoted by the blind spot it reports is the one signal T3
+    /// wants loud, silenced by its own finding.
+    pub view_health: ParseHealth,
 }
 
 impl Outcome {
@@ -103,6 +139,7 @@ impl Outcome {
             magnitude,
             findings: Vec::new(),
             severity: None,
+            view_health: ParseHealth::default(),
         }
     }
 
@@ -114,6 +151,7 @@ impl Outcome {
             magnitude,
             findings,
             severity: None,
+            view_health: ParseHealth::default(),
         }
     }
 
@@ -125,7 +163,19 @@ impl Outcome {
             magnitude,
             findings,
             severity: Some(severity),
+            view_health: ParseHealth::default(),
         }
+    }
+
+    /// Record how completely the parser read what this detector looked at.
+    ///
+    /// A builder rather than a fourth constructor, because it applies equally to
+    /// a firing and to a silence — and the silence is the case that matters. A
+    /// detector that saw a partial tree and found nothing has not found nothing;
+    /// it has found nothing *where it could see*. See [`Outcome::view_health`].
+    pub fn over_view(mut self, health: ParseHealth) -> Outcome {
+        self.view_health = health;
+        self
     }
 }
 
@@ -198,6 +248,7 @@ pub fn signal_name(signal: TamperSignal) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::change::FileChange;
 
     #[test]
     fn there_are_seven_and_they_are_distinct() {
@@ -249,6 +300,45 @@ mod tests {
                 detector.metric_id()
             );
             assert_eq!(outcome.magnitude, 0);
+            assert!(
+                !outcome.view_health.is_degraded(),
+                "{} reported a degraded view of nothing",
+                detector.metric_id()
+            );
         }
+    }
+
+    #[test]
+    fn a_detector_reports_a_view_only_over_files_it_actually_parsed() {
+        // The three that parse must report a view over a file they read, and the
+        // four that scan bytes must report none — an ERROR node hides nothing
+        // from a search for `eslint-disable`, and saying it does would put a
+        // caveat on a result a parse failure cannot touch.
+        //
+        // A change with one degraded file of each kind, so no detector can be
+        // excused for having had nothing to look at.
+        let view = ChangeView::new(vec![
+            FileChange::modified(
+                "src/a.spec.tsx",
+                "export const F = <div>\nit('a', () => { expect(1).toBe(1); });\n",
+                "export const F = <div>\n",
+            ),
+            FileChange::modified(
+                "src/a.ts",
+                "export const f = (n: number) => n;\n",
+                "export const f = (n: number = > n;\n",
+            ),
+        ]);
+        let parses: Vec<&str> = all()
+            .into_iter()
+            .filter(|d| d.run(&view).view_health.is_degraded())
+            .map(|d| signal_name(d.signal()))
+            .collect();
+        assert_eq!(
+            parses,
+            vec!["test-removal", "assertion-free-test", "lookup-table-blowup"],
+            "the set of detectors a parse failure can blind is a contract, not \
+             an accident of which ones happen to import the facade"
+        );
     }
 }

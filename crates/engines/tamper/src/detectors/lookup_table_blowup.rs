@@ -25,6 +25,7 @@
 use crate::change::{is_test_path, ChangeView};
 use crate::detectors::{Detector, Finding, Outcome};
 use crate::syntax::{ancestors, Parsed};
+use andon_core::parse_health::ParseHealth;
 use andon_core::schema::enums::TamperSignal;
 use tree_sitter::Node;
 
@@ -110,6 +111,11 @@ impl Detector for LookupTableBlowup {
     fn run(&self, change: &ChangeView) -> Outcome {
         let mut findings = Vec::new();
         let mut largest = 0i64;
+        // Both sides of every non-test source file read. A table inside a region
+        // the parser could not read is a table this detector never sees — and
+        // the hiding place and the hidden thing are then the same edit
+        // (PREMORTEM T3).
+        let mut view = ParseHealth::default();
         for file in &change.files {
             // A big literal in a test *is* the fixture: a table of inputs and
             // expected outputs is what a table-driven test looks like, and firing
@@ -124,8 +130,12 @@ impl Detector for LookupTableBlowup {
             let Some(head) = Parsed::new(&file.path, file.head_bytes()) else {
                 continue;
             };
+            view = view.merge(head.parse_health());
             let base_largest = Parsed::new(file.base_path(), file.base_bytes())
-                .map(|base| tables(&base).into_iter().map(|(_, n)| n).max().unwrap_or(0))
+                .map(|base| {
+                    view = view.merge(base.parse_health());
+                    tables(&base).into_iter().map(|(_, n)| n).max().unwrap_or(0)
+                })
                 .unwrap_or(0);
             for (line, size) in tables(&head) {
                 if size <= base_largest {
@@ -140,9 +150,9 @@ impl Detector for LookupTableBlowup {
             }
         }
         if findings.is_empty() {
-            Outcome::quiet(0)
+            Outcome::quiet(0).over_view(view)
         } else {
-            Outcome::fired(largest, findings)
+            Outcome::fired(largest, findings).over_view(view)
         }
     }
 }

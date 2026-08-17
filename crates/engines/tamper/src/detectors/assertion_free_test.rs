@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use crate::change::{is_test_path, ChangeView};
 use crate::detectors::{Detector, Finding, Outcome};
 use crate::syntax::{callee_text, first_segment, is_curried_inner, Parsed};
+use andon_core::parse_health::ParseHealth;
 use andon_core::schema::enums::TamperSignal;
 use tree_sitter::Node;
 
@@ -80,6 +81,11 @@ impl Detector for AssertionFreeTest {
 
     fn run(&self, change: &ChangeView) -> Outcome {
         let mut findings = Vec::new();
+        // Both sides of every test file read: an assertion inside a region the
+        // parser could not read is an assertion this detector cannot count, and
+        // a case that looks assertion-free because its body was unreadable is
+        // the false positive of the same blind spot (PREMORTEM T3).
+        let mut view = ParseHealth::default();
         for file in &change.files {
             if file.content_unchanged() || file.head.is_none() {
                 continue;
@@ -90,10 +96,12 @@ impl Detector for AssertionFreeTest {
             let Some(head) = Parsed::new(&file.path, file.head_bytes()) else {
                 continue;
             };
+            view = view.merge(head.parse_health());
             // Cases that were already assertion-free on the base side are
             // pre-existing; only what this change introduced is reported.
             let already: Vec<String> = Parsed::new(file.base_path(), file.base_bytes())
                 .map(|base| {
+                    view = view.merge(base.parse_health());
                     cases(&base)
                         .into_iter()
                         .filter(|(_, _, asserts)| *asserts == 0)
@@ -123,9 +131,9 @@ impl Detector for AssertionFreeTest {
         }
         let count = findings.len() as i64;
         if count > 0 {
-            Outcome::fired(count, findings)
+            Outcome::fired(count, findings).over_view(view)
         } else {
-            Outcome::quiet(0)
+            Outcome::quiet(0).over_view(view)
         }
     }
 }
