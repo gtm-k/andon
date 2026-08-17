@@ -257,7 +257,7 @@ fn two_concurrent_attestations_survive_a_squash_merge_and_a_shallow_clone() {
         // becomes permanent.
         for notes_ref in [MEASURE_REF, ATTEST_REF] {
             Notes::new(&a, notes_ref)
-                .copy(source, &target)
+                .migrate(source, &target)
                 .unwrap_or_else(|e| panic!("migrate {notes_ref} onto {target}: {e}"));
         }
         landed.push(target);

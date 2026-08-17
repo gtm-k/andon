@@ -9,7 +9,7 @@
 #
 # The case R2-4 actually describes is an agent that measured, had its branch
 # rebased underneath it, and **reused the measurement** instead of re-measuring.
-# That is what `copy-note` stages: the pre-rebase record, verbatim, attached to
+# That is what `migrate-note` stages: the pre-rebase record, verbatim, attached to
 # the post-rebase head. The claimed base is now an ancestor of main rather than
 # the merge base, and the correct answer is a demotion with no accusation —
 # `unwitnessed-base-mismatch`, tamper signals empty. Repeated mismatches on one
@@ -89,7 +89,7 @@ text = "export const a = 1;\nexport const b = 2;\n"
 
 # The agent reuses its pre-rebase measurement rather than re-measuring.
 [[step]]
-kind = "copy-note"
+kind = "migrate-note"
 source = "head"
 target = "rebased"
 

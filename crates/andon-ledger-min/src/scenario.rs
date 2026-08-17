@@ -173,10 +173,10 @@ pub struct Step {
     /// `measure`: engine version to report, staging a PREMORTEM S4 skew.
     #[serde(default)]
     pub engine_version: Option<String>,
-    /// `copy-note`: label the note is read from.
+    /// `migrate-note`: label the note is read from.
     #[serde(default)]
     pub source: Option<String>,
-    /// `copy-note`: label the note is written to.
+    /// `migrate-note`: label the note is written to.
     #[serde(default)]
     pub target: Option<String>,
     /// `forge`: label of the commit whose self-report is attacked.
@@ -200,9 +200,10 @@ pub enum StepKind {
     Branch,
     /// Run the agent-side measurement and write the self-report note.
     Measure,
-    /// Carry a note from one commit to another — a squash migration, or an
-    /// agent reusing a pre-rebase measurement.
-    CopyNote,
+    /// Carry a note onto another commit, merging with whatever is already
+    /// there — a squash migration, or an agent reusing a pre-rebase
+    /// measurement.
+    MigrateNote,
     /// Run the adversary binary against a self-report.
     Forge,
 }
@@ -287,7 +288,7 @@ impl Step {
                 need(self.from.is_some(), "a from")
             }
             StepKind::Measure => need(self.head.is_some(), "a head label"),
-            StepKind::CopyNote => {
+            StepKind::MigrateNote => {
                 need(self.source.is_some(), "a source label")?;
                 need(self.target.is_some(), "a target label")
             }
@@ -518,7 +519,7 @@ impl<'a> Context<'a> {
             StepKind::Commit => self.commit(step),
             StepKind::Branch => self.branch(step),
             StepKind::Measure => self.measure(step),
-            StepKind::CopyNote => self.copy_note(step),
+            StepKind::MigrateNote => self.migrate_note(step),
             StepKind::Forge => self.forge(step),
         }
     }
@@ -615,10 +616,10 @@ impl<'a> Context<'a> {
         Ok(())
     }
 
-    fn copy_note(&mut self, step: &Step) -> Result<(), ScenarioError> {
+    fn migrate_note(&mut self, step: &Step) -> Result<(), ScenarioError> {
         let from = self.oid_of(step.source.as_deref().expect("validated"))?;
         let to = self.oid_of(step.target.as_deref().expect("validated"))?;
-        Notes::measure(&self.git).copy(&from, &to)?;
+        Notes::measure(&self.git).migrate(&from, &to)?;
         Ok(())
     }
 

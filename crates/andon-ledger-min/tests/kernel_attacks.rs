@@ -254,3 +254,56 @@ fn a_reachable_remote_without_the_ref_reports_a_clean_absence() {
         .expect("a reachable remote with no ledger is not a failure");
     assert!(!found, "there is genuinely nothing there yet");
 }
+
+// ---------------------------------------------------------------------------
+// P15-R3: a squash migration must not overwrite what landed there first
+// ---------------------------------------------------------------------------
+
+/// Migrating onto a commit that already carries a record keeps both.
+///
+/// `git notes copy -f` announces "Overwriting existing notes" and does exactly
+/// that. The target is not hypothetical: two branches squash-merged in a batch
+/// can land on commits that already carry a measurement, a re-run migrates a
+/// second time, and a ledger merged from a remote arrives with records the local
+/// copy did not have. In each case the overwrite deletes somebody's evidence,
+/// and a ledger that loses records quietly is worse than one that never had
+/// them — the gap is invisible.
+#[test]
+fn migrating_onto_a_commit_that_already_has_a_record_keeps_both() {
+    let (git, head, trusted) = staged("honest/moving-main/manifest.toml", "migration-merge");
+    let notes = Notes::measure(&git);
+
+    // `advance` is the commit main moved to; treat it as the commit a squash
+    // landed on. Give it a record of its own first.
+    let landed = git
+        .cmd(["rev-parse", "--verify", "--end-of-options", "main^{commit}"])
+        .text()
+        .expect("resolve main")
+        .trim()
+        .to_string();
+    assert_ne!(landed, head, "the landing commit is not the PR head");
+    append_report(&git, &landed, &trusted, "1.2.3-landed-first");
+    assert_eq!(notes.read(&landed).expect("read").len(), 1);
+
+    // Now the PR's record is migrated onto it, as a squash merge would.
+    let total = notes.migrate(&head, &landed).expect("migrate");
+    assert_eq!(total, 2, "the migration must merge, never replace");
+
+    let records = notes.read(&landed).expect("read the landed ledger");
+    assert_eq!(records.len(), 2);
+    assert!(
+        records
+            .iter()
+            .any(|r| r.tool.version == "1.2.3-landed-first"),
+        "the record that was already there must survive: {:?}",
+        records.iter().map(|r| &r.tool.version).collect::<Vec<_>>()
+    );
+    assert!(
+        records.iter().any(|r| r.compare_context.head_oid == head),
+        "and the migrated one must arrive"
+    );
+
+    // Migrating again is idempotent: the union deduplicates, so a re-run does
+    // not grow the ledger with copies of what it already holds.
+    assert_eq!(notes.migrate(&head, &landed).expect("migrate again"), 2);
+}

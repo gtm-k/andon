@@ -14,7 +14,7 @@
 //! andon-spike scenario check   --manifest <FILE> --repo <DIR>
 //! andon-spike digests --record <FILE>
 //! andon-spike compare-records --leg <LABEL>=<FILE> --leg <LABEL>=<FILE> [...]
-//! andon-spike notes <list|copy|fetch|merge|push> --repo <PATH> [...]
+//! andon-spike notes <list|migrate|fetch|merge|push> --repo <PATH> [...]
 //!
 //! --base defaults to merge-base against the trusted branch:
 //!        --base merge-base:origin/main   the fork point (the andon default)
@@ -369,7 +369,7 @@ fn cmd_notes(flags: &Flags) -> Result<ExitCode, String> {
     let action = flags
         .positional
         .first()
-        .ok_or("notes needs list|copy|fetch|merge|push")?
+        .ok_or("notes needs list|migrate|fetch|merge|push")?
         .clone();
     let git = open(flags)?;
     // `--ref measure` / `--ref attest` as shorthands, because a workflow author
@@ -387,10 +387,11 @@ fn cmd_notes(flags: &Flags) -> Result<ExitCode, String> {
                 println!("{commit}");
             }
         }
-        "copy" => {
-            notes
-                .copy(flags.require("from")?, flags.require("to")?)
+        "migrate" => {
+            let total = notes
+                .migrate(flags.require("from")?, flags.require("to")?)
                 .map_err(|e| e.to_string())?;
+            println!("target now carries {total} record(s)");
         }
         "fetch" => {
             let found = notes

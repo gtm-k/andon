@@ -226,7 +226,8 @@ impl<'a> Notes<'a> {
         self.run_with_body("append", &[], &body, commit)
     }
 
-    /// Carry the note from one commit to another.
+    /// Carry the records from one commit onto another, **merging** rather than
+    /// replacing.
     ///
     /// Two callers with the same shape and different stories. A **squash merge**
     /// lands a branch's content on a new commit that no note points at, so
@@ -235,13 +236,41 @@ impl<'a> Notes<'a> {
     /// reuses its pre-rebase measurement rather than re-measuring is exactly the
     /// R2-4 `unwitnessed-base-mismatch` case — which the tool must be able to
     /// represent, and then refuse to confirm.
-    pub fn copy(&self, from: &str, to: &str) -> Result<(), NotesError> {
-        self.identified(
-            self.git
-                .cmd(["notes", &self.ref_flag(), "copy", "-f", from, to]),
-        )
-        .output()?;
-        Ok(())
+    ///
+    /// # Why this is not `git notes copy -f`
+    ///
+    /// Because `-f` overwrites. Git says so out loud — "Overwriting existing
+    /// notes" — and then does it, and the record that was already on the target
+    /// is gone.
+    ///
+    /// The target frequently *has* a record. Two branches squash-merged in a
+    /// batch can land on commits that already carry an attestation or a
+    /// measurement; a re-run migrates a second time; a merged ledger arrives
+    /// with records the local copy did not have. In every one of those the
+    /// migration would silently delete somebody's evidence — and a ledger that
+    /// loses records quietly is worse than one that never had them, because the
+    /// gap is invisible.
+    ///
+    /// So the union is taken, deduplicated by record equality, and written back.
+    /// That matches what `cat_sort_uniq` would do if the same two notes met
+    /// through a merge, which is the semantics the rest of this module already
+    /// commits to. Returns how many records the target carries afterwards.
+    ///
+    /// The source note is left in place: the pre-squash commit is still part of
+    /// history and its record is still true of it.
+    pub fn migrate(&self, from: &str, to: &str) -> Result<usize, NotesError> {
+        let source = self.read(from)?;
+        if source.is_empty() {
+            return Ok(0);
+        }
+        let mut merged = self.read(to)?;
+        for record in source {
+            if !merged.contains(&record) {
+                merged.push(record);
+            }
+        }
+        self.write(to, &merged)?;
+        Ok(merged.len())
     }
 
     /// Commits carrying a note on this ref.
