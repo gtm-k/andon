@@ -191,25 +191,25 @@ fn pass(
     }
 }
 
-/// Whether this git has the builtin fsmonitor daemon.
+/// Whether fsmonitor is actually watching this repository.
 ///
-/// Detected rather than assumed from the operating system: builtin fsmonitor
-/// arrived in git 2.37 for Windows and macOS, is absent on Linux, and a version
-/// check would go stale the moment that changes. `fsmonitor--daemon status`
-/// exits non-zero when nothing is being watched, which is a fine answer; what
-/// distinguishes an unsupported build is that the subcommand does not exist at
-/// all, and git says so on stderr.
-fn fsmonitor_supported(git: &Git) -> bool {
-    match git.cmd(["fsmonitor--daemon", "status"]).succeeds() {
-        // Exit 0 or 1 both mean the subcommand ran and answered.
-        Ok(_) => git
-            .cmd(["fsmonitor--daemon", "status"])
-            .output()
-            .err()
-            .map(|e| !e.to_string().contains("is not a git command"))
-            .unwrap_or(true),
-        Err(_) => false,
-    }
+/// Asked *after* the fsmonitor leg has run, and answered from what the daemon
+/// reports rather than from the platform or the git version. The first version
+/// of this check tried to infer support by matching git's stderr for "is not a
+/// git command", and reported `available` on a Linux runner — the subcommand
+/// exists there and declines for a different reason, so the string never
+/// matched. A capability probe that guesses from an error message is a probe
+/// that will be wrong on the next platform.
+///
+/// `fsmonitor--daemon status` prints "is watching" when a daemon is genuinely
+/// serving this repository, which is the only fact the gate actually needs: not
+/// "could this platform do it" but "did it".
+fn fsmonitor_is_watching(git: &Git) -> bool {
+    git.cmd(["fsmonitor--daemon", "status"])
+        .succeeds_with_output()
+        .ok()
+        .flatten()
+        .is_some_and(|out| out.contains("is watching"))
 }
 
 /// Nearest-rank p95.
@@ -333,35 +333,18 @@ spawn count is flat at {flat} across 1, 50, and 1000 changed files"
     );
 
     // ---- warm dirty: the incremental keying path, which is T6 proper --------
-    // Measured with fsmonitor *disabled*, which is the conservative case: it is
-    // the number every platform can produce, so passing here means passing
-    // everywhere. The fsmonitor figure is printed alongside as information.
+    //
+    // Both arrangements are measured, and which one *gates* is decided
+    // afterwards from what the fsmonitor daemon actually did. PLAN P1 says
+    // "fsmonitor where available", so the gate belongs on the arrangement the
+    // tool really ships with on this platform — but "available" has to be
+    // observed rather than assumed, and the un-accelerated number is reported
+    // either way because it is what a platform without the daemon pays.
     let git = Git::open(&repo).expect("repo opens");
     dirty_the_worktree(&repo, &manifest.dirty_paths);
 
-    // Which arrangement gates depends on what the platform can do. Builtin
-    // fsmonitor exists on Windows and macOS from git 2.37 and not on Linux, and
-    // PLAN P1 says "fsmonitor where available" — so the gate is on the best
-    // configuration this platform supports, and the other leg is reported so the
-    // cost of not having it is visible rather than inferred.
-    let fsmonitor_available = fsmonitor_supported(&git);
-    println!(
-        "\n  fsmonitor: {}",
-        if fsmonitor_available {
-            "available — the fsmonitor leg gates, the no-fsmonitor leg is reported"
-        } else {
-            "unavailable on this platform — the no-fsmonitor leg gates"
-        }
-    );
-
-    let legs: &[(&str, &str)] = if fsmonitor_available {
-        &[("warm-dirty-nofsm", "false"), ("warm-dirty", "true")]
-    } else {
-        &[("warm-dirty", "false")]
-    };
-    let gating_leg = if fsmonitor_available { "true" } else { "false" };
-
-    for (label, fsmonitor) in legs.iter().copied() {
+    let mut legs: Vec<(&str, Pass, bool)> = Vec::new();
+    for (label, fsmonitor) in [("warm-dirty-nofsm", "false"), ("warm-dirty-fsm", "true")] {
         git.cmd(["config", "core.fsmonitor", fsmonitor])
             .output()
             .expect("set fsmonitor");
@@ -381,32 +364,61 @@ spawn count is flat at {flat} across 1, 50, and 1000 changed files"
             last = pass(&repo, &base, &head, &store, &policy);
             samples.push(last.elapsed);
         }
-        let summary = Pass {
-            elapsed: p95(samples),
-            ..last
+        // Asked while the daemon is still configured and warm, which is the only
+        // moment the answer means anything.
+        let watching = fsmonitor == "true" && fsmonitor_is_watching(&git);
+        legs.push((
+            label,
+            Pass {
+                elapsed: p95(samples),
+                ..last
+            },
+            watching,
+        ));
+    }
+
+    let accelerated = legs.iter().any(|(_, _, watching)| *watching);
+    println!(
+        "
+  fsmonitor: {}",
+        if accelerated {
+            "watching this repository — the fsmonitor leg gates, the other is reported"
+        } else {
+            "not watching (unsupported here, or it declined) — the un-accelerated leg gates"
+        }
+    );
+
+    for (label, summary, watching) in &legs {
+        let gates = if accelerated {
+            *watching
+        } else {
+            *label == "warm-dirty-nofsm"
         };
-        // The configured path gates; the no-fsmonitor leg is reported alongside
-        // so the cost of a platform without it is visible rather than inferred.
-        // PLAN P1 sanctions "fsmonitor where available", so the gate is on the
-        // arrangement the tool actually ships with.
         let mut informational = Vec::new();
-        let gates = fsmonitor == gating_leg;
         let sink = if gates {
             &mut failures
         } else {
             &mut informational
         };
-        report(label, &summary, warm_budget, sink, spawn_budget);
-        if !gates && !informational.is_empty() {
-            // Said out loud rather than swallowed. A platform without fsmonitor
-            // pays this on a repository this size, and someone reading the gate
-            // output should learn that from the gate and not from a user.
+        report(label, summary, warm_budget, sink, spawn_budget);
+        if !gates {
+            // Said out loud rather than swallowed, and with the headroom spelt
+            // out: a leg that passes by two percent is a leg worth watching, and
+            // whoever reads this gate should learn that here and not from a user.
+            let elapsed = ms(summary.elapsed);
+            let headroom = 100.0 * (1.0 - elapsed / warm_budget);
+            println!("  NOTE: {label} is not gated, and is worth reading anyway.");
             println!(
-                "  NOTE: without fsmonitor this leg is {:.0} ms against a {warm_budget} ms budget. \
-                 Not gated (see above), but it is the number a platform lacking \
-                 fsmonitor would see on a 100k-file repository.",
-                ms(summary.elapsed)
+                "        {elapsed:.0} ms against a {warm_budget} ms budget ({headroom:.0}% headroom)."
             );
+            println!("        This is what a platform with no watching fsmonitor daemon pays on a");
+            println!("        100k-file repository.");
+            if !informational.is_empty() {
+                println!(
+                    "  NOTE: and it is over budget: {}",
+                    informational.join("; ")
+                );
+            }
         }
     }
 
