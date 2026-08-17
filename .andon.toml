@@ -1,10 +1,11 @@
 # Andon's own policy. Also the worked example of the policy schema — see
 # schemas/policy-v1.schema.json for the full contract.
 #
-# Every value here is a default from `andon_core::policy`. The file is written
-# out in full anyway, because a policy that relies on implicit defaults is one
-# nobody can review: the operator should be able to read what is in force
-# without reading the source.
+# Every value here is a default from `andon_core::policy`, with one deliberate
+# exception noted at `[self_measure] excluded_paths`. The file is written out in
+# full anyway, because a policy that relies on implicit defaults is one nobody
+# can review: the operator should be able to read what is in force without
+# reading the source.
 #
 # Changing a threshold in this file is a ledgered edit. The CI verifier loads
 # policy from the BASE commit of a pull request, so editing a threshold inside
@@ -69,6 +70,18 @@ max_claims_expiring_per_month = 3
 binary = "last-attested-release"
 # Fixtures that exist to fire the tamper suite. Declared here rather than hidden
 # in the runner so the exclusion is reviewable and drift has a baseline.
+#
+# THE ONE PLACE THIS FILE DEVIATES FROM `andon_core::policy`'s DEFAULT.
+# `SelfMeasurePolicy::default()` ships three entries; this list has five. The two
+# extra ones arrived with P3's fixtures at the wave-1 integration
+# (docs/patches/p3-spike-matrix-join.md, patch 2) and are named below. The
+# default was left alone on purpose: it is P0-owned, and widening it would
+# silently exclude those paths in every repository that never wrote them down,
+# which is the opposite of what a reviewable exclusion is for.
+#
+# `exclusion_drift_signal` compares against the last attested run, not against
+# this default, so the deviation changes no behaviour — it is recorded here so
+# that a reader who checks the claim above does not find it false.
 excluded_paths = [
     "fixtures/gamed/**",
     "fixtures/adversarial/**",

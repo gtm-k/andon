@@ -65,9 +65,19 @@ present, so an overridden run can never be counted as a clean one.
 
 ## Fixture exclusion, and its drift signal
 
-`fixtures/gamed/**`, `fixtures/adversarial/**`, and the registry-lint fixtures
-exist to fire the tamper suite. Measuring them would block every build on
-findings that are the point of the files.
+`fixtures/gamed/**`, `fixtures/adversarial/**`, `fixtures/honest/corpus/**`,
+`fixtures/matrix/**`, and the registry-lint fixtures exist to fire the tamper
+suite. Measuring them would block every build on findings that are the point of
+the files.
+
+The last two joined at the wave-1 integration and are worth naming, because
+neither is an adversarial fixture and both would surprise a reader who assumed
+only adversarial ones need excluding. `fixtures/honest/corpus/**` is the
+*should-pass* corpus: it is full of suppressions, deleted tests and loosened
+configs by construction, since a false-positive corpus that contained none of
+those would measure nothing. `fixtures/matrix/**` holds the cross-OS specimen,
+engineered so all seven detectors fire — a matrix over results that are all
+`false` proves nothing, so the specimen has to be maximally guilty.
 
 They are excluded by **declared policy**, in `[self_measure] excluded_paths`, and
 not by a rule inside the runner. Two reasons: the exclusion is reviewable in a
