@@ -54,9 +54,19 @@ pub struct CloneGroup {
 /// What detection found.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CloneReport {
-    /// Groups with two or more members, sorted by length then position.
+    /// Distinct duplicated sequences worth reporting, longest first.
+    ///
+    /// A *deduplicated* view: overlapping groups are collapsed so one
+    /// duplicated region is described once. It is therefore not a partition of
+    /// [`CloneReport::duplicated_tokens_by_path`] and the two can legitimately
+    /// disagree — five files can hold a copy while the group list names two of
+    /// them, because a longer clone between that pair won the region. The
+    /// counts are the coverage; this is the description.
     pub groups: Vec<CloneGroup>,
-    /// Tokens covered by at least one fragment, per path.
+    /// Tokens covered by at least one confirmed clone fragment, per path.
+    ///
+    /// A union over every confirmed match, taken before group selection — see
+    /// the note in [`detect`] on why the two answers come from different sets.
     pub duplicated_tokens_by_path: BTreeMap<String, u32>,
     /// Tokens in the measured set, per path.
     pub tokens_by_path: BTreeMap<String, u32>,
@@ -226,6 +236,34 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
         }
     }
 
+    // Coverage first, over **every** confirmed match, before any selection.
+    //
+    // # Why the two answers are computed from different sets
+    //
+    // "Which regions are duplicated" and "which groups are worth reporting" are
+    // different questions, and answering both from the selected groups gets the
+    // first one wrong. The greedy pass below drops a whole group when any one of
+    // its members overlaps something already kept — and a group's members are
+    // spread across files. Probed: five modules sharing a 56-token helper, two
+    // of which also share a 19-token suffix. The longer two-member group wins
+    // the region, the five-member group is dropped entire, and the three modules
+    // whose only content is the duplicated helper are reported as containing no
+    // duplication at all.
+    //
+    // A coverage set cannot double-count — a token is in it or is not — so it
+    // takes the union over every confirmed maximal match and needs no selection
+    // at all. Group *reporting* still does, for the reason below.
+    let mut covered: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    for ((len, _), members) in &groups {
+        for (file, window) in members {
+            let tokens = symbols[*file as usize].len() as u32;
+            covered
+                .entry(*file)
+                .or_default()
+                .extend(*window..(*window + *len).min(tokens));
+        }
+    }
+
     // Longest first, and nothing overlapping anything already kept.
     //
     // # Why overlap has to be excluded rather than merely deduplicated
@@ -271,7 +309,6 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
         kept.push((key, members));
     }
 
-    let mut covered: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
     let mut out_groups = Vec::new();
     for ((len, _), members) in kept {
         let mut fragments = Vec::new();
@@ -280,9 +317,6 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
             let entry = &index.files[path];
             let start = *window as usize;
             let end = (start + len as usize).min(entry.rows.len());
-            for token in start..end {
-                covered.entry(*file).or_default().insert(token as u32);
-            }
             fragments.push(Fragment {
                 path: path.clone(),
                 token_start: *window,
@@ -464,6 +498,47 @@ mod tests {
         );
         let report = run(&[input("a.ts", &source)]);
         assert_eq!(report.groups.len(), 1, "{:#?}", report.groups);
+    }
+
+    #[test]
+    fn every_file_holding_a_copy_is_credited_with_it() {
+        // Five modules share a helper; two of them also share a suffix, which
+        // makes a longer clone between that pair. The longer group wins the
+        // greedy selection and the five-member group is dropped from the
+        // *report* — but the three modules whose only content is the shared
+        // helper still contain it, and were being credited with zero
+        // duplicated tokens. Coverage is a union over every confirmed match,
+        // taken before any selection happens.
+        let helper = block("shared");
+        let suffix = "\nexport function extra(x: number): number {\n  const y = x * 2;\n  const z = y + 3;\n  return z - 1;\n}\n";
+        let inputs: Vec<_> = (0..5)
+            .map(|n| {
+                let source = if n < 2 {
+                    format!("{helper}{suffix}")
+                } else {
+                    helper.clone()
+                };
+                input(&format!("m{n}.ts"), &source)
+            })
+            .collect();
+        let report = run(&inputs);
+        for n in 0..5 {
+            let path = format!("m{n}.ts");
+            let duplicated = report
+                .duplicated_tokens_by_path
+                .get(&path)
+                .copied()
+                .unwrap_or(0);
+            assert!(
+                duplicated > 0,
+                "{path} holds a copy of the shared helper and was credited with none: {:?}",
+                report.duplicated_tokens_by_path
+            );
+        }
+        // And the pair that shares more is credited with more.
+        assert!(
+            report.duplicated_tokens_by_path["m0.ts"] > report.duplicated_tokens_by_path["m2.ts"]
+        );
     }
 
     #[test]
