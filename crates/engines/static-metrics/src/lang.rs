@@ -33,23 +33,49 @@ use std::collections::BTreeMap;
 
 /// Version of the tree-sitter runtime, as pinned in `Cargo.toml`.
 ///
-/// # Why the grammars are all on the 0.23 line
+/// # Why these versions, and why they moved at the wave-1 integration
 ///
-/// `tree-sitter-typescript` has no release past 0.23.2, and TypeScript is the
-/// language the corpus finds real gaps in — so it anchors the set. The
-/// JavaScript and Python grammars have 0.25 releases and are deliberately left
-/// where they are: both measure the corpus at **zero** degraded files, so a bump
-/// buys nothing measurable and costs a wider runtime-ABI surface across a set
-/// that currently agrees with itself. A grammar bump is a regime change and
-/// therefore a corpus re-run (see `fixtures/parse-corpus`); doing one without a
-/// number that improves is churn stamped onto every digest.
-pub const TREE_SITTER_VERSION: &str = "0.25.10";
+/// This set used to sit on the 0.23 line, on the argument that a bump "buys
+/// nothing measurable": TypeScript anchors the set because it has no release
+/// past 0.23.2, and JavaScript and Python both measured the corpus at zero
+/// degraded files, so moving them would have been churn stamped onto every
+/// digest.
+///
+/// That argument was about *value*. It was overtaken by *compatibility*. P3's
+/// clone and tamper engines resolve `tree-sitter 0.26.12`, and the runtime crate
+/// declares `links = "tree-sitter"` — cargo permits exactly one package with a
+/// given `links` value in a dependency graph, so a workspace holding both this
+/// crate at `=0.25.10` and P3's at `=0.26.12` does not resolve at all. That is a
+/// property of the workspace, not a preference, and it does not care what a bump
+/// buys.
+///
+/// PLAN.md's decision log (P3 execution, item (e)) rules the direction:
+/// **converge upward**, this crate moves. So the runtime goes to 0.26.12 and the
+/// grammars to the newest release each has:
+///
+/// | crate | was | now | why |
+/// |---|---|---|---|
+/// | `tree-sitter` | 0.25.10 | 0.26.12 | one `links = "tree-sitter"` per graph |
+/// | `tree-sitter-python` | 0.23.6 | 0.25.0 | newest; the P3(e) convergence target |
+/// | `tree-sitter-javascript` | 0.23.1 | 0.25.0 | newest |
+/// | `tree-sitter-typescript` | 0.23.2 | 0.23.2 | **0.23.2 is still the newest release** |
+///
+/// The old comment's factual claim held on re-check at integration: crates.io
+/// serves no `tree-sitter-typescript` past 0.23.2 (published 2024-11-11). Only
+/// its *reasoning* is superseded. The consequence is that the two named upstream
+/// TypeScript gaps in `fixtures/parse-corpus/README.md` cannot be closed by
+/// choosing a better pin, and this bump does not close them.
+///
+/// A grammar move is a regime change, so `fixtures/parse-corpus/baseline.toml`
+/// was re-recorded under this set and `tests/corpus_baseline.rs` is what refused
+/// to let the bump land without it.
+pub const TREE_SITTER_VERSION: &str = "0.26.12";
 /// Version of the vendored-by-pin TypeScript grammar crate (TypeScript + TSX).
 pub const TYPESCRIPT_GRAMMAR_VERSION: &str = "0.23.2";
 /// Version of the vendored-by-pin JavaScript grammar crate.
-pub const JAVASCRIPT_GRAMMAR_VERSION: &str = "0.23.1";
+pub const JAVASCRIPT_GRAMMAR_VERSION: &str = "0.25.0";
 /// Version of the vendored-by-pin Python grammar crate.
-pub const PYTHON_GRAMMAR_VERSION: &str = "0.23.6";
+pub const PYTHON_GRAMMAR_VERSION: &str = "0.25.0";
 
 /// Revision of the metric definitions in this crate.
 ///

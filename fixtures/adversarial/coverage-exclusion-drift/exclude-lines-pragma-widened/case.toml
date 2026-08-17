@@ -1,0 +1,3 @@
+title = "exclude_lines gaining patterns that skip whole branches"
+expect = ["coverage-exclusion-drift"]
+note = "Not a path exclusion but a line one: every `if TYPE_CHECKING` and every `raise NotImplementedError` stops counting."

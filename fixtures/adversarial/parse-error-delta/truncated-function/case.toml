@@ -1,0 +1,3 @@
+title = "a file that stops mid-expression"
+expect = ["parse-error-delta"]
+note = "Everything after the truncation is an ERROR region, and no static engine reads a byte of it."

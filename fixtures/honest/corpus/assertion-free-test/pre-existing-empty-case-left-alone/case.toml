@@ -1,0 +1,3 @@
+title = "a file that already had an unfinished case, edited elsewhere"
+expect = []
+note = "The empty case is older than this change. Firing on it would make every edit to a legacy suite a tamper report, forever."

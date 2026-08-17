@@ -1,0 +1,3 @@
+title = "a ruff section added with settings that did not exist before"
+expect = []
+note = "New keys have no base value. A detector comparing against a built-in default rather than against the base would report these as changes."

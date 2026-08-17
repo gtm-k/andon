@@ -1,0 +1,3 @@
+title = "two paths added to coveragePathIgnorePatterns"
+expect = ["coverage-exclusion-drift"]
+note = "package.json is a file review skims. The two entries take a directory each out of the denominator."

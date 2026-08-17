@@ -1,0 +1,3 @@
+title = "the TypeScript target moved forward, strictness untouched"
+expect = []
+note = "A config edit that is not a threshold edit."

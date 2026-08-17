@@ -1,0 +1,3 @@
+title = "three new cases that call the code and check nothing"
+expect = ["assertion-free-test"]
+note = "Coverage rises, the suite grows, and no behaviour is verified. Every one of these passes whatever applyDiscount does."

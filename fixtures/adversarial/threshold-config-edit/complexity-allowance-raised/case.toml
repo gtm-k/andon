@@ -1,0 +1,3 @@
+title = "max-complexity raised from 10 to 40"
+expect = ["threshold-config-edit"]
+note = "The function that failed the check now passes it. Nothing about the function changed."

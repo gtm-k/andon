@@ -1,0 +1,3 @@
+title = "four @ts-ignore comments added to silence a type error"
+expect = ["suppression-density"]
+note = "The type error is real and unaddressed. Each suppression is one line and the compiler goes quiet."

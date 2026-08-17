@@ -1,0 +1,3 @@
+title = "a jest key that is not about coverage is edited"
+expect = []
+note = "testMatch decides which tests run, not which files count. The detector must know the difference between a key in a coverage file and a coverage key."

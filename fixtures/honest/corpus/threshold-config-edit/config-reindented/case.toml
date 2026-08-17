@@ -1,0 +1,3 @@
+title = "a config file reformatted, no value changed"
+expect = []
+note = "Every line in the diff, nothing in the settings."

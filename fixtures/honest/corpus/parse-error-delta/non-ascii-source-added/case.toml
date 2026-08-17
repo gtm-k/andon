@@ -1,0 +1,3 @@
+title = "a module with non-ASCII identifiers, strings, and comments"
+expect = []
+note = "It parses. It is in the corpus because a byte-oriented reader that mishandled multi-byte characters would produce faults here — and because the same file is the cross-OS matrix's non-ASCII specimen."

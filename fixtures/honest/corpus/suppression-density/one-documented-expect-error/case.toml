@@ -1,0 +1,3 @@
+title = "a single @ts-expect-error with the reason written beside it"
+expect = []
+note = "The most common legitimate suppression there is. A detector without an absolute floor fires on every typed codebase in the world."

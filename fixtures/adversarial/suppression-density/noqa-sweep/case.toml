@@ -1,0 +1,3 @@
+title = "five noqa markers added across a Python module"
+expect = ["suppression-density"]
+note = "The linter had five findings; the change has five suppressions and no fixes."

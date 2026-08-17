@@ -1,0 +1,3 @@
+title = "cases written in the should style rather than the expect style"
+expect = []
+note = "chai and its descendants assert by property access. A detector that only knew `expect(` would call every should-style suite assertion-free."

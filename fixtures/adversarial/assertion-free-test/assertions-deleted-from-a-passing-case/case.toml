@@ -1,0 +1,3 @@
+title = "a case kept, its assertions removed"
+expect = ["assertion-free-test"]
+note = "The case count does not move, so a test-removal detector stays quiet. What left the suite is the checking."

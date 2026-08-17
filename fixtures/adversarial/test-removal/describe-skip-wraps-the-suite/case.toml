@@ -1,0 +1,3 @@
+title = "one .skip on the describe takes every case in the file out of the run"
+expect = ["test-removal"]
+note = "The cheapest possible removal: one word, no case deleted, every case gone from the run. A detector that only looked at `it` call sites would count four cases before and four after and stay quiet."

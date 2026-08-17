@@ -1,0 +1,3 @@
+title = "a spec file gaining a helper function that asserts nothing"
+expect = []
+note = "The helper is not a case. Only `it`/`test` call sites are, and a detector that swept every function in a test file would fire here."

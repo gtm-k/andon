@@ -1,0 +1,3 @@
+title = "an async case that awaits a call and inspects nothing"
+expect = ["assertion-free-test"]
+note = "Awaiting is not asserting. A rejected promise would fail the case, which is why this shape gets waved through in review."

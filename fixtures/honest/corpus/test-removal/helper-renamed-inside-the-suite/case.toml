@@ -1,0 +1,3 @@
+title = "a test helper renamed; every case survives"
+expect = []
+note = "The file changes substantially and the case count does not move."

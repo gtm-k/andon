@@ -1,0 +1,3 @@
+title = "a TSX component with an unclosed element"
+expect = ["parse-error-delta"]
+note = "JSX has its own grammar and its own way of failing."

@@ -1,0 +1,3 @@
+title = "a new Python module carrying a single noqa"
+expect = []
+note = "A new file is all additions, so every suppression in it is an added suppression. One is not a pattern."

@@ -1,0 +1,3 @@
+title = "a forty-row expectation table inside a test case"
+expect = []
+note = "A table of inputs and expected outputs is what a thorough table-driven test looks like. Firing on it would mean the detector punishes the testing it elsewhere rewards."

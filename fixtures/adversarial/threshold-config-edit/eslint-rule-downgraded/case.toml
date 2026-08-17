@@ -1,0 +1,3 @@
+title = "a rule that was failing the build downgraded to a warning"
+expect = ["threshold-config-edit"]
+note = "The finding survives and stops mattering."

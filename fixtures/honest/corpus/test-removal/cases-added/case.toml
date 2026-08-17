@@ -1,0 +1,3 @@
+title = "two cases added to an existing suite"
+expect = []
+note = "The opposite direction. A detector whose magnitude was clamped at zero would report this identically to a change that touched nothing."

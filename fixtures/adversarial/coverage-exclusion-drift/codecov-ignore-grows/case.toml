@@ -1,0 +1,3 @@
+title = "a codecov ignore list gaining two entries"
+expect = ["coverage-exclusion-drift"]
+note = "Same move in the YAML the CI reads rather than the one the runner reads."

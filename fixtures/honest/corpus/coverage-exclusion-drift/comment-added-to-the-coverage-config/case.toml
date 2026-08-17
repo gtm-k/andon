@@ -1,0 +1,3 @@
+title = "a comment explaining an existing exclusion"
+expect = []
+note = "Documentation of an exclusion is not a new exclusion, and a comment line inside an indented block looks exactly like an entry."

@@ -1,0 +1,3 @@
+title = "cases that check through a project-specific helper"
+expect = []
+note = "Projects wrap their assertions. A detector that only knew `expect` would call every codebase with an assertion helper a gaming attempt."

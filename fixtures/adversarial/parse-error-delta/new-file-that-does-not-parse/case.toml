@@ -1,0 +1,3 @@
+title = "an added file that never parsed"
+expect = ["parse-error-delta"]
+note = "A new file has no base side, so its faults are all new. A detector that only compared modified files would miss this entirely."

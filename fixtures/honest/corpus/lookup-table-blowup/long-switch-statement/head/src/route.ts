@@ -1,0 +1,62 @@
+export function route(code: number): string {
+  switch (code) {
+    case 0:
+      return 'r0';
+    case 1:
+      return 'r1';
+    case 2:
+      return 'r2';
+    case 3:
+      return 'r3';
+    case 4:
+      return 'r4';
+    case 5:
+      return 'r5';
+    case 6:
+      return 'r6';
+    case 7:
+      return 'r7';
+    case 8:
+      return 'r8';
+    case 9:
+      return 'r9';
+    case 10:
+      return 'r10';
+    case 11:
+      return 'r11';
+    case 12:
+      return 'r12';
+    case 13:
+      return 'r13';
+    case 14:
+      return 'r14';
+    case 15:
+      return 'r15';
+    case 16:
+      return 'r16';
+    case 17:
+      return 'r17';
+    case 18:
+      return 'r18';
+    case 19:
+      return 'r19';
+    case 20:
+      return 'r20';
+    case 21:
+      return 'r21';
+    case 22:
+      return 'r22';
+    case 23:
+      return 'r23';
+    case 24:
+      return 'r24';
+    case 25:
+      return 'r25';
+    case 26:
+      return 'r26';
+    case 27:
+      return 'r27';
+    default:
+      return 'unknown';
+  }
+}

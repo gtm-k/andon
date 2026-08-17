@@ -1,0 +1,3 @@
+title = "stray braces added to a TypeScript module"
+expect = ["parse-error-delta"]
+note = "The braces parse as errors and take the functions after them out of every count."

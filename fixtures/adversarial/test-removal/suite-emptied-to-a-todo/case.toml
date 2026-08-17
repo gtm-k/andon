@@ -1,0 +1,3 @@
+title = "a test file replaced by a comment"
+expect = ["test-removal"]
+note = "The file survives, which keeps it out of a deleted-files list, and it now checks nothing."

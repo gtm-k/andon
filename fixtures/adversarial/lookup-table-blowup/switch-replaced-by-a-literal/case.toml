@@ -1,0 +1,3 @@
+title = "a method's branching replaced by a 28-key object literal"
+expect = ["lookup-table-blowup"]
+note = "The branching encoded the rule; the literal encodes the answers."

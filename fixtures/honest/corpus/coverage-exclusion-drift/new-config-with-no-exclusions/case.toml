@@ -1,0 +1,3 @@
+title = "a coverage configuration added, excluding nothing"
+expect = []
+note = "A file that did not exist now exists. Every entry in it is an added entry, and there are none."

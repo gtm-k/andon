@@ -1,0 +1,3 @@
+title = "block_on_tamper turned off inside the measured change"
+expect = ["threshold-config-edit"]
+note = "The self-referential case: the policy that governs this tool, loosened in the same change the tool is measuring. The CI verifier reads policy from the base commit, so the edit gains nothing — this signal is how it is seen."

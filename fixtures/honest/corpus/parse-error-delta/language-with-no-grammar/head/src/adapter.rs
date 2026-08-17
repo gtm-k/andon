@@ -1,0 +1,1 @@
+fn adapt(input: &str) -> {{{ }

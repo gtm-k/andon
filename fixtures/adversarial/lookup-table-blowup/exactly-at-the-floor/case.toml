@@ -1,0 +1,3 @@
+title = "a table of exactly twenty-four rows"
+expect = ["lookup-table-blowup"]
+note = "The boundary, pinned. Twenty-three is a long literal; twenty-four is where this detector starts calling it a table."

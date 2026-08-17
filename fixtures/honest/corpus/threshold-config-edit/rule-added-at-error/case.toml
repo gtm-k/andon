@@ -1,0 +1,3 @@
+title = "a new rule introduced, at error"
+expect = []
+note = "There is no base value to have loosened from. A detector comparing against a default rather than against the base would fire."

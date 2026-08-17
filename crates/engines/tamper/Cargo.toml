@@ -1,0 +1,35 @@
+[package]
+name = "andon-engine-tamper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+andon-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tree-sitter = "=0.26.12"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-python = "=0.25.0"
+tree-sitter-typescript = "=0.23.2"
+
+# The corpus harness. A binary rather than only a test so the table can be
+# regenerated into `fixtures/adversarial/README.md` and printed in CI, and so
+# `freeze` is a deliberate act with a command behind it rather than something
+# that happens as a side effect of running the suite.
+[[bin]]
+name = "andon-corpus-report"
+path = "src/bin/andon-corpus-report.rs"
+
+# The matrix probe, and the builder for the specimen it measures. Same reason as
+# the clone engine's: the cross-OS gate compares records written on three
+# runners.
+[[bin]]
+name = "andon-tamper-probe"
+path = "src/bin/andon-tamper-probe.rs"

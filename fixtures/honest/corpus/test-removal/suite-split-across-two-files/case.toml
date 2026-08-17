@@ -1,0 +1,3 @@
+title = "one spec file split into two, every case kept"
+expect = []
+note = "The commonest shape a naive per-file detector calls tampering: the first file loses three cases and a new file gains them. Net zero."

@@ -1,0 +1,5 @@
+[run]
+omit =
+    # vendored, upstream's tests cover it
+    tests/*
+    src/vendor/*

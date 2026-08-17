@@ -1,0 +1,3 @@
+title = "a long single-line JavaScript module"
+expect = []
+note = "One line, no newlines, and it parses. Anything reasoning about parse health per line rather than per node would answer strangely."

@@ -1,0 +1,3 @@
+title = "three suppressions added while the file loses lines"
+expect = ["suppression-density"]
+note = "The shape that a raw count would rank as mild and a density catches: fewer lines carrying more suppressions."

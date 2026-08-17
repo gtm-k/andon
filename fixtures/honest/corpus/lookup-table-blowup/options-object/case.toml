@@ -1,0 +1,3 @@
+title = "a function returning an eight-key options object"
+expect = []
+note = "A literal inside a function that is configuration rather than answers. The floor of 24 is what separates them."

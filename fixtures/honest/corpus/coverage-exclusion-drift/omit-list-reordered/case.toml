@@ -1,0 +1,3 @@
+title = "the same omit entries, in a different order"
+expect = []
+note = "A diff full of moved lines and no widening. Anything counting added lines rather than entries fires."

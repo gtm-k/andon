@@ -1,0 +1,3 @@
+title = "a new case whose body is a console.log"
+expect = ["assertion-free-test"]
+note = "It reads as a test and behaves as a print statement."

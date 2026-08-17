@@ -1,0 +1,3 @@
+title = "the suite switched from it() to the test() alias"
+expect = []
+note = "Jest exposes both names for the same function. Every case survives under a different spelling."

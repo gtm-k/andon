@@ -1,0 +1,3 @@
+title = "three suppressions added to a spec file"
+expect = ["suppression-density"]
+note = "Suppressions in tests silence the type errors that a wrong test would otherwise produce. Test files are not exempt."

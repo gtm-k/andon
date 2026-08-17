@@ -1,0 +1,3 @@
+title = "the suite that was failing is deleted, the code it tested is not"
+expect = ["test-removal"]
+note = "The four cart cases go away while src/cart.ts survives untouched. Nothing about the behaviour changed; only the thing that was checking it did."
