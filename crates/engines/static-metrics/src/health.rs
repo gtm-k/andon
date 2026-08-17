@@ -19,6 +19,33 @@
 //! the verifier are *required* to agree that a file was degraded, and the
 //! cross-OS matrix proves they do on every leg.
 //!
+//! # Consumer warning: pre-seeded degradation
+//!
+//! Demotion caps severity, so *being degraded is worth something to an
+//! attacker*. The way to collect it is not to break a file inside the change
+//! under review — that moves the parse-error delta — but to have broken it in an
+//! earlier change nobody examined, and add the complexity now:
+//!
+//! 1. land a file with one unparsable region, in a change too small to look at;
+//! 2. later, add whatever you like to that file.
+//!
+//! At step 2 the parse-error **delta is zero** and every number from the file
+//! arrives `parse-degraded` and capped below MED+. A consumer keyed on deltas
+//! alone sees nothing. `tests/preseeded_degradation.rs` reproduces it, including
+//! a route that needs no invalid syntax at all: `tree-sitter-python` gives up
+//! past roughly 64 levels of indentation, so a Python file can be degraded with
+//! whitespace.
+//!
+//! What this engine owes is evidence a delta-blind consumer can key on, and it
+//! provides it: the **absolute** per-file ERROR and MISSING counts are emitted
+//! for every parsed file, path-attributed, whether or not the delta moved — a
+//! zero included, so "no errors" is distinguishable from "not reported". The
+//! rest of the answer is not this engine's: keying a detector on absolutes as
+//! well as deltas belongs to P3's tamper suite, and deciding what a
+//! long-degraded file is allowed to do to a verdict belongs to P5a's policy.
+//! Named here because a warning that lives only in a review comment is a warning
+//! that expires with the review.
+//!
 //! # The parse-health metrics are not themselves demoted
 //!
 //! `static.parse-errors` and `static.parse-missing` report the degradation.
