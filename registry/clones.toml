@@ -1,0 +1,101 @@
+# Evidence registry for the clone-detection engine (P3).
+#
+# TIER N THROUGHOUT, AND THE FIELDS SAY WHY
+# -----------------------------------------
+# Duplication has a literature; *this implementation's* numbers do not. Tier N
+# is the registry's word for "novel and unvalidated — motivated by evidence, not
+# yet supported by it", and that is exactly the standing of a token-normalized
+# Rabin-Karp detector at window 25 / floor 50 tokens that nobody has evaluated
+# against an outcome. Claiming tier B on the strength of somebody else's clone
+# study would be the family-wide overstatement the claim tuple exists to make
+# impossible.
+#
+# `citation_ref` is deliberately absent. The P10a registry gate resolves DOIs
+# automatically, and an unverified identifier written from memory is a worse
+# artefact than a named paper with no identifier: the first looks checked. The
+# citations below name their sources in full so a re-reviewer can find them.
+#
+# TWO CLAIMS, FIVE METRICS
+# ------------------------
+# The volume claim covers the three metrics that count duplicated tokens at
+# different scopes — they are one measurement asked at three granularities. The
+# structure claim covers the two that count and size the groups. Splitting
+# further would spend a budget of 24 (PREMORTEM S2) on distinctions no reviewer
+# would re-review separately.
+
+schema_version = 1
+engine = "clones"
+family = "clones"
+
+[[metric]]
+metric_id = "clones.duplicated-tokens"
+claim_id = "andon.clones.token-duplication@1|any|duplication-volume"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "clones.duplicated-token-ratio"
+claim_id = "andon.clones.token-duplication@1|any|duplication-volume"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "clones.file-duplicated-tokens"
+claim_id = "andon.clones.token-duplication@1|any|duplication-volume"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "clones.clone-groups"
+claim_id = "andon.clones.clone-group@1|any|duplication-structure"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "clones.largest-clone-tokens"
+claim_id = "andon.clones.clone-group@1|any|duplication-structure"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.clones.token-duplication@1|any|duplication-volume"
+implementation = "andon.clones.token-duplication"
+implementation_version = "1"
+# `any` rather than one claim per grammar: the measurement is over a normalized
+# token stream in which identifiers, literals, and comments have already been
+# collapsed, so what is counted is language-independent by construction. The
+# grammars differ in what they tokenize, and that difference is carried in the
+# `measurement_regime`, not in the claim.
+language = "any"
+outcome = "duplication-volume"
+tier = "N"
+citation = "Novel. Motivated by Juergens, Deissenboeck, Hummel and Wagner, 'Do Code Clones Matter?', ICSE 2009, which found inconsistent changes to cloned code associated with faults. That finding is about clones in general and about their study's systems; no study evaluates this detector."
+population = "none — no study underlies this number"
+effect = "none claimed; the count of tokens in the measured set covered by at least one confirmed clone fragment of 50 tokens or more"
+does_not_predict = [
+    "defect density",
+    "maintainability",
+    "whether the duplication should be removed — extracted abstractions can be worse than the repetition",
+    "duplication outside the measured file set, which the number never looked at",
+]
+owner = "gtm-k"
+expiry = "2027-01-18"
+
+[[claim]]
+claim_id = "andon.clones.clone-group@1|any|duplication-structure"
+implementation = "andon.clones.clone-group"
+implementation_version = "1"
+language = "any"
+outcome = "duplication-structure"
+tier = "N"
+citation = "Novel. Motivated by the same ICSE 2009 result; the group count and the longest-clone length are reported because they are what a reader needs to judge a duplication figure, not because either has been validated."
+population = "none — no study underlies this number"
+effect = "none claimed; the number of distinct normalized token sequences appearing two or more times in the measured set, and the length of the longest"
+does_not_predict = [
+    "defect density",
+    "review effort",
+    "refactoring priority — a long clone in dead code matters less than a short one in a hot path",
+    "clone genealogy or which copy came first",
+]
+owner = "gtm-k"
+expiry = "2027-02-15"
