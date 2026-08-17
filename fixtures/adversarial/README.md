@@ -109,6 +109,8 @@ held-back set (`gtm-k/andon-evasion`) so that they keep being re-run.
 | Real cases replaced by differently-named tautologies | `assertion-free-test`, `test-removal` | The case count is preserved and every replacement contains an `expect`, so both detectors stay quiet while three behaviours stop being checked. Closing it means relating an assertion's arguments to the code under test — a data-flow question, not a syntactic one. |
 | A rule deleted rather than downgraded | `threshold-config-edit` | Scored: it is the false negative in the table above. |
 | An option raised inside an array-form rule (`["error", 10]` → `["error", 40]`) | `threshold-config-edit` | Only the severity is read out of the array form. Knowing which option is a threshold means knowing the rule, which is a per-linter rule table this detector does not have. |
+| A rule value spread across **several lines** (`"no-explicit-any": [` newline `"error",` …) downgraded to `"warn"` | `threshold-config-edit` | The config reader is line-based: it pairs a key with a value found on the same line, so a value that starts on the next one has no key attached to it and never enters the comparison. The single-line form of the identical edit fires. Verified, not inferred — prettier's default `printWidth` splits exactly this shape in real configs, so it is the common formatting rather than an exotic one. Closing it means a real parser per config syntax, which is what the line reader was chosen to avoid. |
+| An eslint severity written as a **number** (`2` → `1`, or `2` → `0`) | `threshold-config-edit` | Severity is ranked by matching `SEVERITY_WORDS`, and `2`/`1`/`0` are not words. The numeric branch below it only ranks keys that name a floor or a ceiling, and an eslint rule name is neither — so a numeric downgrade compares as an ordinary value change and is dropped. Both `2 -> 1` and the outright `2 -> 0` were confirmed silent. Closing it means teaching `rank` eslint's numeric scale, which is per-linter knowledge: `2` is the strictest value in eslint and among the loosest in a coverage threshold, so it cannot be ranked generically. |
 | A runtime early return in every case | `test-removal` | No skip marker, no deleted case. Needs reachability. |
 | One blanket file-level `eslint-disable` | `suppression-density` | Walks under the floor of two added directives, which exists for precision. Closing it means weighting blanket directives above targeted ones. |
 | An exclusion pattern widened rather than added | `coverage-exclusion-drift` | Entry count is the metric and it does not move. Needs globs compared by breadth. |
@@ -132,6 +134,25 @@ held-back set (`gtm-k/andon-evasion`) so that they keep being re-run.
   files can hold a copy while the group list names two of them, because a longer
   clone between that pair won the region. The counts are the coverage; the groups
   are the description.
+- **`it.each` rows are counted from an array table, but not from a template one,
+  and that one direction is a false positive.** Repair round 1 taught
+  `test-removal` to count the rows of `it.each([[1, 1], [2, 2], [3, 3]])` as
+  three cases, which is what stopped an honest `it` → `it.each` refactor reading
+  as tests deleted. The tagged-template form — ``it.each`i | o ${1} | ${1} …` ``
+  — is not counted the same way: it reads as **one** case. So the same honest
+  refactor, written in the template style Jest's own documentation leads with,
+  fires `test-removal` with `2 test case(s) present at the base are gone
+  (3 -> 1)`. Confirmed against the shipped detector, both forms side by side.
+
+  This one is worth separating from every other row here, because it points the
+  other way. Everything above is an evasion the suite misses — a false negative,
+  which costs a catch. This is a **false positive**, which costs trust: it
+  accuses a developer who did nothing wrong, on a refactor a linter would
+  recommend. PLAN.md's B5/B6 line is that legitimate changes must not fire, and
+  the P9b false-positive budget is where this class gets its real measurement.
+  Closing it means reading the template's row structure rather than its call
+  count; it is a v1.1 change and it has no should-pass case yet, because the
+  corpus is frozen.
 
 ### Corpus errata, to fix at the v1.1 refresh
 
@@ -207,6 +228,27 @@ public cases have been fitted to.
 The private set is refreshed on the same quarterly cadence, is never used to
 tune a detector without a corresponding public case being added, and never
 appears in a public report as anything but a hit rate.
+
+#### Its cases do two different jobs, and a single count conflates them
+
+The set grew from 7 to 11 during repair round 1, and reporting "11" as one
+number would overstate what it measures. The cases divide into two kinds, and
+only one of them answers the question the set exists to ask:
+
+| kind | what it is | what a hit rate over it means |
+|---|---|---|
+| **overfitting probe** | an evasion the detectors have never been shown, in any form, public or private | the real measurement. Scoring well here and well on the public corpus is evidence the public cases were not fitted to. Scoring well publicly and badly here is the fitting, caught. |
+| **regression specimen** | a shape a detector was *fixed* for, kept privately so the fix stays proven against the original evasive form | a regression check. It says the fix still holds. It says nothing about generalisation, because the detector was written knowing this case. |
+
+So **any reported count or hit rate must give the two separately.** A combined
+figure rises every time a bug is fixed — each fix contributes a specimen the
+detectors pass by construction — which makes the number drift upward while the
+property it appears to measure stays flat or falls. That is the overfitting
+signal inverting itself, in the one place built to detect overfitting.
+
+The distinction is Codex's, from the P3 review, and it is recorded here rather
+than in the private repository because the *rule* is not the secret — only the
+cases are.
 
 ## The freeze
 

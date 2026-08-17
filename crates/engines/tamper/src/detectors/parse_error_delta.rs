@@ -140,9 +140,11 @@ impl Detector for ParseErrorDelta {
                 (faults > 0).then(|| {
                     Finding::in_file(
                         &file.path,
-                        format!(
-                            "changed file is parse-degraded: {faults} parse fault(s) present,                              no rise in this change — the region is unreadable to every static                              engine either way"
-                        ),
+                        // One line, deliberately. Written across three source
+                        // lines this string kept the indentation of the source
+                        // inside the message, so the detail a reader saw had a
+                        // run of thirty spaces in the middle of a sentence.
+                        format!("changed file is parse-degraded: {faults} parse fault(s) present, no rise in this change — the region is unreadable to every static engine either way"),
                     )
                 })
             })
