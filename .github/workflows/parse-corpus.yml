@@ -1,0 +1,98 @@
+# The parse-health corpus gate (PREMORTEM T3), born at P2.
+#
+# WHAT THIS PROVES
+#
+# That the pinned grammars understand the language people actually write. The
+# unit tests prove parse health is *reported*; they cannot prove a grammar is
+# adequate, because tree-sitter recovers from anything and a half-understood file
+# yields numbers that look like any other numbers.
+#
+# So: real repositories, pinned by full commit SHA, measured through the same
+# code path a measurement takes — blob bytes out of `cat-file --batch`, never the
+# working directory — and scored against a budget stated in
+# `fixtures/parse-corpus/corpus.toml` before the corpus was first run.
+#
+# EXECUTION MODE: dispatch only (user decision D2)
+#
+# This job clones six repositories and parses several hundred files. It runs at
+# phase-review gates, on `workflow_dispatch`, and nowhere else.
+#
+# PLAN P2 also requires it to "re-run per grammar bump", and that requirement is
+# NOT implemented as a `push` path filter. A path filter fires on every commit
+# touching the engine crate, does not fire when a transitive change moves the
+# grammar, and cannot tell whether anybody looked at the result. Instead
+# `fixtures/parse-corpus/baseline.toml` records the regime its numbers were taken
+# under, and `tests/corpus_baseline.rs` fails when that stamp and the engine's
+# current regime disagree — so a grammar bump turns the ordinary `cargo test` red
+# on every push until this job has been dispatched and its baseline committed.
+# The requirement is enforced where it costs nothing.
+#
+# WHY THE FETCH IS SHAPED THE WAY IT IS
+#
+# `git init` + `git fetch --depth 1 origin <full sha>` rather than
+# `clone --branch <tag>`: a tag is a mutable pointer and this is a gate. No
+# `--filter=blob:none` — the corpus reads every blob, so a partial clone would
+# turn one fetch into several hundred lazy ones.
+
+name: parse-corpus
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  corpus:
+    name: parse health over pinned real-world source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the harness
+        run: cargo build --release -p andon-static-metrics --bin andon-static
+
+      # The manifest is the only place the repositories are named. `corpus plan`
+      # prints them tab-separated so this loop never parses TOML in bash — and so
+      # adding a repository is one edit rather than two.
+      - name: Fetch the corpus at its pinned SHAs
+        run: |
+          set -euo pipefail
+          mkdir -p corpus
+          ./target/release/andon-static corpus plan | while IFS=$'\t' read -r name url rev; do
+            echo "--- $name $rev"
+            mkdir -p "corpus/$name"
+            git -C "corpus/$name" init --quiet
+            git -C "corpus/$name" remote add origin "$url"
+            git -C "corpus/$name" fetch --quiet --depth 1 origin "$rev"
+            git -C "corpus/$name" checkout --quiet FETCH_HEAD
+          done
+
+      # `corpus check` verifies each checkout is at the pinned revision before it
+      # measures anything: a corpus measured at whatever happened to be checked
+      # out is not a pinned corpus.
+      #
+      # Exit 1 means a budget was exceeded. That is the gate.
+      - name: Measure, and score against the ex ante budget
+        run: |
+          set -euo pipefail
+          ./target/release/andon-static corpus check \
+            --root corpus \
+            --baseline fixtures/parse-corpus/baseline.toml \
+            --write-baseline baseline-fresh.toml \
+            --run-ref "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      # Uploaded rather than committed: a job that writes to the repository is a
+      # job that needs write permission, and this one runs with `contents: read`.
+      # Commit the artifact when a grammar moves — `tests/corpus_baseline.rs` is
+      # what insists on it.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: parse-corpus-baseline
+          path: baseline-fresh.toml
+          retention-days: 30

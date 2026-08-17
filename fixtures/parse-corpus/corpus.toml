@@ -1,0 +1,140 @@
+# The parse-health corpus (PREMORTEM T3).
+#
+# WHAT THIS GATE ANSWERS
+# ----------------------
+# "Do the pinned grammars understand the language people actually write?" The
+# unit tests prove parse health is *reported*; they cannot prove a grammar is
+# adequate. A grammar that predates a widely-used syntax degrades a quarter of a
+# real codebase with every unit test green, and the first symptom is a payload
+# full of `parse-degraded` results nobody can act on.
+#
+# THE BUDGETS ARE EX ANTE
+# -----------------------
+# Both numbers below were chosen before the corpus was first run, from a stated
+# principle rather than from an observation:
+#
+#   max_degraded_file_ratio = 0.02
+#     A released grammar meeting released source of its own language should
+#     understand essentially all of it. One file in fifty is the point past which
+#     "the grammar is fine and this file is unusual" stops being the likely
+#     explanation.
+#
+#   max_error_node_ratio = 0.001
+#     The second failure shape: few files degraded, but catastrophically. A
+#     thousandth of all nodes being ERROR or MISSING is a parse that has lost
+#     structure, not one that stumbled on a keyword.
+#
+# Rates, not counts: a pinned repository grows between refreshes, and a gate that
+# fails on arithmetic is a gate somebody eventually raises to make it stop.
+#
+# WHY THESE REPOSITORIES
+# ----------------------
+# Real, released, permissively licensed, and each chosen for a syntax profile
+# rather than for size. Nothing here is redistributed — the corpus is URLs and
+# SHAs, fetched at run time — so the licence column is provenance, not
+# compliance. Every `rev` is a full commit SHA resolved from an annotated tag at
+# pin time; a tag is a mutable pointer and has no place in a gate.
+#
+# WHEN THIS RUNS
+# --------------
+# `workflow_dispatch` only (user decision D2: expensive legs run at phase-review
+# gates). "Re-run per grammar bump" is enforced without spending a CI minute by
+# `fixtures/parse-corpus/baseline.toml`, whose recorded regime must equal the
+# engine's current one or `cargo test` goes red on every push.
+
+schema_version = 1
+rationale = "Pinned real-world source in every language the static family measures, scored against an ex ante parse-health budget, re-run whenever a grammar or the metric spec moves."
+
+# ------------------------------------------------------------- TypeScript
+
+[[repo]]
+name = "type-fest"
+url = "https://github.com/sindresorhus/type-fest.git"
+rev = "68469722a9521122b6cb40376c4c4544aef28228"
+license = "CC0-1.0"
+languages = ["typescript"]
+rationale = "Type-level TypeScript at its most extreme — conditional, mapped and recursive types, variadic tuples. If a grammar is going to produce ERROR nodes on legal TypeScript, it produces them here. Also the case that must yield almost no complexity results: type expressions are not control flow."
+include = ["source/", "index.d.ts"]
+
+[[repo]]
+name = "swr"
+url = "https://github.com/vercel/swr.git"
+rev = "0b3c2c757d9ce4f7e386a925f695adf93cf9065c"
+license = "MIT"
+languages = ["typescript", "tsx", "javascript"]
+rationale = "Ordinary application TypeScript with generics and hooks, plus the TSX and JSX the separate grammars exist for. `examples/` is deliberately included: example code is written the way people write, not the way a library author polishes."
+include = ["src/", "examples/"]
+
+# ------------------------------------------------------------- JavaScript
+
+[[repo]]
+name = "axios"
+url = "https://github.com/axios/axios.git"
+rev = "08b84b52d5835d0c7b81049c365c3d271ade8bff"
+license = "MIT"
+languages = ["javascript"]
+rationale = "Long-lived JavaScript that has accumulated every module style: CommonJS, ESM, and the interop between them. Dense enough in branching to exercise the complexity walkers rather than only the parser."
+include = ["lib/"]
+
+# ----------------------------------------------------------------- Python
+
+[[repo]]
+name = "requests"
+url = "https://github.com/psf/requests.git"
+rev = "b25c87d7cb8d6a18a37fa12442b5f883f9e41741"
+license = "Apache-2.0"
+languages = ["python"]
+rationale = "The most-depended-on Python library there is, and conservative in its syntax — the control case. Degradation here would mean the grammar, not the code."
+include = ["src/"]
+
+[[repo]]
+name = "click"
+url = "https://github.com/pallets/click.git"
+rev = "934813e4d421071a1b3db3973c02fe2721359a6e"
+license = "BSD-3-Clause"
+languages = ["python"]
+rationale = "Modern Python against requests' conservative one: decorators, type annotations, context managers, and deep nesting in the parameter machinery."
+include = ["src/"]
+
+# ------------------------------------------------------------------- Rust
+
+[[repo]]
+name = "serde-json"
+url = "https://github.com/serde-rs/json.git"
+rev = "762783414e6c4f8d670c9d87eb04913efb80d3be"
+license = "MIT OR Apache-2.0"
+languages = ["rust"]
+rationale = "The tokenization tier's exercise. No parse health is reported for Rust — there is no parser — so what this proves is that the hand-written scanner survives real code: raw strings at several hash depths, byte strings, lifetimes next to character literals, and nested block comments."
+include = ["src/"]
+
+# ---------------------------------------------------------------- budgets
+
+[[budget]]
+language = "typescript"
+max_degraded_file_ratio = 0.02
+max_error_node_ratio = 0.001
+
+[[budget]]
+language = "tsx"
+max_degraded_file_ratio = 0.02
+max_error_node_ratio = 0.001
+
+[[budget]]
+language = "javascript"
+max_degraded_file_ratio = 0.02
+max_error_node_ratio = 0.001
+
+[[budget]]
+language = "python"
+max_degraded_file_ratio = 0.02
+max_error_node_ratio = 0.001
+
+# Rust reports no parse health at all — the tokenization tier has no parser, so
+# both rates are structurally zero. The budget exists so that the corpus and the
+# budget list stay the same set: a language measured with no budget behind it is
+# a language nothing is gating, and this file would rather say "zero, by
+# construction" than leave a hole for someone to read as an oversight.
+[[budget]]
+language = "rust"
+max_degraded_file_ratio = 0.0
+max_error_node_ratio = 0.0
