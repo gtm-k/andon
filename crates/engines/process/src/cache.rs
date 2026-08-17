@@ -113,7 +113,9 @@ impl HistoryCache {
 
         if let Some(bytes) = self.store.get(&key)? {
             if let Ok(window) = serde_json::from_slice::<HistoryWindow>(&bytes) {
-                if window.describes(anchor_oid, window_days, git.version()) {
+                if window.describes(anchor_oid, window_days, git.version())
+                    && window.answers_this_clone(git.facts().shallow)
+                {
                     return Ok(window);
                 }
             }
@@ -165,5 +167,43 @@ impl HistoryWindow {
             && self.anchor_oid == anchor_oid
             && self.window_days == window_days
             && self.git_version == git_version
+    }
+
+    /// Whether a loaded entry was computed under a clone that could answer the
+    /// question this one is being asked.
+    ///
+    /// # The hole in the one-key-one-answer argument
+    ///
+    /// The key is an anchor commit, and a commit is immutable — which is what
+    /// licenses this cache to exist at all. But **truncation is a property of
+    /// the clone, not of the commit**. The same anchor answers differently
+    /// before and after `git fetch --unshallow`, so an entry written while the
+    /// clone was shallow is not a cached answer to the question a complete clone
+    /// is asking. Without this check, an agent that measured at `--depth 1` and
+    /// then fetched kept being told its history was truncated, and the only way
+    /// to see the real numbers was to bypass the cache. PLAN P9 requires the
+    /// verifier to unshallow before recomputing; a cache that ignored the fetch
+    /// would have defeated that doctrine silently.
+    ///
+    /// # Why this is deliberately one-directional
+    ///
+    /// A **truncated entry in a complete clone** is stale: it describes less
+    /// than the repository can now witness, so it is refused and recomputed.
+    ///
+    /// A **complete entry in a clone that has since been re-shallowed** is
+    /// served. It is not stale — it was computed from real commits for this
+    /// exact anchor, and those commits did not stop having existed because a
+    /// later fetch narrowed what this clone keeps. Refusing it would throw away
+    /// a correct answer to buy symmetry, and would make the recomputed
+    /// replacement *worse*: markers where there were numbers. The asymmetry is
+    /// the point — the rule is "never serve less than the clone can witness",
+    /// not "always match the clone".
+    ///
+    /// Nothing about either direction can produce a false accusation: a
+    /// truncated side and a complete side emit results at different scopes, so
+    /// they never pair, and `compare` returns `unwitnessed` rather than
+    /// `divergent` (see `crate::engine`, and `tests/compare_asymmetry.rs`).
+    pub fn answers_this_clone(&self, clone_is_shallow: bool) -> bool {
+        !self.truncated || clone_is_shallow
     }
 }
