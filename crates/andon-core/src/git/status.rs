@@ -139,6 +139,18 @@ impl DirtyEntry {
         self.status.as_bytes().get(1).copied() == Some(b'M')
     }
 
+    /// True when git reported the working-tree side as matching the index
+    /// exactly.
+    ///
+    /// Not the negation of [`DirtyEntry::is_worktree_modified`], and the gap is
+    /// the point: the worktree side can also be `D` for a path deleted from
+    /// disk while its staged content remains. That is neither "modified" — there
+    /// is nothing there to have been modified — nor "unmodified". Only `.` means
+    /// the index blob still describes what the working tree holds.
+    pub fn is_worktree_unmodified(&self) -> bool {
+        self.status.as_bytes().get(1).copied() == Some(b'.')
+    }
+
     /// Record that the working-tree side turned out to match the index after
     /// all, leaving the index side of the status untouched.
     fn clear_worktree_modification(&mut self) {

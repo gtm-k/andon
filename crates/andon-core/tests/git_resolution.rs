@@ -824,6 +824,85 @@ fn staged_content_does_have_a_readable_blob() {
 }
 
 #[test]
+fn a_worktree_edited_on_top_of_a_staged_change_offers_no_blob() {
+    // `MM` against real git. The index blob here resolves and reads cleanly —
+    // and holds `staged edit`, which is not what the working tree contains. A
+    // readable wrong answer is the failure mode worth a test of its own, because
+    // nothing downstream can tell it from a right one.
+    let dir = scratch("staged-then-edited");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"one\n", "base");
+    repo.write("src/a.ts", b"staged edit\n");
+    repo.add_all();
+    repo.write("src/a.ts", b"and then edited again\n");
+
+    let range = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD".into()),
+        &Revision::Worktree,
+    )
+    .unwrap();
+    let snapshot = range.head.snapshot().expect("a dirty endpoint");
+    assert_eq!(
+        snapshot.entries["src/a.ts"].status, "MM",
+        "the fixture depends on git reporting both sides modified"
+    );
+
+    let changed = ChangedSet::enumerate(repo.git(), &range).unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(
+        changed.entries[0].readable_blob(),
+        None,
+        "the staged blob describes the previous revision of this change"
+    );
+    assert!(changed.read_head_blobs(repo.git()).unwrap().is_empty());
+
+    // The same tree under the INDEX sentinel, where the staged blob is exactly
+    // what was asked for.
+    let indexed =
+        ResolvedRange::resolve(repo.git(), &Revision::Rev("HEAD".into()), &Revision::Index)
+            .unwrap();
+    let blobs = ChangedSet::enumerate(repo.git(), &indexed)
+        .unwrap()
+        .read_head_blobs(repo.git())
+        .unwrap();
+    assert_eq!(blobs.len(), 1);
+    assert_eq!(blobs[0].1.bytes(), b"staged edit\n");
+}
+
+#[test]
+fn a_staged_change_deleted_from_disk_offers_no_blob_either() {
+    // `MD`: a blob that reads perfectly and describes a path the measured tree
+    // does not contain.
+    let dir = scratch("staged-then-deleted");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"one\n", "base");
+    repo.write("src/a.ts", b"staged edit\n");
+    repo.add_all();
+    repo.remove("src/a.ts");
+
+    let range = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD".into()),
+        &Revision::Worktree,
+    )
+    .unwrap();
+    assert_eq!(
+        range.head.snapshot().expect("dirty").entries["src/a.ts"].status,
+        "MD",
+        "the fixture depends on git reporting a staged change deleted from disk"
+    );
+
+    let changed = ChangedSet::enumerate(repo.git(), &range).unwrap();
+    assert_eq!(changed.entries[0].status, ChangeStatus::Deleted);
+    assert_eq!(
+        changed.entries[0].readable_blob(),
+        None,
+        "a file that is not there has no head-side content"
+    );
+}
+
+#[test]
 fn a_worktree_deletion_is_listed_without_a_blob() {
     let dir = scratch("worktree-delete");
     let repo = TestRepo::init(dir.path());

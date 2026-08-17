@@ -215,16 +215,31 @@ fn is_null_oid(oid: &str) -> bool {
 
 /// Turn a dirty-tree snapshot into changed entries.
 ///
-/// The head-side OID is the staged blob **only when the path is actually
-/// staged**, and `None` otherwise. The distinction is not pedantry: for an
-/// unstaged edit the index still holds `HEAD`'s content, so copying the index
-/// OID across would hand the blob reader the *pre-edit* bytes and label them as
-/// what the working tree contains. Unstaged bytes live only on disk, have no
-/// blob to read, and belong to the advisory lane by construction (PREMORTEM T1).
+/// # When the index blob is the head side, and when it only looks like it
 ///
-/// The snapshot's `worktree_oid` is likewise absent here: it is a content hash
-/// computed for keying, not an object in the database, and offering it to the
-/// blob reader would name something `cat-file` cannot resolve.
+/// The head-side OID is the staged blob **only when that blob describes the
+/// state being measured**, and `None` otherwise. Three conditions, and each one
+/// closes a way of handing an engine bytes that are not what it asked for.
+///
+/// - **The path must be staged at all.** For an unstaged edit the index still
+///   holds `HEAD`'s content, so copying the index OID across would offer the
+///   *pre-edit* bytes as what the working tree contains.
+/// - **For the `WORKTREE` sentinel, the working tree must match the index.** A
+///   path edited on top of a staged change (`MM`) has a perfectly readable index
+///   blob describing content that is one revision behind what is being measured,
+///   and a path staged and then deleted (`MD`) has one describing a file that is
+///   not there at all. Both are the same mistake as the unstaged case wearing
+///   better clothes: a blob the reader can resolve, holding bytes the
+///   measurement is not about.
+/// - **For the `INDEX` sentinel, that second condition does not apply.** The
+///   index *is* the measured state there, so a later worktree edit is simply out
+///   of scope and the staged blob is exactly right.
+///
+/// The snapshot's `worktree_oid` is absent here in every case: it is a content
+/// hash computed for keying, not an object in the database, and offering it to
+/// the blob reader would name something `cat-file` cannot resolve. Unstaged
+/// bytes live only on disk and belong to the advisory lane by construction
+/// (PREMORTEM T1).
 fn from_snapshot(snapshot: &super::status::DirtySnapshot) -> Vec<ChangedEntry> {
     snapshot
         .entries
@@ -235,6 +250,8 @@ fn from_snapshot(snapshot: &super::status::DirtySnapshot) -> Vec<ChangedEntry> {
                 (true, false) => ChangeStatus::Deleted,
                 (true, true) => ChangeStatus::Modified,
             };
+            let index_blob_is_the_measured_state =
+                entry.is_staged() && (snapshot.staged_only || entry.is_worktree_unmodified());
             ChangedEntry {
                 path: path.clone(),
                 old_path: None,
@@ -243,8 +260,7 @@ fn from_snapshot(snapshot: &super::status::DirtySnapshot) -> Vec<ChangedEntry> {
                 src_mode: entry.head_mode.clone(),
                 dst_mode: entry.worktree_mode.clone(),
                 src_oid: entry.head_oid.clone(),
-                dst_oid: entry
-                    .is_staged()
+                dst_oid: index_blob_is_the_measured_state
                     .then(|| entry.staged_oid.clone())
                     .flatten(),
             }
@@ -330,7 +346,90 @@ fn none_if_null(oid: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use super::super::status::{DirtyEntry, DirtySnapshot, SnapshotMode, SNAPSHOT_VERSION};
     use super::*;
+
+    /// A one-entry snapshot with the given porcelain status letters.
+    fn snapshot_of(status: &str, staged_only: bool) -> DirtySnapshot {
+        let deleted = status.as_bytes()[1] == b'D';
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "src/a.ts".to_string(),
+            DirtyEntry {
+                status: status.to_string(),
+                head_mode: Some("100644".to_string()),
+                worktree_mode: (!deleted).then(|| "100644".to_string()),
+                head_oid: Some("1".repeat(40)),
+                staged_oid: Some("2".repeat(40)),
+                // Computed for keying and never an object anyone can read.
+                worktree_oid: Some("3".repeat(40)),
+            },
+        );
+        DirtySnapshot {
+            version: SNAPSHOT_VERSION,
+            head_oid: "9".repeat(40),
+            staged_only,
+            mode: SnapshotMode::Incremental,
+            entries,
+        }
+    }
+
+    fn only_entry(snapshot: &DirtySnapshot) -> ChangedEntry {
+        let entries = from_snapshot(snapshot);
+        assert_eq!(entries.len(), 1);
+        entries.into_iter().next().expect("one entry")
+    }
+
+    #[test]
+    fn a_staged_path_the_worktree_has_not_touched_offers_its_blob() {
+        // The case the offer exists for: staged, and the index still describes
+        // what is on disk.
+        let entry = only_entry(&snapshot_of("M.", false));
+        assert_eq!(entry.readable_blob(), Some(&"2".repeat(40)[..]));
+    }
+
+    #[test]
+    fn an_edit_on_top_of_a_staged_change_offers_nothing() {
+        // `MM`. The index blob resolves and reads cleanly, and it holds the
+        // content from *before* the working-tree edit — which is precisely the
+        // state not being measured. A readable wrong answer is worse than none.
+        let entry = only_entry(&snapshot_of("MM", false));
+        assert_eq!(entry.readable_blob(), None);
+        assert_eq!(entry.dst_oid, None);
+    }
+
+    #[test]
+    fn a_staged_change_then_deleted_from_disk_offers_nothing() {
+        // `MD`. The blob describes a file that is not in the measured tree at
+        // all, which is the same mistake with the volume turned up.
+        let entry = only_entry(&snapshot_of("MD", false));
+        assert_eq!(entry.status, ChangeStatus::Deleted);
+        assert_eq!(entry.readable_blob(), None);
+    }
+
+    #[test]
+    fn an_unstaged_edit_still_offers_nothing() {
+        // The case that was already right, asserted so the new condition cannot
+        // be written in a way that accidentally loosens it.
+        let entry = only_entry(&snapshot_of(".M", false));
+        assert_eq!(entry.readable_blob(), None);
+    }
+
+    #[test]
+    fn the_index_sentinel_is_unaffected_by_what_the_worktree_did_next() {
+        // For `INDEX` the index *is* the measured state, so a later worktree
+        // edit is out of scope rather than a reason to withhold the blob.
+        for status in ["M.", "MM", "MD"] {
+            let entry = only_entry(&snapshot_of(status, true));
+            assert_eq!(
+                entry.readable_blob(),
+                Some(&"2".repeat(40)[..]),
+                "the INDEX sentinel must still offer the staged blob for {status}"
+            );
+        }
+    }
 
     #[test]
     fn a_modification_parses_into_both_sides() {
