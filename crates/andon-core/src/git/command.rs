@@ -178,7 +178,9 @@ const FORCED_ENV: &[(&str, &str)] = &[
     // replace ref can make `cat-file` return bytes that are not the object's,
     // which would let a blob digest describe content nobody committed.
     ("GIT_NO_REPLACE_OBJECTS", "1"),
-    // Read-only by intent: do not take the index lock to refresh stat data.
+    // Never block on a credential or passphrase prompt. A measurement that
+    // pauses waiting for input nobody is there to give is a hung agent, and the
+    // honest failure is the immediate one.
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_PAGER", "cat"),
     ("PAGER", "cat"),
@@ -593,13 +595,24 @@ impl GitCommand {
         Ok(output.status.success())
     }
 
-    /// Run, returning stdout on success and `None` on a non-zero exit.
+    /// Run, returning stdout on success and `None` on the documented miss.
     ///
     /// For the plumbing commands that answer "there is no such thing" by
     /// exiting 1 with an empty stdout — `merge-base` with no common ancestor,
     /// `rev-parse --verify --quiet` on an unknown revision. Treating those as
     /// errors would turn a legitimate answer into a failure, and treating them
     /// as empty success would turn it into a fabricated one.
+    ///
+    /// **Exit 1 only.** Git reserves 128 for what it calls fatal — not a
+    /// repository, a malformed revision, a reflog shorter than the entry asked
+    /// for — and a process killed by a signal reports no code at all. Folding
+    /// those into `None` answers "there is no such thing" to a question git
+    /// never got round to considering, and discards the stderr line that says
+    /// what actually went wrong. Measured, not assumed: `rev-parse --verify
+    /// --quiet` on an unknown ref exits 1, in a directory that is not a
+    /// repository it exits 128, and on `@{99}` it exits 128 with a message about
+    /// how many reflog entries there are — which is worth more to whoever reads
+    /// it than "does not resolve to a commit".
     pub fn succeeds_with_output(mut self) -> Result<Option<String>, GitError> {
         self.spawns.fetch_add(1, Ordering::Relaxed);
         let output = self.command.output().map_err(|source| GitError::Spawn {
@@ -607,7 +620,15 @@ impl GitCommand {
             source,
         })?;
         if !output.status.success() {
-            return Ok(None);
+            return if output.status.code() == Some(1) {
+                Ok(None)
+            } else {
+                Err(GitError::Failed {
+                    argv: self.rendered_argv(),
+                    status: output.status.to_string(),
+                    stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                })
+            };
         }
         String::from_utf8(output.stdout)
             .map(Some)

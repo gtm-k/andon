@@ -99,6 +99,77 @@ fn an_unknown_revision_is_refused_rather_than_guessed() {
     assert!(matches!(err, ResolveError::UnknownRevision { .. }), "{err}");
 }
 
+#[test]
+fn a_fatal_git_error_is_not_reported_as_an_unknown_revision() {
+    // `rev-parse --verify --quiet` exits 1 for "no such thing" and 128 for what
+    // git calls fatal. Folding both into "there is no such thing" answers a
+    // question git never got round to considering. `@{99}` on a one-commit
+    // repository is a reflog complaint, not an unknown revision, and the
+    // difference is the whole of the remedy.
+    let dir = scratch("fatal-revparse");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("a.ts", b"1\n", "base");
+
+    let err = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD".into()),
+        &Revision::Rev("@{99}".into()),
+    )
+    .expect_err("a reflog that short is a failure, not an answer");
+    match &err {
+        ResolveError::Git(GitError::Failed { status, .. }) => {
+            assert!(status.contains("128"), "{status}");
+        }
+        other => panic!("expected a carried git failure, got {other}"),
+    }
+}
+
+#[test]
+fn a_fatal_exit_keeps_the_stderr_that_explains_it() {
+    // The other half, on a command that has something to say. `--quiet` on
+    // `rev-parse` suppresses git's own message for some fatals — which is why
+    // the test above asserts the classification and this one asserts the
+    // context: between them, a caller gets both.
+    let dir = scratch("fatal-stderr");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("a.ts", b"1\n", "base");
+
+    let err = repo
+        .git()
+        .cmd(["cat-file", "-p", "not-an-object"])
+        .succeeds_with_output()
+        .expect_err("a malformed object name is not a miss");
+    match &err {
+        GitError::Failed { stderr, .. } => assert!(
+            stderr.contains("Not a valid object name"),
+            "git's diagnosis has to survive: {stderr:?}"
+        ),
+        other => panic!("expected Failed, got {other}"),
+    }
+}
+
+#[test]
+fn the_documented_miss_is_still_an_answer_and_not_an_error() {
+    // The half that must not regress: `merge-base` on unrelated histories exits
+    // 1, and treating that as a failure would turn a legitimate answer into one.
+    let dir = scratch("miss-is-answer");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("a.ts", b"1\n", "base");
+    repo.run(&["checkout", "--quiet", "--orphan", "unrelated"]);
+    repo.commit_file("b.ts", b"2\n", "an unrelated root");
+
+    let err = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::merge_base("main"),
+        &Revision::Rev("HEAD".into()),
+    )
+    .expect_err("there is no merge base");
+    assert!(
+        matches!(err, ResolveError::NoMergeBase { shallow: false, .. }),
+        "{err}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // staged vs unstaged
 // ---------------------------------------------------------------------------
@@ -821,6 +892,66 @@ fn staged_content_does_have_a_readable_blob() {
         ContentLane::Compared,
         "a staged blob is checkout-independent like any other"
     );
+}
+
+#[test]
+fn a_dirty_base_is_refused_rather_than_quietly_enumerated() {
+    // Enumeration picks its plumbing from the head, which is right for every
+    // base that is a commit. A dirty base against a commit head took the commit
+    // branch and diffed against the commit the dirty base *sits on top of* —
+    // producing a changed set for a comparison nobody asked for, with nothing in
+    // it to say so. There is no honest answer to substitute, so this refuses,
+    // exactly as `compare_context` does for the same endpoint.
+    let dir = scratch("dirty-base");
+    let repo = TestRepo::init(dir.path());
+    let first = repo.commit_file("src/a.ts", b"one\n", "base");
+    let second = repo.commit_file("src/b.ts", b"two\n", "second");
+    repo.write("src/a.ts", b"uncommitted\n");
+
+    let range = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Worktree,
+        &Revision::Rev(second.clone()),
+    )
+    .expect("a dirty base resolves; it is only incomparable");
+
+    let err = ChangedSet::enumerate(repo.git(), &range)
+        .expect_err("there is no tree to diff a commit against here");
+    assert!(
+        matches!(
+            err,
+            ResolveError::NotComparable {
+                side: "base",
+                kind: "worktree"
+            }
+        ),
+        "{err}"
+    );
+
+    // The control: the same head against a commit base enumerates normally, so
+    // the refusal is about the base and not about this fixture.
+    let ok =
+        ResolvedRange::resolve(repo.git(), &Revision::Rev(first), &Revision::Rev(second)).unwrap();
+    assert_eq!(ChangedSet::enumerate(repo.git(), &ok).unwrap().len(), 1);
+}
+
+/// A newline is a legal character in a POSIX filename and a record separator in
+/// `hash-object --stdin-paths`. Windows forbids it outright, so there is no way
+/// to build the fixture there; the unit test on `check_stdin_path` covers the
+/// rule everywhere and this covers the reachability on the platform where it is
+/// reachable.
+#[cfg(unix)]
+#[test]
+fn a_newline_in_a_filename_is_refused_before_it_desynchronizes_the_protocol() {
+    let dir = scratch("newline-path");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"one\n", "base");
+    let head = repo.rev_parse("HEAD");
+    std::fs::write(repo.path().join("two\nlines.ts"), b"untracked\n").expect("write");
+
+    let err = DirtySnapshot::incremental(repo.git(), &head, false)
+        .expect_err("this path cannot be sent to hash-object");
+    assert!(matches!(err, GitError::UnrepresentablePath { .. }), "{err}");
 }
 
 #[test]

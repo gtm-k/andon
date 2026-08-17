@@ -17,7 +17,7 @@
 
 use super::blob::{BlobBatch, BlobError, Content};
 use super::command::{decode_record, Git, GitError};
-use super::resolve::{Endpoint, ResolvedRange};
+use super::resolve::{Endpoint, ResolveError, ResolvedRange};
 use super::status::split_nul;
 
 /// The raw-diff invocation, for error messages.
@@ -129,7 +129,29 @@ impl ChangedSet {
     /// and every OID is real; a working-tree head is diffed index-to-worktree
     /// and the head-side OIDs are absent by construction, which is what stops
     /// dirty bytes from acquiring compared-lane identities.
-    pub fn enumerate(git: &Git, range: &ResolvedRange) -> Result<Self, GitError> {
+    ///
+    /// # Why a dirty base is refused
+    ///
+    /// The selection above reads `range.head` and nothing else, which is correct
+    /// for every base that is a commit and silently wrong for one that is not. A
+    /// `WORKTREE` base against a commit head takes the commit branch and diffs
+    /// against `Endpoint::anchor_oid` — the commit the dirty base *sits on top
+    /// of*, not what it holds. The result is a changed set that describes a
+    /// different comparison from the one asked for, with nothing in it to say
+    /// so.
+    ///
+    /// There is no honest enumeration to give instead: the caller asked for a
+    /// diff against uncommitted content, and git has no tree to diff. So this
+    /// mirrors [`ResolvedRange::compare_context`], down to the error, which
+    /// refuses a dirty endpoint on either side for the same underlying reason —
+    /// an endpoint with no commit id cannot stand where one is required.
+    pub fn enumerate(git: &Git, range: &ResolvedRange) -> Result<Self, ResolveError> {
+        if !range.base.is_commit() {
+            return Err(ResolveError::NotComparable {
+                side: "base",
+                kind: range.base.kind(),
+            });
+        }
         let mut entries = match &range.head {
             Endpoint::Commit { oid: head, .. } => {
                 let raw = git

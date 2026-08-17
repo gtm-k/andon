@@ -569,6 +569,19 @@ fn index_entries(git: &Git) -> Result<Vec<(String, String, String)>, GitError> {
 /// CRLF translation, but repository `.gitattributes` still apply — so the OID a
 /// path gets here is the OID `git add` would give it, and staging a file does not
 /// move the cache key.
+///
+/// # Why some paths are refused
+///
+/// `--stdin-paths` is a line-oriented protocol with no NUL variant: git reads one
+/// path per line, strips a trailing carriage return, and treats a leading `"` as
+/// the start of a C-quoted path. All three are legal bytes in a POSIX filename,
+/// and each desynchronizes the exchange in the same silent way — the count of
+/// OIDs coming back stops matching the count of paths going out, or worse
+/// happens to match while every OID after the offending path belongs to the
+/// wrong file. The arity check below would catch the first; nothing would catch
+/// the second. So they are refused up front, with the same
+/// [`GitError::UnrepresentablePath`] that covers a path we cannot carry for the
+/// other reason.
 fn hash_paths(git: &Git, paths: &[String]) -> Result<Vec<(String, String)>, GitError> {
     hash_paths_as(git, paths, Conversion::Pinned)
 }
@@ -589,6 +602,9 @@ fn hash_paths_as(
 ) -> Result<Vec<(String, String)>, GitError> {
     if paths.is_empty() {
         return Ok(Vec::new());
+    }
+    for path in paths {
+        check_stdin_path(path)?;
     }
     let command = match conversion {
         Conversion::Pinned => git.cmd(["hash-object", "--stdin-paths"]),
@@ -659,6 +675,31 @@ fn hash_paths_as(
         .cloned()
         .zip(oids.into_iter().map(str::to_string))
         .collect())
+}
+
+/// Refuse a path `hash-object --stdin-paths` would misread.
+///
+/// See [`hash_paths`] for why each of these breaks the protocol. Every one is a
+/// legal filename on a POSIX filesystem, so this is a refusal rather than an
+/// assertion.
+fn check_stdin_path(path: &str) -> Result<(), GitError> {
+    let detail = if path.contains('\n') {
+        "contains a newline, and `hash-object --stdin-paths` reads one path per \
+         line with no NUL-delimited form"
+    } else if path.contains('\r') {
+        "contains a carriage return, which `hash-object --stdin-paths` strips \
+         from the end of a line"
+    } else if path.starts_with('"') {
+        "starts with a double quote, which `hash-object --stdin-paths` reads as \
+         the opening of a C-quoted path"
+    } else {
+        return Ok(());
+    };
+    Err(GitError::UnrepresentablePath {
+        argv: HASH_OBJECT_ARGV.to_string(),
+        detail: detail.to_string(),
+        lossy: path.escape_debug().to_string(),
+    })
 }
 
 /// Split NUL-delimited output, dropping the empty tail.
@@ -766,6 +807,27 @@ mod tests {
         assert_eq!(parsed[0].path, "src/new file.ts");
         assert!(parsed[0].untracked);
         assert_eq!(parsed[0].head_oid, None);
+    }
+
+    #[test]
+    fn a_path_the_stdin_protocol_would_misread_is_refused() {
+        // Every one of these is a legal POSIX filename, and every one of them
+        // desynchronizes `--stdin-paths`. The newline is the sharp case: git
+        // reads two paths where one was sent, and every OID after it is
+        // attributed to the wrong file.
+        for path in ["src/two\nlines.ts", "src/trailing\r.ts", "\"quoted.ts"] {
+            match check_stdin_path(path) {
+                Err(GitError::UnrepresentablePath { detail, .. }) => {
+                    assert!(detail.contains("hash-object"), "{detail}")
+                }
+                other => panic!("expected a refusal for {path:?}, got {other:?}"),
+            }
+        }
+        // And the ordinary awkward ones still go through: a space, a quote that
+        // is not leading, and non-ASCII are all fine on this protocol.
+        for path in ["src/a file.ts", "src/says\"hello\".ts", "src/naïve.ts"] {
+            assert!(check_stdin_path(path).is_ok(), "{path} should be fine");
+        }
     }
 
     #[test]
