@@ -59,47 +59,12 @@ pub enum ParseError {
 
 /// How completely the parser understood a file.
 ///
-/// Two counts rather than one because they mean different things. An `ERROR`
-/// node is a region the parser could not fit to the grammar at all — it is the
-/// hiding place. A `MISSING` node is a token the parser *inserted* to keep
-/// going: the tree is structurally complete and one symbol of it was never
-/// written. A file with three ERRORs and a file with three MISSINGs are not in
-/// the same condition, and reporting their sum alone would say they were.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ParseHealth {
-    /// `ERROR` nodes in the tree.
-    pub error_nodes: u64,
-    /// `MISSING` nodes the parser inserted.
-    pub missing_nodes: u64,
-    /// Every node in the tree, named and anonymous. The denominator of the
-    /// corpus ERROR-node rate; meaningless on its own, which is why it is not a
-    /// reported metric.
-    pub total_nodes: u64,
-}
-
-impl ParseHealth {
-    /// Whether results from this parse must be demoted.
-    ///
-    /// One ERROR or one MISSING is enough. There is no tolerance band: a
-    /// threshold here would be a number an evasion could sit underneath, and
-    /// the demotion costs nothing but honesty — the number is still reported,
-    /// it just stops being allowed to stop the line.
-    pub fn is_degraded(self) -> bool {
-        self.error_nodes > 0 || self.missing_nodes > 0
-    }
-
-    /// ERROR plus MISSING nodes as a fraction of all nodes.
-    ///
-    /// The corpus budget is expressed against this rather than against absolute
-    /// counts, so adding a file to a pinned repository cannot fail the gate by
-    /// arithmetic alone.
-    pub fn error_rate(self) -> f64 {
-        if self.total_nodes == 0 {
-            return 0.0;
-        }
-        (self.error_nodes + self.missing_nodes) as f64 / self.total_nodes as f64
-    }
-}
+/// Defined in [`andon_core::parse_health`] and re-exported here, where it was
+/// written. Three engines hold grammars now and reached identical pins at the
+/// wave-1 integration, so the same half-understood file is reachable by all
+/// three; the type they mark it with is the contract crate's, and this path
+/// keeps working because every call site in this crate spells it that way.
+pub use andon_core::parse_health::ParseHealth;
 
 /// A parsed file, and everything the metrics need from it.
 ///

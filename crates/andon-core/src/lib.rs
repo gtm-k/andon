@@ -17,6 +17,8 @@
 //! - [`cache`] — the fast-lane cache key and store, keyed so that cost scales
 //!   with the diff rather than the repository (PREMORTEM T6).
 //! - [`engine`] — the `MeasureEngine` trait every measurement enters through.
+//! - [`parse_health`] — what a half-understood file does to a number, shared by
+//!   every engine that holds a grammar (PREMORTEM T3).
 //! - [`registry`] — evidence claims, and the lint that fails the build when a
 //!   metric has none.
 //! - [`policy`] — `.andon.toml`, where every threshold lives so that changing
@@ -42,6 +44,7 @@ pub mod compare;
 pub mod date;
 pub mod engine;
 pub mod git;
+pub mod parse_health;
 pub mod policy;
 pub mod registry;
 pub mod schema;
