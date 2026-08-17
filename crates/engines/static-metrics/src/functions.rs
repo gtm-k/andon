@@ -71,27 +71,30 @@ pub fn is_function(language: Language, kind: &str) -> bool {
 /// Source order is a property of the tree walk, not of a sort: results are
 /// paired across legs by `(metric_id, scope)`, so order cannot change a verdict
 /// — but an engine whose output order drifts produces diffs nobody can read.
+/// The walk is an explicit `Vec` worklist rather than a recursive descent. The
+/// tree's depth is chosen by whoever wrote the file being measured, and a
+/// recursive walk over attacker-chosen depth aborts the process rather than
+/// failing — see the note in [`crate::cognitive`]. Children are pushed in
+/// reverse so that popping yields them in source order.
 pub fn functions<'t>(parsed: &'t Parsed<'_>) -> Vec<FunctionSite<'t>> {
     let mut sites = Vec::new();
-    collect(parsed, parsed.tree.root_node(), &mut sites);
+    let mut stack = vec![parsed.tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if is_function(parsed.language, node.kind()) {
+            sites.push(FunctionSite {
+                name: name_of(parsed, node),
+                start_line: node.start_position().row as u32 + 1,
+                end_line: node.end_position().row as u32 + 1,
+                node,
+            });
+            // Do not descend: a nested function belongs to this one's number.
+            continue;
+        }
+        let mut cursor = node.walk();
+        let children: Vec<Node<'t>> = node.children(&mut cursor).collect();
+        stack.extend(children.into_iter().rev());
+    }
     sites
-}
-
-fn collect<'t>(parsed: &'t Parsed<'_>, node: Node<'t>, out: &mut Vec<FunctionSite<'t>>) {
-    if is_function(parsed.language, node.kind()) {
-        out.push(FunctionSite {
-            name: name_of(parsed, node),
-            start_line: node.start_position().row as u32 + 1,
-            end_line: node.end_position().row as u32 + 1,
-            node,
-        });
-        // Do not descend: a nested function belongs to this one's number.
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect(parsed, child, out);
-    }
 }
 
 /// The name to report, qualified by an enclosing class where there is one.

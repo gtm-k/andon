@@ -23,7 +23,7 @@
 //! **B1 — increment.** +1 for each break in the linear flow: `if`, `else`,
 //! `else if`, ternary, `switch`/`match`, every loop, every `catch`/`except`,
 //! each *sequence* of like binary logical operators, a jump to a label, and
-//! direct recursion.
+//! recursion.
 //!
 //! **B2 — nesting penalty.** Structures that break flow *and* are nested add the
 //! current nesting level on top of their +1: `if`, ternary, `switch`/`match`,
@@ -45,6 +45,21 @@
 //! } else { }        // +1
 //! ```                  = 5
 //!
+//! # No recursion in the walker
+//!
+//! The traversal is an explicit `Vec` worklist, not a recursive descent, and
+//! that is a correctness property rather than a style choice: the input is a
+//! syntax tree built from a file in the change under measurement, so its depth
+//! is chosen by whoever wrote the file. Eleven kilobytes of nested `if`
+//! statements overflowed the stack of a recursive walker — and a stack overflow
+//! is not a failure this process can catch, report, or degrade: it aborts.
+//! A measurement tool that a pull request can kill is a measurement tool whose
+//! absence is indistinguishable from a pass.
+//!
+//! Every walk in this crate is iterative for the same reason. Depth is bounded
+//! by heap, and the pin tests measure two-thousand-level nesting and check the
+//! process is still alive to report it.
+//!
 //! # What is deliberately not counted
 //!
 //! Type-level conditionals (`T extends U ? X : Y`) and other type expressions
@@ -63,12 +78,15 @@ use crate::parse::Parsed;
 /// The function node's own children are walked at nesting level zero: the unit
 /// being measured is not itself nested inside anything.
 pub fn complexity(parsed: &Parsed<'_>, function: Node<'_>) -> u64 {
-    let mut walker = Walker {
+    Walker {
         parsed,
         own_name: crate::functions::simple_name(parsed, function),
-    };
-    walker.children(function, 0)
+    }
+    .run(function)
 }
+
+/// A node still to be measured, and the nesting level it is measured at.
+type Pending<'t> = (Node<'t>, u32);
 
 struct Walker<'a, 'b> {
     parsed: &'a Parsed<'b>,
@@ -77,40 +95,28 @@ struct Walker<'a, 'b> {
 }
 
 impl Walker<'_, '_> {
-    /// Every child of `node`, at `nesting`.
-    fn children(&mut self, node: Node<'_>, nesting: u32) -> u64 {
-        let mut cursor = node.walk();
-        node.children(&mut cursor)
-            .map(|child| self.walk(child, nesting))
-            .sum()
-    }
-
-    /// Every child of `node` at `nesting`, except its `body` field which goes a
-    /// level deeper. The shape shared by every loop form.
-    fn children_with_deeper_body(&mut self, node: Node<'_>, nesting: u32) -> u64 {
-        let body = node.child_by_field_name("body").map(|b| b.id());
-        let mut cursor = node.walk();
-        let kids: Vec<Node<'_>> = node.children(&mut cursor).collect();
-        kids.into_iter()
-            .map(|child| {
-                let deeper = Some(child.id()) == body;
-                self.walk(child, nesting + u32::from(deeper))
-            })
-            .sum()
-    }
-
-    fn field(&mut self, node: Node<'_>, name: &str, nesting: u32) -> u64 {
-        match node.child_by_field_name(name) {
-            Some(child) => self.walk(child, nesting),
-            None => 0,
+    /// Measure one function.
+    ///
+    /// Order of visits does not matter — the result is a sum — so the worklist
+    /// is a plain LIFO `Vec`. Each node contributes its own increment and pushes
+    /// its children with the nesting levels *they* are measured at, which is
+    /// where all of the model's structure lives.
+    fn run(&self, function: Node<'_>) -> u64 {
+        let mut total = 0u64;
+        let mut stack: Vec<Pending<'_>> = Vec::new();
+        push_children(function, 0, &mut stack);
+        while let Some((node, nesting)) = stack.pop() {
+            total += self.step(node, nesting, &mut stack);
         }
+        total
     }
 
-    fn walk(&mut self, node: Node<'_>, nesting: u32) -> u64 {
+    /// One node's own increment, pushing its children at their nesting levels.
+    fn step<'t>(&self, node: Node<'t>, nesting: u32, stack: &mut Vec<Pending<'t>>) -> u64 {
         match self.parsed.language {
-            Language::Python => self.walk_python(node, nesting),
+            Language::Python => self.step_python(node, nesting, stack),
             Language::TypeScript | Language::Tsx | Language::JavaScript => {
-                self.walk_ecma(node, nesting)
+                self.step_ecma(node, nesting, stack)
             }
             // No parser, no tree. Asserted in tests so the arm cannot be
             // removed and turn a future Rust tree into a silent JavaScript walk.
@@ -120,53 +126,51 @@ impl Walker<'_, '_> {
 
     // ------------------------------------------------------------ ECMAScript
 
-    fn walk_ecma(&mut self, node: Node<'_>, nesting: u32) -> u64 {
+    fn step_ecma<'t>(&self, node: Node<'t>, nesting: u32, stack: &mut Vec<Pending<'t>>) -> u64 {
         match node.kind() {
             "if_statement" => {
                 // An `if` directly under an `else` is the second half of
                 // `else if`: the `else_clause` already charged the +1, and the
                 // model explicitly does not charge nesting for it.
                 let is_else_if = node.parent().is_some_and(|p| p.kind() == "else_clause");
-                let own = if is_else_if {
+                push_field(node, "condition", nesting, stack);
+                push_field(node, "consequence", nesting + 1, stack);
+                // The `else_clause` is measured at *this* level, so a long
+                // `else if` chain stays flat instead of deepening.
+                push_field(node, "alternative", nesting, stack);
+                if is_else_if {
                     0
                 } else {
                     1 + u64::from(nesting)
-                };
-                own + self.field(node, "condition", nesting)
-                    + self.field(node, "consequence", nesting + 1)
-                    // The `else_clause` is walked at *this* level, so a long
-                    // `else if` chain stays flat instead of deepening.
-                    + self.field(node, "alternative", nesting)
+                }
             }
             "else_clause" => {
-                let inner = node.named_child(0);
-                let body = match inner {
+                match node.named_child(0) {
                     // `else if` — hand the chain back at the same level.
-                    Some(child) if child.kind() == "if_statement" => self.walk(child, nesting),
-                    Some(child) => self.walk(child, nesting + 1),
-                    None => 0,
-                };
-                1 + body
+                    Some(child) if child.kind() == "if_statement" => stack.push((child, nesting)),
+                    Some(child) => stack.push((child, nesting + 1)),
+                    None => {}
+                }
+                1
             }
             "ternary_expression" => {
+                push_field(node, "condition", nesting, stack);
+                push_field(node, "consequence", nesting + 1, stack);
+                push_field(node, "alternative", nesting + 1, stack);
                 1 + u64::from(nesting)
-                    + self.field(node, "condition", nesting)
-                    + self.field(node, "consequence", nesting + 1)
-                    + self.field(node, "alternative", nesting + 1)
             }
             "switch_statement" => {
+                push_field(node, "value", nesting, stack);
+                push_field(node, "body", nesting + 1, stack);
                 1 + u64::from(nesting)
-                    + self.field(node, "value", nesting)
-                    + self.field(node, "body", nesting + 1)
             }
-            "for_statement" | "for_in_statement" | "while_statement" | "do_statement" => {
-                1 + u64::from(nesting) + self.children_with_deeper_body(node, nesting)
-            }
-            "catch_clause" => {
-                1 + u64::from(nesting) + self.children_with_deeper_body(node, nesting)
+            "for_statement" | "for_in_statement" | "while_statement" | "do_statement"
+            | "catch_clause" => {
+                push_children_with_deeper_body(node, nesting, stack);
+                1 + u64::from(nesting)
             }
             "binary_expression" if self.logical_operator(node).is_some() => {
-                self.logical_region(node, nesting)
+                self.logical_region(node, nesting, stack)
             }
             // A jump to a label. An unlabelled `break` or `continue` is
             // structured flow inside the construct that already charged for
@@ -177,82 +181,91 @@ impl Walker<'_, '_> {
                 1
             }
             "call_expression" => {
-                u64::from(self.is_self_call(node.child_by_field_name("function")))
-                    + self.children(node, nesting)
+                let own = u64::from(self.is_self_call(node.child_by_field_name("function")));
+                push_children(node, nesting, stack);
+                own
             }
             kind if is_function(self.parsed.language, kind) => {
                 // A container, not a branch: no increment, one more level for
                 // everything inside.
-                self.children(node, nesting + 1)
+                push_children(node, nesting + 1, stack);
+                0
             }
-            _ => self.children(node, nesting),
+            _ => {
+                push_children(node, nesting, stack);
+                0
+            }
         }
     }
 
     // ---------------------------------------------------------------- Python
 
-    fn walk_python(&mut self, node: Node<'_>, nesting: u32) -> u64 {
+    fn step_python<'t>(&self, node: Node<'t>, nesting: u32, stack: &mut Vec<Pending<'t>>) -> u64 {
         match node.kind() {
             "if_statement" => {
                 // `alternative` is a repeated field here — `elif_clause`s then an
-                // optional `else_clause` — and each is walked at *this* level so
-                // the chain stays flat.
+                // optional `else_clause` — and each is measured at *this* level
+                // so the chain stays flat.
+                push_field(node, "condition", nesting, stack);
+                push_field(node, "consequence", nesting + 1, stack);
+                let mut cursor = node.walk();
+                for alternative in node.children_by_field_name("alternative", &mut cursor) {
+                    stack.push((alternative, nesting));
+                }
                 1 + u64::from(nesting)
-                    + self.field(node, "condition", nesting)
-                    + self.field(node, "consequence", nesting + 1)
-                    + self.alternatives(node, nesting)
             }
             "elif_clause" => {
-                1 + self.field(node, "condition", nesting)
-                    + self.field(node, "consequence", nesting + 1)
+                push_field(node, "condition", nesting, stack);
+                push_field(node, "consequence", nesting + 1, stack);
+                1
             }
-            "else_clause" => 1 + self.field(node, "body", nesting + 1),
+            "else_clause" => {
+                push_field(node, "body", nesting + 1, stack);
+                1
+            }
             "conditional_expression" => {
                 // `body if condition else alternative`: the branches are the
                 // first and last children, the condition the middle one.
                 let mut cursor = node.walk();
-                let parts: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
-                let inner: u64 = match parts.as_slice() {
+                let parts: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
+                match parts.as_slice() {
                     [consequence, condition, alternative] => {
-                        self.walk(*condition, nesting)
-                            + self.walk(*consequence, nesting + 1)
-                            + self.walk(*alternative, nesting + 1)
+                        stack.push((*condition, nesting));
+                        stack.push((*consequence, nesting + 1));
+                        stack.push((*alternative, nesting + 1));
                     }
-                    _ => self.children(node, nesting + 1),
-                };
-                1 + u64::from(nesting) + inner
+                    _ => push_children(node, nesting + 1, stack),
+                }
+                1 + u64::from(nesting)
             }
             "for_statement" | "while_statement" => {
-                1 + u64::from(nesting) + self.children_with_deeper_body(node, nesting)
+                push_children_with_deeper_body(node, nesting, stack);
+                1 + u64::from(nesting)
             }
             "except_clause" | "except_group_clause" => {
-                1 + u64::from(nesting) + self.children(node, nesting + 1)
+                push_children(node, nesting + 1, stack);
+                1 + u64::from(nesting)
             }
             "match_statement" => {
+                push_field(node, "subject", nesting, stack);
+                push_field(node, "body", nesting + 1, stack);
                 1 + u64::from(nesting)
-                    + self.field(node, "subject", nesting)
-                    + self.field(node, "body", nesting + 1)
             }
-            "boolean_operator" => self.logical_region(node, nesting),
+            "boolean_operator" => self.logical_region(node, nesting, stack),
             "call" => {
-                u64::from(self.is_self_call(node.child_by_field_name("function")))
-                    + self.children(node, nesting)
+                let own = u64::from(self.is_self_call(node.child_by_field_name("function")));
+                push_children(node, nesting, stack);
+                own
             }
-            kind if is_function(self.parsed.language, kind) => self.children(node, nesting + 1),
-            _ => self.children(node, nesting),
+            kind if is_function(self.parsed.language, kind) => {
+                push_children(node, nesting + 1, stack);
+                0
+            }
+            _ => {
+                push_children(node, nesting, stack);
+                0
+            }
         }
-    }
-
-    /// Every `alternative` field of a Python `if_statement`, at `nesting`.
-    fn alternatives(&mut self, node: Node<'_>, nesting: u32) -> u64 {
-        let mut cursor = node.walk();
-        let alternatives: Vec<Node<'_>> = node
-            .children_by_field_name("alternative", &mut cursor)
-            .collect();
-        alternatives
-            .into_iter()
-            .map(|alternative| self.walk(alternative, nesting))
-            .sum()
     }
 
     // ------------------------------------------------------- shared machinery
@@ -277,45 +290,45 @@ impl Walker<'_, '_> {
     /// expression is an operand, so its contents form their own region — which
     /// is what the model intends: the parentheses are the reader's aid, and the
     /// cost is charged for having needed them.
-    fn logical_region(&mut self, node: Node<'_>, nesting: u32) -> u64 {
-        let mut operators: Vec<String> = Vec::new();
-        let mut operands: Vec<Node<'_>> = Vec::new();
-        self.flatten_logical(node, &mut operators, &mut operands);
-
+    ///
+    /// The region is collected with its own worklist and the operators are then
+    /// **sorted by source position**. For infix binary operators that is exactly
+    /// the in-order sequence a reader sees, and reaching it by sorting rather
+    /// than by an in-order traversal means a ten-thousand-term condition costs
+    /// heap rather than stack.
+    fn logical_region<'t>(
+        &self,
+        root: Node<'t>,
+        nesting: u32,
+        stack: &mut Vec<Pending<'t>>,
+    ) -> u64 {
+        let mut operators: Vec<(usize, String)> = Vec::new();
+        let mut region = vec![root];
+        while let Some(node) = region.pop() {
+            match self.logical_operator(node) {
+                Some(operator) => {
+                    let operator = operator.to_string();
+                    if let Some(token) = node.child_by_field_name("operator") {
+                        operators.push((token.start_byte(), operator));
+                    }
+                    for field in ["left", "right"] {
+                        if let Some(child) = node.child_by_field_name(field) {
+                            region.push(child);
+                        }
+                    }
+                }
+                // A non-logical operand rejoins the main walk: it may hold a
+                // ternary, a call, or a whole nested function.
+                None => stack.push((node, nesting)),
+            }
+        }
+        operators.sort_by(|a, b| a.0.cmp(&b.0));
         let runs = operators
             .windows(2)
-            .filter(|pair| pair[0] != pair[1])
+            .filter(|pair| pair[0].1 != pair[1].1)
             .count()
             + usize::from(!operators.is_empty());
-
-        let inner: u64 = operands
-            .into_iter()
-            .map(|operand| self.walk(operand, nesting))
-            .sum();
-        runs as u64 + inner
-    }
-
-    /// Collect a logical region's operators in source order and its non-logical
-    /// operands.
-    fn flatten_logical<'t>(
-        &self,
-        node: Node<'t>,
-        operators: &mut Vec<String>,
-        operands: &mut Vec<Node<'t>>,
-    ) {
-        match self.logical_operator(node) {
-            Some(operator) => {
-                let operator = operator.to_string();
-                if let Some(left) = node.child_by_field_name("left") {
-                    self.flatten_logical(left, operators, operands);
-                }
-                operators.push(operator);
-                if let Some(right) = node.child_by_field_name("right") {
-                    self.flatten_logical(right, operators, operands);
-                }
-            }
-            None => operands.push(node),
-        }
+        runs as u64
     }
 
     /// Direct recursion: a call to the function being measured, by its own name
@@ -329,32 +342,55 @@ impl Walker<'_, '_> {
         let (Some(callee), Some(own)) = (callee, self.own_name.as_deref()) else {
             return false;
         };
-        let text = |node: Node<'_>| {
-            std::str::from_utf8(
-                self.parsed
-                    .source
-                    .get(node.start_byte()..node.end_byte())
-                    .unwrap_or_default(),
-            )
-            .ok()
-        };
         match callee.kind() {
-            "identifier" => text(callee) == Some(own),
+            "identifier" => node_text(self.parsed, Some(callee)) == Some(own),
             // `this.method()` / `self.method()`.
             "member_expression" | "attribute" => {
-                let object = callee
-                    .child_by_field_name("object")
-                    .and_then(text)
+                let object = node_text(self.parsed, callee.child_by_field_name("object"))
                     .unwrap_or_default();
-                let property = callee
-                    .child_by_field_name("property")
-                    .or_else(|| callee.child_by_field_name("attribute"))
-                    .and_then(text);
+                let property = node_text(
+                    self.parsed,
+                    callee
+                        .child_by_field_name("property")
+                        .or_else(|| callee.child_by_field_name("attribute")),
+                );
                 matches!(object, "this" | "self") && property == Some(own)
             }
             _ => false,
         }
     }
+}
+
+// ----------------------------------------------------------------- worklist
+
+fn push_children<'t>(node: Node<'t>, nesting: u32, stack: &mut Vec<Pending<'t>>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        stack.push((child, nesting));
+    }
+}
+
+/// Every child at `nesting`, except the `body` field which goes a level deeper.
+/// The shape shared by every loop form and by `catch`.
+fn push_children_with_deeper_body<'t>(node: Node<'t>, nesting: u32, stack: &mut Vec<Pending<'t>>) {
+    let body = node.child_by_field_name("body").map(|b| b.id());
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let deeper = Some(child.id()) == body;
+        stack.push((child, nesting + u32::from(deeper)));
+    }
+}
+
+fn push_field<'t>(node: Node<'t>, name: &str, nesting: u32, stack: &mut Vec<Pending<'t>>) {
+    if let Some(child) = node.child_by_field_name(name) {
+        stack.push((child, nesting));
+    }
+}
+
+/// The source text of a node, when it has one.
+fn node_text<'a>(parsed: &'a Parsed<'_>, node: Option<Node<'_>>) -> Option<&'a str> {
+    let node = node?;
+    std::str::from_utf8(parsed.source.get(node.start_byte()..node.end_byte())?).ok()
 }
 
 #[cfg(test)]
@@ -466,6 +502,21 @@ mod tests {
     }
 
     #[test]
+    fn operator_runs_are_read_in_source_order() {
+        // The property the sort replaces an in-order traversal with. Reading the
+        // operators in tree order rather than source order would score this 2:
+        // the region is `((a && b) || (c && d))`, whose operators in source
+        // order are && || && — three runs.
+        assert_eq!(
+            first(
+                Language::TypeScript,
+                "function f(a, b, c, d) { return a && b || c && d }"
+            ),
+            3
+        );
+    }
+
+    #[test]
     fn parentheses_start_a_new_sequence() {
         // `a && (b || c)`: one `&&` sequence and one `||` sequence.
         assert_eq!(
@@ -508,7 +559,7 @@ mod tests {
                  \x20   def inner(x):\n\
                  \x20       if x:\n\
                  \x20           return 1\n\
-                 \x20   return inner\n"
+                 \x20   return inner(xs)\n"
             ),
             2
         );
@@ -600,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_recursion_costs_one_however_deep_it_sits() {
+    fn recursion_is_charged() {
         assert_eq!(
             first(
                 Language::TypeScript,
