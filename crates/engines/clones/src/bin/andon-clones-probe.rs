@@ -28,8 +28,9 @@ use std::process::ExitCode;
 
 use andon_core::engine::{run_engine, MeasureContext};
 use andon_core::git::{ChangedSet, Git, ResolvedRange, Revision};
+use andon_core::parse_health;
 use andon_core::policy::Policy;
-use andon_core::schema::enums::{Completeness, InvocationSource, RecordKind, Verdict};
+use andon_core::schema::enums::{InvocationSource, RecordKind, Verdict};
 use andon_core::schema::payload::{
     AttestationBlock, Invocation, IterationState, MeasurementRecord, Reserved, ToolIdentity,
     VerdictSummary, SCHEMA_VERSION,
@@ -112,8 +113,13 @@ fn run() -> Result<(), String> {
         },
         reserved: Reserved::default(),
         policy_hash: Policy::default().policy_hash().map_err(|e| e.to_string())?,
+        // The weakest of the results', never a standing `complete`: a
+        // record that claimed to be complete while carrying a
+        // parse-degraded result inside it would put the two halves of
+        // the same payload in disagreement, and the record-level field
+        // is the one a reader checks first.
+        completeness: parse_health::weakest(&results),
         results,
-        completeness: Completeness::Complete,
         verdict: VerdictSummary {
             // The probe measures and does not judge: assembling a verdict from
             // engine output is P5a's, and inventing one here would be a second

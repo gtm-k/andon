@@ -44,6 +44,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use andon_core::parse_health::ParseHealth;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -51,7 +52,14 @@ use crate::fingerprint;
 use crate::syntax;
 
 /// On-disk format version. A file written under a different one is not read.
-pub const INDEX_FORMAT_VERSION: u32 = 1;
+///
+/// `2` since [`FileEntry`] began carrying [`ParseHealth`]. The bump is the point
+/// rather than a formality: a v1 entry has no health, and defaulting the field on
+/// read would enter a degraded file into the index as a clean one — a cached
+/// `complete` on a file the parser never understood, which is the exact claim
+/// this field exists to stop being made. A discarded index is a slower run; a
+/// defaulted one is a wrong answer.
+pub const INDEX_FORMAT_VERSION: u32 = 2;
 
 /// Magic prefix, so a stray file is rejected before it is parsed.
 const MAGIC: &str = "andon-clone-index";
@@ -111,6 +119,15 @@ pub struct FileEntry {
     pub rows: Vec<u32>,
     /// Rolling window hashes. Empty when the file is shorter than one window.
     pub windows: Vec<u64>,
+    /// How much of the file the parser understood.
+    ///
+    /// Stored rather than re-derived, for the same reason the fingerprints are:
+    /// an entry is keyed by blob OID, so health carried over from a previous run
+    /// and health recomputed now are equal by construction. Re-deriving it would
+    /// mean re-parsing every file on every run — which is the work the index
+    /// exists to avoid, and P3 has already had one O(n·depth) parse cost turn
+    /// into a denial of measurement.
+    pub health: ParseHealth,
 }
 
 impl FileEntry {
@@ -120,7 +137,7 @@ impl FileEntry {
     /// of the index entirely rather than entered as an empty one, so the index
     /// never implies it looked at something it cannot read.
     pub fn build(path: &str, blob_oid: &str, source: &[u8]) -> Option<FileEntry> {
-        let tokens = syntax::tokenize(path, source)?;
+        let (tokens, health) = syntax::tokenize_with_health(path, source)?;
         let symbols: Vec<u64> = tokens.iter().map(|t| t.symbol).collect();
         let windows = fingerprint::windows(&symbols);
         Some(FileEntry {
@@ -129,6 +146,7 @@ impl FileEntry {
             rows: tokens.iter().map(|t| t.start_row).collect(),
             symbols,
             windows,
+            health,
         })
     }
 
@@ -677,5 +695,56 @@ mod tests {
     fn a_file_no_grammar_reads_is_absent_rather_than_empty() {
         let (index, _) = Index::empty().update(&[input("a.rs", "oid", "fn main() {}")]);
         assert!(index.files.is_empty());
+    }
+
+    #[test]
+    fn parse_health_is_stored_and_survives_the_disk() {
+        let root = dir("health-roundtrip");
+        let path = root.join("clones.idx");
+        let (index, _) = Index::empty().update(&[
+            input("clean.ts", "oid-clean", &body("f")),
+            input("broken.ts", "oid-broken", "function f( { !!! \n"),
+        ]);
+        assert!(!index.files["clean.ts"].health.is_degraded());
+        assert!(index.files["broken.ts"].health.is_degraded());
+
+        index.store(&path).unwrap();
+        let loaded = Index::load(&path).index().expect("loads");
+        assert_eq!(loaded, index, "health is part of the artefact, not derived");
+    }
+
+    #[test]
+    fn a_carried_over_entry_keeps_the_health_a_rebuild_would_compute() {
+        // The reuse claim in this module's docs is that a carried-over entry and
+        // a recomputed one are equal by construction, because the key is the
+        // content. Health has to be inside that claim or a warm run could report
+        // a degraded file as clean — the one thing a cache here may not do.
+        let broken = input("broken.ts", "oid-broken", "function f( { !!! \n");
+        let first = Index::empty().update(std::slice::from_ref(&broken)).0;
+        let (warm, reused) = first.update(std::slice::from_ref(&broken));
+        assert_eq!(reused, 1);
+        assert_eq!(warm, Index::empty().update(&[broken]).0);
+        assert!(warm.files["broken.ts"].health.is_degraded());
+    }
+
+    #[test]
+    fn an_index_written_before_health_existed_is_discarded_not_defaulted() {
+        // v1 entries have no health field. Reading one with a defaulted health
+        // would enter a degraded file into the index as a clean one, which is a
+        // cached wrong answer rather than a slow one.
+        let root = dir("v1");
+        let path = root.join("clones.idx");
+        let payload = br#"{"version":1,"regime_key":"x","files":{}}"#;
+        std::fs::write(
+            &path,
+            format!(
+                "{MAGIC} v1 {}\n{}",
+                hex(&Sha256::digest(payload)),
+                std::str::from_utf8(payload).unwrap()
+            ),
+        )
+        .unwrap();
+        assert_eq!(Index::load(&path).code(), "version-mismatch");
+        assert!(Index::load(&path).index().is_none());
     }
 }

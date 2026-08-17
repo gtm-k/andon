@@ -26,6 +26,7 @@
 //! the same bytes, which is PREMORTEM T1's byte-nondeterminism arriving through
 //! a hash function. [`fnv1a`] is fixed, specified, and reproduces anywhere.
 
+use andon_core::parse_health::ParseHealth;
 use tree_sitter::{Node, Parser, Tree};
 
 /// Version of the normalization rules themselves — the mapping from tree-sitter
@@ -233,9 +234,67 @@ fn leaf_symbol<'a>(node: &Node<'a>) -> Option<&'a str> {
 
 /// Parse and normalize, or `None` when the language has no grammar here.
 pub fn tokenize(path: &str, source: &[u8]) -> Option<Vec<Token>> {
+    tokenize_with_health(path, source).map(|(tokens, _)| tokens)
+}
+
+/// Parse and normalize, reporting how much of the file the parser understood.
+///
+/// # Why the clone engine has to know
+///
+/// tree-sitter recovers from anything, so a file it half-understood still
+/// tokenizes, still fingerprints, and — before this — still produced numbers
+/// indistinguishable from a file it read completely. Duplication measured over a
+/// tree with an `ERROR` region in it is duplication measured over less code than
+/// the file contains, and the difference is invisible in the result.
+///
+/// It matters more since the wave-1 integration than it did when this engine was
+/// written: the three grammar-holding engines converged on identical pins, so the
+/// same degraded input now reaches all of them, and the static engine has marked
+/// its numbers `parse-degraded` since P2 while these claimed `complete`. Two
+/// engines disagreeing about whether a file was degraded is a disagreement the
+/// verifier reads as tampering (PREMORTEM T3, S4).
+pub fn tokenize_with_health(path: &str, source: &[u8]) -> Option<(Vec<Token>, ParseHealth)> {
     let language = Language::for_path(path)?;
     let tree = parse(language, source)?;
-    Some(tokens_of(&tree, source))
+    Some((tokens_of(&tree, source), health_of(&tree)))
+}
+
+/// Count the `ERROR` and `MISSING` nodes in a tree.
+///
+/// # Why this is not folded into `tokens_of`
+///
+/// The token walk is not a walk of the tree. It drops import subtrees whole and
+/// skips zero-width nodes, both for good reasons of its own — and both of them
+/// would hide degradation: an `ERROR` inside a dropped import block, or the
+/// `MISSING` semicolon the parser inserted, would go uncounted, and a file could
+/// be measured as clean because the thing that broke it was in a region the
+/// fingerprint ignores.
+///
+/// So health is its own complete walk, with semantics identical to the static
+/// engine's, node for node: every node named and anonymous, `MISSING` counted
+/// wherever it appears, and nodes *inside* an `ERROR` subtree counted as ordinary
+/// nodes so a large unparsable region counts once rather than once per token it
+/// swallowed. Identical semantics is the point — the two engines write the same
+/// digest-bound `completeness` field about the same file.
+///
+/// Iterative, like every tree walk in this crate: a generated file can nest
+/// deeply enough to blow a thread's stack, and a crash on a large input is a
+/// denial of measurement.
+pub fn health_of(tree: &Tree) -> ParseHealth {
+    let mut health = ParseHealth::default();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        health.total_nodes += 1;
+        if node.is_error() {
+            health.error_nodes += 1;
+        }
+        if node.is_missing() {
+            health.missing_nodes += 1;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    health
 }
 
 /// Parse with the grammar for `language`.
@@ -427,6 +486,37 @@ def f():
         // something to fingerprint, and the tamper engine counts the errors.
         let tokens = tokenize("a.ts", b"function f( { !!! ").unwrap();
         assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    fn a_degraded_parse_is_reported_and_a_clean_one_is_not() {
+        let (_, clean) = tokenize_with_health("a.ts", b"export const x: number = 1;\n").unwrap();
+        assert!(!clean.is_degraded(), "{clean:?}");
+        assert!(clean.total_nodes > 0, "a clean parse still has a tree");
+
+        let (_, broken) = tokenize_with_health("a.ts", b"function f( { !!! \n").unwrap();
+        assert!(broken.is_degraded(), "{broken:?}");
+    }
+
+    #[test]
+    fn degradation_inside_a_dropped_import_is_still_degradation() {
+        // The token walk drops import subtrees whole. If health were counted
+        // during that walk instead of over the tree, a file broken inside its
+        // import block would fingerprint as clean — measured over less code than
+        // it contains, and saying so nowhere.
+        let (_, health) = tokenize_with_health("a.ts", b"import { a, from 'x';\n").unwrap();
+        assert!(health.is_degraded(), "{health:?}");
+    }
+
+    #[test]
+    fn an_inserted_token_counts_as_missing_not_as_an_error() {
+        // A MISSING node is the token the parser supplied to keep going. It is a
+        // different condition from an ERROR region and is reported separately,
+        // because a file short one brace and a file with an unreadable block are
+        // not in the same state.
+        let (_, health) = tokenize_with_health("a.ts", b"function f() { return 1;\n").unwrap();
+        assert!(health.missing_nodes > 0, "{health:?}");
+        assert!(health.is_degraded());
     }
 
     #[test]

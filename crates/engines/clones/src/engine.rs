@@ -19,6 +19,24 @@
 //! committed with CRLF tokenizes identically on Windows and Linux because both
 //! read the same blob.
 //!
+//! # A number over a file the parser did not finish is marked as one
+//!
+//! tree-sitter recovers from anything, so a half-understood file still
+//! tokenizes and still yields a duplication figure — over less code than the
+//! file contains. Since the wave-1 integration converged the grammar pins, the
+//! same degraded input reaches this engine, the static engine, and the tamper
+//! suite; the static engine has marked its numbers `parse-degraded` since P2,
+//! and this one claimed `complete` on the identical file. That is not only a
+//! false confidence, it is two engines disagreeing about a digest-bound field
+//! (PREMORTEM T3, S4).
+//!
+//! So results are demoted through [`andon_core::parse_health`], the same
+//! mechanism and the same prose the static engine uses: the per-file result of
+//! a degraded file, and all four change-scoped results whenever *any* measured
+//! file is degraded, because each of those four is computed over the set.
+//! Severity is capped by the same call — it costs nothing here, since this
+//! engine's severities never exceed `Low` to begin with.
+//!
 //! # What is deliberately not measured
 //!
 //! Nothing about the index reaches a result. Whether an entry was reused, how
@@ -34,6 +52,7 @@ use andon_core::engine::{
     EngineDescriptor, EngineError, MeasureContext, MeasureEngine, MetricDescriptor,
 };
 use andon_core::git::{ChangedSet, ContentOrigin, Git};
+use andon_core::parse_health::{self, ParseHealth};
 use andon_core::registry::{lint, parse_file, EngineRegistryFile, Registry};
 use andon_core::schema::enums::{Completeness, EngineClass, EngineFamily, Severity};
 use andon_core::schema::payload::{
@@ -146,6 +165,7 @@ pub fn metric_descriptors() -> Vec<MetricDescriptor> {
 pub struct ClonesEngine {
     report: CloneReport,
     blob_by_path: std::collections::BTreeMap<String, String>,
+    health_by_path: std::collections::BTreeMap<String, ParseHealth>,
     index_state: &'static str,
     index_reused: usize,
 }
@@ -208,6 +228,14 @@ impl ClonesEngine {
 
         let paths: Vec<String> = inputs.iter().map(|i| i.path.clone()).collect();
         let report = detect::detect(&index, &paths);
+        // Read back off the index rather than off the inputs: the index is where
+        // health lives, warm or cold, so a run that reused every entry marks the
+        // same files degraded as a run that rebuilt them.
+        let health_by_path = index
+            .files
+            .iter()
+            .map(|(path, entry)| (path.clone(), entry.health))
+            .collect();
         let blob_by_path = inputs
             .into_iter()
             .map(|input| (input.path, input.blob_oid))
@@ -215,6 +243,7 @@ impl ClonesEngine {
         Ok(ClonesEngine {
             report,
             blob_by_path,
+            health_by_path,
             index_state: previous.1,
             index_reused: reused,
         })
@@ -236,6 +265,30 @@ impl ClonesEngine {
     /// The detection result behind the metrics.
     pub fn report(&self) -> &CloneReport {
         &self.report
+    }
+
+    /// How completely the parser read one measured file, or `None` when the file
+    /// is not in the measured set.
+    pub fn health_of(&self, path: &str) -> Option<ParseHealth> {
+        self.health_by_path.get(path).copied()
+    }
+
+    /// The health of the measured set as a whole, with how many of its files
+    /// were degraded.
+    ///
+    /// Returned as a triple rather than folded into one number because the
+    /// change-scoped caveat needs all three, and because a merged `ParseHealth`
+    /// on its own cannot say whether ten ERROR nodes were one bad file or ten.
+    fn measured_set_health(&self) -> (ParseHealth, usize, usize) {
+        let mut merged = ParseHealth::default();
+        let mut degraded = 0usize;
+        for health in self.health_by_path.values() {
+            merged = merged.merge(*health);
+            if health.is_degraded() {
+                degraded += 1;
+            }
+        }
+        (merged, degraded, self.health_by_path.len())
     }
 }
 
@@ -341,6 +394,20 @@ impl MeasureEngine for ClonesEngine {
             ),
         ];
 
+        // Every one of the four is computed over the whole measured set, so one
+        // file the parser did not finish reading makes all four numbers numbers
+        // over less code than the change contains. The caveat names how many
+        // files of how many, because "one of ninety" and "eighty of ninety" are
+        // the same `parse-degraded` to the digest and very different things to
+        // somebody deciding what to do about a duplication ratio.
+        let (set_health, degraded_files, measured_files) = self.measured_set_health();
+        if set_health.is_degraded() {
+            let caveat = parse_health::caveat_over_set(set_health, degraded_files, measured_files);
+            for result in &mut results {
+                parse_health::demote_with_caveat(result, set_health, caveat.clone());
+            }
+        }
+
         // Per file, in path order — `tokens_by_path` is a `BTreeMap`, so the
         // order of these results is the sorted path order on every machine.
         for path in self.report.tokens_by_path.keys() {
@@ -350,7 +417,7 @@ impl MeasureEngine for ClonesEngine {
                 .get(path)
                 .copied()
                 .unwrap_or(0);
-            results.push(self.result(
+            let mut result = self.result(
                 METRIC_FILE_DUPLICATED_TOKENS,
                 ResultScope {
                     kind: ScopeKind::File,
@@ -364,7 +431,16 @@ impl MeasureEngine for ClonesEngine {
                 MetricValue::Count(duplicated as u64),
                 severity_for(duplicated > 0),
                 evidence_for(METRIC_FILE_DUPLICATED_TOKENS),
-            ));
+            );
+            if let Some(health) = self
+                .health_by_path
+                .get(path)
+                .copied()
+                .filter(|health| health.is_degraded())
+            {
+                parse_health::demote(&mut result, health);
+            }
+            results.push(result);
         }
         Ok(results)
     }
@@ -548,6 +624,129 @@ mod tests {
             .find(|r| r.metric_id == METRIC_FILE_DUPLICATED_TOKENS)
             .unwrap();
         assert_eq!(per_file.scope.blob_oid.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn a_number_over_an_unparseable_file_says_so() {
+        // The whole of PREMORTEM T3 in one assertion set: the same input that
+        // makes the tamper suite's parse-error delta fire must not produce a
+        // `complete` clone number on the file it fired about.
+        let engine = ClonesEngine::for_files(
+            vec![
+                input("src/clean.ts", &block("one")),
+                input("src/broken.ts", "export function f( { !!! \n"),
+            ],
+            None,
+        )
+        .unwrap();
+        let results = run_engine(&engine, &context()).unwrap();
+
+        let per_file = |path: &str| {
+            results
+                .iter()
+                .find(|r| {
+                    r.metric_id == METRIC_FILE_DUPLICATED_TOKENS
+                        && r.scope.path.as_deref() == Some(path)
+                })
+                .unwrap_or_else(|| panic!("{path} has a result"))
+        };
+        let broken = per_file("src/broken.ts");
+        assert_eq!(broken.completeness, Completeness::ParseDegraded);
+        assert!(!broken.severity.is_med_plus());
+        assert!(
+            broken.evidence.does_not_predict[0]
+                .contains(andon_core::parse_health::PARSE_DEGRADED_CAVEAT),
+            "{:?}",
+            broken.evidence.does_not_predict
+        );
+
+        // The clean file in the same change keeps its full-confidence claim.
+        // Demotion follows the file, not the run.
+        assert_eq!(
+            per_file("src/clean.ts").completeness,
+            Completeness::Complete
+        );
+
+        // The four change-scoped numbers are computed over both files, so they
+        // are over a partial view and say which part.
+        for metric in [
+            METRIC_DUPLICATED_TOKENS,
+            METRIC_DUPLICATED_RATIO,
+            METRIC_CLONE_GROUPS,
+            METRIC_LARGEST_CLONE,
+        ] {
+            let result = results.iter().find(|r| r.metric_id == metric).unwrap();
+            assert_eq!(
+                result.completeness,
+                Completeness::ParseDegraded,
+                "{metric} is computed over the whole measured set"
+            );
+            assert!(
+                result.evidence.does_not_predict[0].contains("1 of 2 file(s)"),
+                "{metric}: {:?}",
+                result.evidence.does_not_predict
+            );
+        }
+    }
+
+    #[test]
+    fn a_change_the_parser_read_completely_claims_so() {
+        let engine = ClonesEngine::for_files(
+            vec![input("a.ts", &block("one")), input("b.ts", &block("two"))],
+            None,
+        )
+        .unwrap();
+        let results = run_engine(&engine, &context()).unwrap();
+        assert!(
+            results
+                .iter()
+                .all(|r| r.completeness == Completeness::Complete),
+            "a clean change must not acquire a caveat"
+        );
+        assert!(results.iter().all(|r| r
+            .evidence
+            .does_not_predict
+            .iter()
+            .all(|line| !line.contains(andon_core::parse_health::PARSE_DEGRADED_CAVEAT))));
+    }
+
+    #[test]
+    fn a_warm_index_marks_the_same_files_degraded_as_a_cold_one() {
+        // The demotion reads health off the index, so a run that carried every
+        // entry over must reach the same completeness as one that rebuilt them.
+        // A cache that could quietly upgrade a degraded file to `complete` would
+        // be a wrong answer served faster.
+        let dir = std::env::temp_dir().join(format!(
+            "andon-clones-health-warm-{}-{}",
+            std::process::id(),
+            "1"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let index_path = dir.join("clones-index");
+        let files = || {
+            vec![
+                input("src/clean.ts", &block("one")),
+                input("src/broken.ts", "export function f( { !!! \n"),
+            ]
+        };
+
+        let cold = ClonesEngine::for_files(files(), Some(&index_path)).unwrap();
+        let warm = ClonesEngine::for_files(files(), Some(&index_path)).unwrap();
+        assert_eq!(warm.index_reused(), 2, "the second run reused the index");
+
+        let cold_results = run_engine(&cold, &context()).unwrap();
+        let warm_results = run_engine(&warm, &context()).unwrap();
+        assert_eq!(
+            warm_results
+                .iter()
+                .map(|r| (&r.metric_id, r.completeness, &r.digest))
+                .collect::<Vec<_>>(),
+            cold_results
+                .iter()
+                .map(|r| (&r.metric_id, r.completeness, &r.digest))
+                .collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
