@@ -16,9 +16,12 @@
 //! find a way to let that leak into one.
 
 use super::blob::{BlobBatch, BlobError, Content};
-use super::command::{Git, GitError};
+use super::command::{decode_record, Git, GitError};
 use super::resolve::{Endpoint, ResolvedRange};
 use super::status::split_nul;
+
+/// The raw-diff invocation, for error messages.
+const RAW_DIFF_ARGV: &str = "diff-tree --raw";
 
 /// The gitlink mode. A tree entry with this mode holds a *commit* OID belonging
 /// to a submodule, not a blob OID, and asking `cat-file` for it returns a commit
@@ -134,7 +137,7 @@ impl ChangedSet {
                     .args(RAW_FLAGS)
                     .args(["-M", range.base.anchor_oid(), head])
                     .output()?;
-                parse_raw(&raw)
+                parse_raw(&raw)?
             }
             // A dirty head already scanned the working tree once, and the
             // snapshot it produced holds every path with its HEAD, index, and
@@ -254,7 +257,7 @@ fn from_snapshot(snapshot: &super::status::DirtySnapshot) -> Vec<ChangedEntry> {
 /// The record is `:<srcmode> <dstmode> <srcoid> <dstoid> <status>` followed by
 /// NUL, then the path, then — for a rename or copy — NUL and the destination
 /// path. Fields are space-separated; the status may carry a similarity score.
-pub(crate) fn parse_raw(raw: &[u8]) -> Vec<ChangedEntry> {
+pub(crate) fn parse_raw(raw: &[u8]) -> Result<Vec<ChangedEntry>, GitError> {
     let mut records = split_nul(raw).peekable();
     let mut entries = Vec::new();
 
@@ -265,7 +268,7 @@ pub(crate) fn parse_raw(raw: &[u8]) -> Vec<ChangedEntry> {
         if record.first() != Some(&b':') {
             continue;
         }
-        let text = String::from_utf8_lossy(&record[1..]);
+        let text = decode_record(&record[1..], RAW_DIFF_ARGV)?;
         let fields: Vec<&str> = text.split(' ').filter(|f| !f.is_empty()).collect();
         let [src_mode, dst_mode, src_oid, dst_oid, status] = fields.as_slice() else {
             continue;
@@ -280,7 +283,12 @@ pub(crate) fn parse_raw(raw: &[u8]) -> Vec<ChangedEntry> {
         let Some(first_path) = records.next() else {
             break;
         };
-        let first_path = String::from_utf8_lossy(first_path).into_owned();
+        // Both paths become identities — `ChangedEntry::path` reaches
+        // `ResultScope::path` on the wire, and `old_path` names the file a
+        // rename came from — so both are decoded strictly. Lossy decoding would
+        // let two distinct files collapse onto one string
+        // (`GitError::UnrepresentablePath`).
+        let first_path = decode_record(first_path, RAW_DIFF_ARGV)?.to_string();
 
         let (old_path, path) = if matches!(change, ChangeStatus::Renamed | ChangeStatus::Copied) {
             // A rename record carries both paths: source first, destination
@@ -289,7 +297,7 @@ pub(crate) fn parse_raw(raw: &[u8]) -> Vec<ChangedEntry> {
             match records.next() {
                 Some(second) => (
                     Some(first_path),
-                    String::from_utf8_lossy(second).into_owned(),
+                    decode_record(second, RAW_DIFF_ARGV)?.to_string(),
                 ),
                 None => (None, first_path),
             }
@@ -308,7 +316,7 @@ pub(crate) fn parse_raw(raw: &[u8]) -> Vec<ChangedEntry> {
             dst_oid: none_if_null(dst_oid),
         });
     }
-    entries
+    Ok(entries)
 }
 
 /// Mode `000000` means "absent on this side", not "mode zero".
@@ -327,7 +335,7 @@ mod tests {
     #[test]
     fn a_modification_parses_into_both_sides() {
         let raw = b":100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb M\0src/a.ts\0";
-        let entries = parse_raw(raw);
+        let entries = parse_raw(raw).expect("every path is UTF-8");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "src/a.ts");
         assert_eq!(entries[0].status, ChangeStatus::Modified);
@@ -338,7 +346,7 @@ mod tests {
     #[test]
     fn a_rename_carries_both_paths_in_the_right_order() {
         let raw = b":100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb R096\0old/a.ts\0new/a.ts\0";
-        let entries = parse_raw(raw);
+        let entries = parse_raw(raw).expect("every path is UTF-8");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, ChangeStatus::Renamed);
         assert_eq!(entries[0].old_path.as_deref(), Some("old/a.ts"));
@@ -349,7 +357,7 @@ mod tests {
     #[test]
     fn an_addition_has_no_base_side() {
         let raw = b":000000 100644 0000000000000000000000000000000000000000 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb A\0src/new.ts\0";
-        let entries = parse_raw(raw);
+        let entries = parse_raw(raw).expect("every path is UTF-8");
         assert_eq!(entries[0].status, ChangeStatus::Added);
         assert_eq!(entries[0].src_mode, None);
         assert_eq!(entries[0].src_oid, None);
@@ -361,7 +369,7 @@ mod tests {
         // another repository; reading either as file content would hash a
         // commit header and call it a measurement.
         let raw = b":160000 160000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb M\0vendor/sub\0";
-        let entries = parse_raw(raw);
+        let entries = parse_raw(raw).expect("every path is UTF-8");
         assert!(entries[0].is_gitlink());
         assert_eq!(entries[0].readable_blob(), None);
     }
@@ -369,13 +377,55 @@ mod tests {
     #[test]
     fn an_unhashed_worktree_file_offers_no_blob() {
         let raw = b":100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0000000000000000000000000000000000000000 M\0src/dirty.ts\0";
-        let entries = parse_raw(raw);
+        let entries = parse_raw(raw).expect("every path is UTF-8");
         assert_eq!(entries[0].readable_blob(), None);
+    }
+
+    #[test]
+    fn two_paths_that_would_collapse_into_one_are_refused_instead() {
+        // `0xFF` and `0xFE` are both invalid UTF-8 and both render as U+FFFD, so
+        // a lossy decode turns two distinct files into one string — one entry
+        // overwriting the other in a map, one digest describing two files. The
+        // collision is asserted first, because refusing bytes that were never
+        // ambiguous would prove nothing.
+        let meta = b":100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb M\0";
+        let one = [&meta[..], b"src/\xff.ts\0"].concat();
+        let two = [&meta[..], b"src/\xfe.ts\0"].concat();
+        assert_eq!(
+            String::from_utf8_lossy(b"src/\xff.ts"),
+            String::from_utf8_lossy(b"src/\xfe.ts"),
+            "the bait is inert: these two paths do not collide lossily"
+        );
+
+        for raw in [one, two] {
+            match parse_raw(&raw) {
+                Err(GitError::UnrepresentablePath { detail, .. }) => {
+                    assert!(detail.contains("UTF-8"), "{detail}")
+                }
+                other => panic!("expected a typed refusal, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_rename_refuses_on_either_side_of_the_pair() {
+        // `old_path` is an identity too — it names the file a rename came from —
+        // so a source path that only survives approximately is refused as
+        // readily as a destination one.
+        let meta = b":100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb R100\0";
+        let bad_source = [&meta[..], b"old/\xff.ts\0", b"new/a.ts\0"].concat();
+        let bad_dest = [&meta[..], b"old/a.ts\0", b"new/\xff.ts\0"].concat();
+        for raw in [bad_source, bad_dest] {
+            assert!(matches!(
+                parse_raw(&raw),
+                Err(GitError::UnrepresentablePath { .. })
+            ));
+        }
     }
 
     #[test]
     fn a_leading_commit_id_record_is_skipped() {
         let raw = b"cccccccccccccccccccccccccccccccccccccccc\0:100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb M\0src/a.ts\0";
-        assert_eq!(parse_raw(raw).len(), 1);
+        assert_eq!(parse_raw(raw).expect("every path is UTF-8").len(), 1);
     }
 }

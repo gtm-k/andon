@@ -55,8 +55,15 @@ use std::io::Write;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::command::{Git, GitError};
+use super::command::{decode_record, Git, GitError};
 use crate::canonical;
+
+/// The `status` invocation, for error messages.
+const STATUS_ARGV: &str = "status --porcelain=v2";
+/// The `ls-files` invocation, for error messages.
+const LS_FILES_ARGV: &str = "ls-files -s";
+/// The `hash-object` invocation, for error messages.
+const HASH_OBJECT_ARGV: &str = "hash-object --stdin-paths";
 
 /// How a snapshot was computed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -346,7 +353,10 @@ fn parse_porcelain_v2(raw: &[u8]) -> Result<Vec<PorcelainEntry>, GitError> {
     let mut out = Vec::new();
 
     while let Some(record) = records.next() {
-        let text = String::from_utf8_lossy(record);
+        // Decoded strictly, not lossily: the tail of every record is a path, and
+        // a path that only survives approximately is a path that has lost its
+        // identity (`GitError::UnrepresentablePath`).
+        let text = decode_record(record, STATUS_ARGV)?;
         let mut fields = text.splitn(9, ' ');
         let Some(kind) = fields.next() else { continue };
 
@@ -356,11 +366,7 @@ fn parse_porcelain_v2(raw: &[u8]) -> Result<Vec<PorcelainEntry>, GitError> {
             // split rather than from the eight-field one above.
             "u" => {
                 return Err(GitError::ConflictedTree {
-                    path: text
-                        .splitn(11, ' ')
-                        .nth(10)
-                        .unwrap_or(text.as_ref())
-                        .to_string(),
+                    path: text.splitn(11, ' ').nth(10).unwrap_or(text).to_string(),
                 })
             }
             "?" | "!" => {
@@ -388,7 +394,10 @@ fn parse_porcelain_v2(raw: &[u8]) -> Result<Vec<PorcelainEntry>, GitError> {
                     continue;
                 };
                 // A `2` record's rename score precedes the path, and its source
-                // path is the next NUL field.
+                // path is the next NUL field. That source is consumed as raw
+                // bytes and discarded — it never becomes a key or a digest
+                // input here, so it is the one path in this parser that does not
+                // need decoding.
                 let path = if kind == "2" {
                     let path = rest.split_once(' ').map_or(*rest, |(_score, p)| p);
                     let _source = records.next();
@@ -429,7 +438,7 @@ fn index_entries(git: &Git) -> Result<Vec<(String, String, String)>, GitError> {
     let mut out = Vec::new();
     for record in split_nul(&raw) {
         // `<mode> SP <oid> SP <stage> TAB <path>`
-        let text = String::from_utf8_lossy(record);
+        let text = decode_record(record, LS_FILES_ARGV)?;
         let Some((meta, path)) = text.split_once('\t') else {
             continue;
         };
@@ -473,14 +482,14 @@ fn hash_paths(git: &Git, paths: &[String]) -> Result<Vec<(String, String)>, GitE
     });
 
     let output = child.wait_with_output().map_err(|source| GitError::Spawn {
-        argv: "hash-object --stdin-paths".to_string(),
+        argv: HASH_OBJECT_ARGV.to_string(),
         source,
     })?;
     let write_result = writer.join();
 
     if !output.status.success() {
         return Err(GitError::Failed {
-            argv: "hash-object --stdin-paths".to_string(),
+            argv: HASH_OBJECT_ARGV.to_string(),
             status: output.status.to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
@@ -489,20 +498,20 @@ fn hash_paths(git: &Git, paths: &[String]) -> Result<Vec<(String, String)>, GitE
         Ok(Ok(())) => {}
         Ok(Err(source)) => {
             return Err(GitError::Spawn {
-                argv: "hash-object --stdin-paths".to_string(),
+                argv: HASH_OBJECT_ARGV.to_string(),
                 source,
             })
         }
         Err(_) => {
             return Err(GitError::Protocol {
-                argv: "hash-object --stdin-paths".to_string(),
+                argv: HASH_OBJECT_ARGV.to_string(),
                 detail: "the path-writing thread panicked".to_string(),
             })
         }
     }
 
     let text = String::from_utf8(output.stdout).map_err(|_| GitError::NotUtf8 {
-        argv: "hash-object --stdin-paths".to_string(),
+        argv: HASH_OBJECT_ARGV.to_string(),
     })?;
     let oids: Vec<&str> = text
         .lines()
@@ -511,7 +520,7 @@ fn hash_paths(git: &Git, paths: &[String]) -> Result<Vec<(String, String)>, GitE
         .collect();
     if oids.len() != paths.len() {
         return Err(GitError::Protocol {
-            argv: "hash-object --stdin-paths".to_string(),
+            argv: HASH_OBJECT_ARGV.to_string(),
             detail: format!("asked for {} hashes, got {}", paths.len(), oids.len()),
         });
     }
@@ -627,6 +636,32 @@ mod tests {
         assert_eq!(parsed[0].path, "src/new file.ts");
         assert!(parsed[0].untracked);
         assert_eq!(parsed[0].head_oid, None);
+    }
+
+    #[test]
+    fn a_status_path_that_is_not_utf8_is_refused_rather_than_approximated() {
+        // The snapshot's `entries` is keyed by path, so a lossy decode is a
+        // silent collision: two files, one key, one of them gone from a digest
+        // that claims to cover the tree.
+        let raw = b"1 .M N... 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb src/\xff.ts\0";
+        match parse_porcelain_v2(raw) {
+            Err(GitError::UnrepresentablePath { lossy, .. }) => {
+                assert!(lossy.contains("src/"), "the operator needs a signpost")
+            }
+            Err(other) => panic!("expected UnrepresentablePath, got {other}"),
+            Ok(entries) => panic!("expected a refusal, got {} entries", entries.len()),
+        }
+    }
+
+    #[test]
+    fn an_untracked_path_that_is_not_utf8_is_refused_too() {
+        // Untracked files reach the advisory lane rather than the compared one,
+        // and they are still map keys.
+        let raw = b"? src/\xff.ts\0";
+        assert!(matches!(
+            parse_porcelain_v2(raw),
+            Err(GitError::UnrepresentablePath { .. })
+        ));
     }
 
     #[test]

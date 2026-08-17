@@ -220,6 +220,47 @@ pub enum GitError {
         /// The unmerged path, as git reported it.
         path: String,
     },
+    /// git named a path this tool cannot carry without changing it.
+    ///
+    /// Paths become map keys, digest inputs, and `ResultScope::path` on the
+    /// wire, so a path that survives only approximately is a path that has lost
+    /// its identity. Two shapes reach here:
+    ///
+    /// - **Not valid UTF-8.** Git tracks paths as bytes; a filesystem can hand
+    ///   back a name no encoding claims. Rendering it lossily replaces every bad
+    ///   byte with `U+FFFD`, which makes `src/\xff.ts` and `src/\xfe.ts` the
+    ///   same string — one entry overwriting the other in a `BTreeMap`, and one
+    ///   digest describing two files.
+    /// - **Unusable in a protocol we speak.** `hash-object --stdin-paths` reads
+    ///   one path per line, so a path containing a newline is two paths to git
+    ///   and one to us, and every OID after it belongs to the wrong file.
+    ///
+    /// A typed refusal in both cases. The alternative is not "handles more
+    /// repositories" but "is quietly wrong on the ones it claims to handle".
+    #[error("`git {argv}` named a path that cannot be carried: {detail} (approximately: {lossy})")]
+    UnrepresentablePath {
+        /// The arguments that were run.
+        argv: String,
+        /// Which property the path fails.
+        detail: String,
+        /// The path rendered lossily — wrong by construction, and the only way
+        /// to tell the operator which file to look at.
+        lossy: String,
+    },
+}
+
+/// Decode a byte record git produced into text, refusing what would only
+/// survive approximately.
+///
+/// Every caller is parsing output whose path field becomes an identity. See
+/// [`GitError::UnrepresentablePath`] for why lossy decoding is not an option
+/// there.
+pub(crate) fn decode_record<'a>(bytes: &'a [u8], argv: &str) -> Result<&'a str, GitError> {
+    std::str::from_utf8(bytes).map_err(|err| GitError::UnrepresentablePath {
+        argv: argv.to_string(),
+        detail: format!("not valid UTF-8 at byte {}", err.valid_up_to()),
+        lossy: String::from_utf8_lossy(bytes).into_owned(),
+    })
 }
 
 /// A repository, and the only handle that can spawn git against it.
