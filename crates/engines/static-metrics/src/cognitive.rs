@@ -23,7 +23,8 @@
 //! **B1 — increment.** +1 for each break in the linear flow: `if`, `else`,
 //! `else if`, ternary, `switch`/`match`, every loop, every `catch`/`except`,
 //! each *sequence* of like binary logical operators, a jump to a label, and
-//! recursion.
+//! recursion — the last counted **once for the function**, however many times it
+//! calls itself.
 //!
 //! **B2 — nesting penalty.** Structures that break flow *and* are nested add the
 //! current nesting level on top of their +1: `if`, ternary, `switch`/`match`,
@@ -103,20 +104,29 @@ impl Walker<'_, '_> {
     /// where all of the model's structure lives.
     fn run(&self, function: Node<'_>) -> u64 {
         let mut total = 0u64;
+        // Recursion is charged once per function, not once per call site, so it
+        // is a flag rather than an increment. See `is_self_call`.
+        let mut recursive = false;
         let mut stack: Vec<Pending<'_>> = Vec::new();
         push_children(function, 0, &mut stack);
         while let Some((node, nesting)) = stack.pop() {
-            total += self.step(node, nesting, &mut stack);
+            total += self.step(node, nesting, &mut stack, &mut recursive);
         }
-        total
+        total + u64::from(recursive)
     }
 
     /// One node's own increment, pushing its children at their nesting levels.
-    fn step<'t>(&self, node: Node<'t>, nesting: u32, stack: &mut Vec<Pending<'t>>) -> u64 {
+    fn step<'t>(
+        &self,
+        node: Node<'t>,
+        nesting: u32,
+        stack: &mut Vec<Pending<'t>>,
+        recursive: &mut bool,
+    ) -> u64 {
         match self.parsed.language {
-            Language::Python => self.step_python(node, nesting, stack),
+            Language::Python => self.step_python(node, nesting, stack, recursive),
             Language::TypeScript | Language::Tsx | Language::JavaScript => {
-                self.step_ecma(node, nesting, stack)
+                self.step_ecma(node, nesting, stack, recursive)
             }
             // No parser, no tree. Asserted in tests so the arm cannot be
             // removed and turn a future Rust tree into a silent JavaScript walk.
@@ -126,7 +136,13 @@ impl Walker<'_, '_> {
 
     // ------------------------------------------------------------ ECMAScript
 
-    fn step_ecma<'t>(&self, node: Node<'t>, nesting: u32, stack: &mut Vec<Pending<'t>>) -> u64 {
+    fn step_ecma<'t>(
+        &self,
+        node: Node<'t>,
+        nesting: u32,
+        stack: &mut Vec<Pending<'t>>,
+        recursive: &mut bool,
+    ) -> u64 {
         match node.kind() {
             "if_statement" => {
                 // An `if` directly under an `else` is the second half of
@@ -181,9 +197,11 @@ impl Walker<'_, '_> {
                 1
             }
             "call_expression" => {
-                let own = u64::from(self.is_self_call(node.child_by_field_name("function")));
+                if self.is_self_call(node.child_by_field_name("function")) {
+                    *recursive = true;
+                }
                 push_children(node, nesting, stack);
-                own
+                0
             }
             kind if is_function(self.parsed.language, kind) => {
                 // A container, not a branch: no increment, one more level for
@@ -200,7 +218,13 @@ impl Walker<'_, '_> {
 
     // ---------------------------------------------------------------- Python
 
-    fn step_python<'t>(&self, node: Node<'t>, nesting: u32, stack: &mut Vec<Pending<'t>>) -> u64 {
+    fn step_python<'t>(
+        &self,
+        node: Node<'t>,
+        nesting: u32,
+        stack: &mut Vec<Pending<'t>>,
+        recursive: &mut bool,
+    ) -> u64 {
         match node.kind() {
             "if_statement" => {
                 // `alternative` is a repeated field here — `elif_clause`s then an
@@ -253,9 +277,11 @@ impl Walker<'_, '_> {
             }
             "boolean_operator" => self.logical_region(node, nesting, stack),
             "call" => {
-                let own = u64::from(self.is_self_call(node.child_by_field_name("function")));
+                if self.is_self_call(node.child_by_field_name("function")) {
+                    *recursive = true;
+                }
                 push_children(node, nesting, stack);
-                own
+                0
             }
             kind if is_function(self.parsed.language, kind) => {
                 push_children(node, nesting + 1, stack);
@@ -333,6 +359,14 @@ impl Walker<'_, '_> {
 
     /// Direct recursion: a call to the function being measured, by its own name
     /// or through `this`/`self`.
+    ///
+    /// Charged **once per function**, not once per call site. Specification
+    /// v1.7 Appendix B B1 increments for "each method in a recursion cycle", so
+    /// `fib`, whose body names itself twice, is one recursion and not two —
+    /// `run` raises a flag here and adds a single increment at the end. The
+    /// distinction is not pedantic: charging per site makes the metric grow with
+    /// how many times a recursive call is written rather than with the fact that
+    /// the function recurses, which is the thing a reader has to hold in mind.
     ///
     /// Direct only. Mutual recursion needs a call graph, which needs symbol
     /// resolution across files, which the static family does not do — and a
@@ -666,6 +700,37 @@ mod tests {
                 "def fact(n):\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n"
             ),
             2
+        );
+    }
+
+    #[test]
+    fn recursion_is_charged_once_per_function_however_many_call_sites() {
+        // Specification Appendix B B1: "each method in a recursion cycle". `fib`
+        // names itself twice and is one recursion. Charging per site would make
+        // the number grow with how the recursion is written rather than with the
+        // fact that it recurses, which is the thing a reader has to hold.
+        assert_eq!(
+            first(
+                Language::TypeScript,
+                "function fib(n) { if (n < 2) { return n } return fib(n - 1) + fib(n - 2) }"
+            ),
+            // if +1, recursion +1
+            2
+        );
+        assert_eq!(
+            first(
+                Language::Python,
+                "def fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n"
+            ),
+            2
+        );
+        // Three call sites, still one increment.
+        assert_eq!(
+            first(
+                Language::TypeScript,
+                "function t(n) { return t(n - 1) + t(n - 2) + t(n - 3) }"
+            ),
+            1
         );
     }
 

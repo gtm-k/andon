@@ -62,7 +62,7 @@ pub const PYTHON_GRAMMAR_VERSION: &str = "0.23.6";
 /// The rules themselves are documented where they are implemented — [`crate::sloc`],
 /// [`crate::cyclomatic`], [`crate::cognitive`], [`crate::functions`] — and this
 /// constant is what the digest binds them to.
-pub const SPEC_REVISION: &str = "p2-static-1";
+pub const SPEC_REVISION: &str = "p2-static-2";
 
 /// A language the static family knows about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
