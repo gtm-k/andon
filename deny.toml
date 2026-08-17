@@ -1,4 +1,4 @@
-# cargo-deny: the licence gate.
+# cargo-deny: the licence and supply-chain gate.
 #
 # PRE-DECISIONS makes this a hard constraint rather than hygiene: engines and
 # dependencies are permissive-licence only. qlty is barred outright because its
@@ -6,6 +6,13 @@
 # Service" / "AI Coding Service"), verified at primary source. A copyleft
 # dependency arriving transitively would be the same problem discovered later, so
 # the allow-list is closed and unknown licences fail.
+#
+# CI runs `cargo deny check licenses bans sources` — all three, deliberately. A
+# gate that runs one section and carries configuration for three is a gate that
+# reads as stricter than it is, and the [sources] rules matter most here: a
+# git-sourced dependency is a dependency whose contents can change under a tag,
+# which in a repository whose product is trust is the risk the whole design is
+# about.
 
 [graph]
 all-features = true
@@ -35,13 +42,26 @@ unused-allowed-license = "allow"
 
 [bans]
 multiple-versions = "warn"
+# A wildcard version on a registry dependency means "whatever crates.io serves
+# today", which is not a pinned build.
 wildcards = "deny"
+# Workspace members depend on each other by path, and cargo renders those as
+# `*` in the manifest. They resolve to the sibling crate in this repository, not
+# to anything a registry could substitute, so they are not the risk `wildcards`
+# is aimed at — and without this exemption the whole [bans] section fails on the
+# workspace's own structure and so never runs in CI at all.
+allow-wildcard-paths = true
 
 [advisories]
 # Vulnerability data is advisory here; the licence gate is the blocking half of
 # this file. Security review of dependencies is a P10a flip precondition.
 yanked = "warn"
 
+# crates.io only. No git dependencies, no alternate registries: a git source can
+# be repointed after review, and the release binaries this project ships must be
+# reproducible from published crates alone. Enforced in CI, not just declared —
+# verified by adding a git-sourced dependency and confirming this section
+# rejects it.
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

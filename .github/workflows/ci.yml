@@ -73,8 +73,8 @@ jobs:
       - name: Registry lint
         run: cargo run -p andon-registry-lint -- --policy .andon.toml registry/
 
-  licences:
-    name: licence gate
+  supply-chain:
+    name: licence and source gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -96,11 +96,17 @@ jobs:
           install -m 0755 "${archive}/cargo-deny" /usr/local/bin/cargo-deny
           cargo-deny --version
 
-      # Permissive licences only — a hard constraint from PRE-DECISIONS, not
-      # hygiene. Unknown licences fail: an undetected licence is a licence
-      # problem, not a gap to wave through.
-      - name: Licence gate
-        run: cargo deny check licenses
+      # All three sections deny.toml configures, not just licences. Running one
+      # of three left [bans] and [sources] as documentation: a git-sourced
+      # dependency passed this job while deny.toml said `unknown-git = "deny"`.
+      #
+      # licenses: permissive only — a hard constraint from PRE-DECISIONS, not
+      #   hygiene. Unknown licences fail; an undetected licence is a licence
+      #   problem, not a gap to wave through.
+      # bans:     no wildcard versions, so the build is pinned.
+      # sources:  crates.io only, so no dependency can be repointed after review.
+      - name: Licence, bans, and source gate
+        run: cargo deny check licenses bans sources
 
   self-measure:
     name: self-measure (bootstrap)
