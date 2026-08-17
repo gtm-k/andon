@@ -288,23 +288,54 @@ pub struct LineSpan {
 /// enough to land on every parser's exact path.
 pub const RATIO_DECIMAL_PLACES: i32 = 6;
 
-/// Round to [`RATIO_DECIMAL_PLACES`]. Idempotent: quantizing a quantized value
-/// returns it unchanged, so repeated serialization is stable.
-pub fn quantize_ratio(value: f64) -> f64 {
+/// A ratio that cannot be carried on the wire.
+///
+/// Rejecting here is what makes [`crate::canonical`]'s "non-finite floats are
+/// rejected" rule true in practice. `serde_json::to_value` — which the
+/// canonicalizer runs first — maps a non-finite `f64` to `null` rather than
+/// failing, so by the time bytes reach the canonicalizer the value is already
+/// gone and a perfectly valid digest would be taken over a hole where a
+/// measurement should be. [`MetricValue::Ratio`] is the only float the schema
+/// declares, which makes this the one boundary that has to hold.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+pub enum RatioError {
+    /// NaN or an infinity. JSON cannot represent either, and an engine that
+    /// produced one has a bug worth surfacing rather than a number worth
+    /// rounding.
+    #[error("ratio {0} is not finite and has no JSON representation")]
+    NonFinite(f64),
+    /// Finite, but so large that scaling it for rounding overflows to infinity.
+    /// A proportion or rate at this magnitude is not a measurement either.
+    #[error("ratio {0} is too large to quantize without overflowing to infinity")]
+    NotQuantizable(f64),
+}
+
+/// Round to [`RATIO_DECIMAL_PLACES`], rejecting anything that cannot survive it.
+///
+/// Idempotent: quantizing a quantized value returns it unchanged, so repeated
+/// serialization is stable.
+pub fn quantize_ratio(value: f64) -> Result<f64, RatioError> {
     if !value.is_finite() {
-        return value;
+        return Err(RatioError::NonFinite(value));
     }
     let scale = 10f64.powi(RATIO_DECIMAL_PLACES);
-    (value * scale).round() / scale
+    let quantized = (value * scale).round() / scale;
+    // `value * scale` overflows for anything above roughly 1.8e302, which turns
+    // a finite input into an infinity — and then into a `null` in the digest.
+    if !quantized.is_finite() {
+        return Err(RatioError::NotQuantizable(value));
+    }
+    Ok(quantized)
 }
 
 fn serialize_ratio<S: serde::Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_f64(quantize_ratio(*value))
+    let quantized = quantize_ratio(*value).map_err(serde::ser::Error::custom)?;
+    serializer.serialize_f64(quantized)
 }
 
 fn deserialize_ratio<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
     let raw = f64::deserialize(deserializer)?;
-    Ok(quantize_ratio(raw))
+    quantize_ratio(raw).map_err(serde::de::Error::custom)
 }
 
 /// A measured value.

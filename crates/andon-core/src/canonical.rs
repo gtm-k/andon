@@ -20,6 +20,25 @@
 //!    shortest decimal string that round-trips, positioned per ES6's exponent
 //!    rules. `-0.0` normalizes to `0`. Non-finite floats are rejected.
 //!
+//! # Where rule 5 is actually enforced
+//!
+//! Not here, and the distinction matters. This module reaches its own float path
+//! through `serde_json::to_value`, and `serde_json::Number` cannot hold a
+//! non-finite value at all: `to_value` maps NaN and the infinities to `null`
+//! instead of failing. A `Serialize` type that hands out a NaN therefore arrives
+//! at [`write_value`] as a `null` that hashes perfectly well, producing a valid
+//! digest over a hole where a measurement should be. [`format_es6_double`] does
+//! reject non-finite input, but nothing routed through `to_value` can reach it
+//! with one.
+//!
+//! The enforcing boundary is the schema's serializer instead:
+//! [`crate::schema::payload::MetricValue::Ratio`] is the only float payload v1
+//! declares, and it rejects non-finite and non-quantizable values at
+//! serialization time, so `seal()` fails rather than sealing corruption. **Any
+//! new float field must do the same** — an `f64` serialized with serde's default
+//! impl is silently `null`-able, and a test asserting that the committed schemas
+//! declare exactly one float carrier guards the assumption.
+//!
 //! # Deliberate deviation from RFC 8785
 //!
 //! JCS routes *every* number through the ES6 double path, which silently loses

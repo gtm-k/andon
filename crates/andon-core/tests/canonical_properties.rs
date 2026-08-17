@@ -8,8 +8,65 @@
 
 use andon_core::canonical::{digest, format_es6_double, to_canonical_string};
 use andon_core::schema::payload::{quantize_ratio, MetricValue};
+use andon_core::testing::{sample_compare_context, sample_result};
 use proptest::prelude::*;
 use serde_json::{Map, Number, Value};
+
+/// A ratio that cannot be carried never reaches a digest.
+///
+/// The path under test is the real one — `MeasurementResult::seal` — and not
+/// `format_es6_double`, because the canonicalizer never sees these values as
+/// numbers. `serde_json::to_value` maps NaN and the infinities to `null`, so
+/// without a rejecting serializer on the schema's only float carrier a corrupted
+/// measurement seals into a perfectly valid digest taken over a hole. `1e308` is
+/// the case that looks safe: finite on the way in, infinite once scaled for
+/// six-decimal rounding.
+#[test]
+fn a_ratio_that_cannot_be_carried_never_reaches_a_digest() {
+    let ctx = sample_compare_context();
+    for bad in [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        1e308,
+        -1e308,
+        f64::MAX,
+    ] {
+        let mut result = sample_result();
+        result.value = MetricValue::Ratio(bad);
+        result.digest = String::new();
+
+        assert!(
+            to_canonical_string(&MetricValue::Ratio(bad)).is_err(),
+            "canonical serialization accepted {bad}"
+        );
+        assert!(
+            digest(&result.digest_input(&ctx)).is_err(),
+            "the digest input accepted {bad}"
+        );
+        assert!(result.seal(&ctx).is_err(), "seal accepted {bad}");
+        assert!(
+            result.digest.is_empty(),
+            "a failed seal on {bad} must leave no digest behind"
+        );
+    }
+}
+
+/// The rejection holds on the way in as well.
+///
+/// NaN cannot be spelled in JSON, but `1e308` can, so a stored or hostile record
+/// could otherwise import a value that overflows the moment it is re-quantized.
+#[test]
+fn an_unquantizable_ratio_is_refused_when_read_back() {
+    assert!(
+        serde_json::from_str::<MetricValue>(r#"{"kind":"ratio","value":1e308}"#).is_err(),
+        "a ratio that cannot be quantized must not deserialize"
+    );
+    assert!(
+        serde_json::from_str::<MetricValue>(r#"{"kind":"ratio","value":0.5}"#).is_ok(),
+        "an ordinary ratio still reads back"
+    );
+}
 
 /// Guards the key-order property below.
 ///
@@ -80,8 +137,7 @@ fn arbitrary_json() -> impl Strategy<Value = Value> {
         any::<i64>().prop_map(Value::from),
         any::<u64>().prop_map(Value::from),
         (-1e9f64..1e9f64)
-            .prop_map(quantize_ratio)
-            .prop_filter("JSON numbers are finite", |f| f.is_finite())
+            .prop_map(|f| quantize_ratio(f).expect("this range is always quantizable"))
             .prop_map(|f| Value::Number(Number::from_f64(f).expect("finite"))),
         ".*".prop_map(Value::String),
     ];
@@ -214,14 +270,23 @@ proptest! {
         assert_sorted(&parsed);
     }
 
-    /// Quantizing is idempotent, which is what makes repeated serialization of a
-    /// ratio stable.
+    /// Quantizing either succeeds and is idempotent — which is what makes
+    /// repeated serialization of a ratio stable — or rejects. It never returns a
+    /// value JSON cannot carry, which is the property the digest path depends on.
     #[test]
-    fn ratio_quantization_is_idempotent(
-        value in any::<f64>().prop_filter("finite", |f| f.is_finite())
-    ) {
-        let once = quantize_ratio(value);
-        prop_assert_eq!(quantize_ratio(once).to_bits(), once.to_bits());
+    fn ratio_quantization_is_idempotent_or_rejects(value in any::<f64>()) {
+        match quantize_ratio(value) {
+            Ok(once) => {
+                prop_assert!(once.is_finite(), "a quantized ratio is always finite");
+                let twice = quantize_ratio(once).expect("a quantized ratio re-quantizes");
+                prop_assert_eq!(twice.to_bits(), once.to_bits());
+            }
+            Err(_) => prop_assert!(
+                !value.is_finite() || value.abs() > 1e300,
+                "only non-finite or overflow-scale values may be rejected, not {}",
+                value
+            ),
+        }
     }
 
     /// The property the schema actually promises: a measured value survives a

@@ -103,6 +103,76 @@ fn rendering_is_stable_across_runs() {
     );
 }
 
+/// Exactly one float carrier is declared, and it is `MetricValue::Ratio`.
+///
+/// `canonical.rs` cannot enforce its own "non-finite floats are rejected" rule:
+/// `serde_json::to_value` turns NaN into `null` before the canonicalizer sees a
+/// number, so a digest would be taken over a hole. The rejection lives on
+/// `MetricValue::Ratio`'s serializer instead, which is sound only for as long as
+/// `Ratio` really is the only float in the schema. A future `f64` field with
+/// serde's default impl would reopen the hole silently — and be invisible in
+/// review, because nothing about adding a float looks dangerous.
+///
+/// This counts them in the *committed* artifacts, so the guard fails on the
+/// schema regeneration that introduces a second one.
+#[test]
+fn the_schemas_declare_exactly_one_float_carrier() {
+    for file_name in [
+        "payload-v1.schema.json",
+        "agent-profile-v1.schema.json",
+        "policy-v1.schema.json",
+        "registry-v1.schema.json",
+    ] {
+        let path = schemas_dir().join(file_name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let schema: serde_json::Value =
+            serde_json::from_str(&text).expect("committed schema is valid JSON");
+
+        let floats = float_carriers(&schema, String::new());
+        let expected: &[&str] = match file_name {
+            "payload-v1.schema.json" | "agent-profile-v1.schema.json" => {
+                &["definitions.MetricValue.oneOf[2].properties.value"]
+            }
+            _ => &[],
+        };
+        assert_eq!(
+            floats, expected,
+            "{file_name} declares an unexpected float. Every float needs a \
+             serializer that rejects non-finite and non-quantizable values, the \
+             way MetricValue::Ratio does — see canonical.rs, \"Where rule 5 is \
+             actually enforced\"."
+        );
+    }
+}
+
+/// Every `"type": "number"` in a schema, by JSON path.
+fn float_carriers(value: &serde_json::Value, path: String) -> Vec<String> {
+    let mut found = Vec::new();
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("type") == Some(&serde_json::Value::String("number".to_string())) {
+                found.push(path.clone());
+            }
+            for (key, child) in map {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                found.extend(float_carriers(child, child_path));
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                found.extend(float_carriers(item, format!("{path}[{i}]")));
+            }
+        }
+        _ => {}
+    }
+    found
+}
+
 /// The doc comments on the schema types reach the published artifact.
 ///
 /// This is why `andon-core` denies `missing_docs`: schemars turns doc comments
