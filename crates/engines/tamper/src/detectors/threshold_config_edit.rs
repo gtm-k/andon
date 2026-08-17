@@ -223,8 +223,35 @@ fn boolean(value: &str) -> Option<bool> {
 
 /// Position in [`SEVERITY_WORDS`], for values that are severity words.
 fn rank(value: &str) -> Option<usize> {
-    let value = value.trim().to_ascii_lowercase();
+    let value = severity_token(value).to_ascii_lowercase();
     SEVERITY_WORDS.iter().position(|w| *w == value)
+}
+
+/// The severity out of a rule value, whichever of eslint's two forms it is in.
+///
+/// `"no-explicit-any": "error"` and
+/// `"no-explicit-any": ["error", { "fixToUnknown": true }]` say the same thing,
+/// and the second is the form every real configuration uses as soon as a rule
+/// takes options. Reading the array as an opaque string meant the most common
+/// downgrade in the ecosystem was invisible.
+///
+/// Only the severity is read. `["error", 10] -> ["error", 40]` raises an option
+/// inside a rule and is *not* caught: knowing which option is a threshold means
+/// knowing the rule, which is a per-linter rule table this detector does not
+/// have. Recorded in the known-limitations list rather than left to be
+/// discovered.
+fn severity_token(value: &str) -> &str {
+    let trimmed = value.trim();
+    let Some(inner) = trimmed.strip_prefix('[') else {
+        return trimmed;
+    };
+    inner
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(['"', '\'', ']'])
+        .trim()
 }
 
 /// Every `key = value` in a config file, as a flat map.
@@ -274,6 +301,26 @@ mod tests {
         let outcome = ThresholdConfigEdit.run(&view);
         assert!(outcome.fired, "{outcome:?}");
         assert!(outcome.findings[0].detail.contains("severity lowered"));
+    }
+
+    #[test]
+    fn the_array_rule_form_is_read_too() {
+        // The form every real eslint config uses once a rule takes options.
+        let base =
+            "{ \"rules\": { \"no-explicit-any\": [\"error\", { \"fixToUnknown\": true }] } }";
+        let head = "{ \"rules\": { \"no-explicit-any\": [\"warn\", { \"fixToUnknown\": true }] } }";
+        let view = ChangeView::new(vec![FileChange::modified(".eslintrc.json", base, head)]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(outcome.findings[0].detail.contains("severity lowered"));
+    }
+
+    #[test]
+    fn the_array_rule_form_is_directional_too() {
+        let base = "{ \"rules\": { \"complexity\": [\"warn\", 10] } }";
+        let head = "{ \"rules\": { \"complexity\": [\"error\", 10] } }";
+        let view = ChangeView::new(vec![FileChange::modified(".eslintrc.json", base, head)]);
+        assert!(!ThresholdConfigEdit.run(&view).fired);
     }
 
     #[test]
