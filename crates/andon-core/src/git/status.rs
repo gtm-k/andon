@@ -382,12 +382,19 @@ struct PorcelainEntry {
 /// `--no-renames`, but the parser skips their extra field anyway rather than
 /// desynchronizing if a future call site drops the flag.
 ///
-/// Unmerged records (`u …`) are a **typed refusal**, not a skip. See
+/// Unmerged paths are a **typed refusal**, not a skip. See
 /// [`GitError::ConflictedTree`]: a path with competing stages has no single
 /// content, and a snapshot that quietly omitted it would key the rest of the
 /// tree under a digest claiming to cover all of it. Resolution refuses
 /// in-progress operations before this runs, but it does so from git's marker
 /// files, and an index can hold conflicts after those are gone.
+///
+/// Refused in **two** shapes, because git has two. The `u` record is the
+/// documented one. The other is an ordinary `1` record carrying `U` in a status
+/// column, which is what git emits when the index holds a stage-0 entry *and*
+/// stages 1–3 for the same path — a state `update-index --index-info` will
+/// construct and a half-written merge can leave. Refusing only the record kind
+/// would have let the same tree through under a different spelling.
 fn parse_porcelain_v2(raw: &[u8]) -> Result<Vec<PorcelainEntry>, GitError> {
     let mut records = split_nul(raw);
     let mut out = Vec::new();
@@ -445,6 +452,17 @@ fn parse_porcelain_v2(raw: &[u8]) -> Result<Vec<PorcelainEntry>, GitError> {
                 } else {
                     (*rest).to_string()
                 };
+                // A `u` record is not the only way git reports an unmerged path.
+                // An index carrying a stage-0 entry *and* stages 1–3 for the same
+                // path — constructible with `update-index --index-info`, and what
+                // a half-written merge can leave behind — is reported as an
+                // ordinary record with `U` in a status column instead. Keyed as
+                // dirt it would enter the snapshot with a status of `UU` and one
+                // arbitrary blob standing in for three competing ones, which is
+                // the outcome the `u` arm exists to refuse.
+                if xy.as_bytes().contains(&b'U') {
+                    return Err(GitError::ConflictedTree { path });
+                }
                 out.push(PorcelainEntry {
                     path,
                     status: (*xy).to_string(),
@@ -890,6 +908,30 @@ mod tests {
                 "expected a ConflictedTree refusal, got {} parsed entries",
                 entries.len()
             ),
+        }
+    }
+
+    #[test]
+    fn an_unmerged_path_wearing_an_ordinary_record_is_refused_too() {
+        // The shape a malformed index produces: not a `u` record at all, but a
+        // `1` record with `U` in the status columns. Refusing only the record
+        // kind would let the same conflicted tree through under a different
+        // spelling, and it would be keyed with one blob standing in for three.
+        for xy in ["UU", "AU", "UD"] {
+            let raw = format!(
+                "1 {xy} N... 100644 100644 100644 {a} {b} src/conflicted.ts\0",
+                a = "a".repeat(40),
+                b = "b".repeat(40)
+            );
+            match parse_porcelain_v2(raw.as_bytes()) {
+                Err(GitError::ConflictedTree { path }) => {
+                    assert_eq!(path, "src/conflicted.ts", "for {xy}")
+                }
+                Err(other) => panic!("expected ConflictedTree for {xy}, got {other}"),
+                Ok(entries) => {
+                    panic!("expected a refusal for {xy}, got {} entries", entries.len())
+                }
+            }
         }
     }
 
