@@ -27,6 +27,28 @@ The clone is deliberately a Type-2 one — same structure, every name changed �
 because a byte-identical copy would be found by a `diff` and proves nothing about
 token normalization.
 
+## Some of what it measures is `parse-degraded`, and that is correct
+
+`src/adapter.ts` is unparseable on purpose, which is what makes
+`parse-error-delta` fire — and it also means this specimen is not a change both
+engines read completely. Results computed over that file, or over a set
+containing it, therefore arrive marked `parse-degraded` rather than `complete`,
+and both records take the weakest completeness of their results:
+
+| result | completeness | why |
+|---|---|---|
+| `clones.file-duplicated-tokens` on `src/adapter.ts` | `parse-degraded` | the token stream stops where the grammar does |
+| the four change-scoped `clones.*` | `parse-degraded` | each is computed over the whole measured set, `adapter.ts` included |
+| `clones.file-duplicated-tokens` on the other four files | `complete` | demotion follows the file, not the run |
+| `tamper.lookup-table-blowup` and its magnitude | `parse-degraded` | `adapter.ts` is a non-test source file in that detector's view |
+| the other five detectors | `complete` | three read bytes, and the two that parse read only test files, which are clean here |
+| `tamper.parse-error-delta` | `complete` | it *reports* the degradation; counting ERROR nodes over a tree full of them is exact |
+
+Nothing about the matrix changes: the legs compare digests against each other
+rather than against stored values, `completeness` is derived from the bytes and
+so is identical on every leg, and the result counts the join asserts — 14 and 9 —
+are unaffected.
+
 ## Why it is not a corpus case
 
 `fixtures/adversarial/` is frozen and its digest is what makes the precision and
