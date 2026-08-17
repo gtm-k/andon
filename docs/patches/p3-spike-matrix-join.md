@@ -28,14 +28,37 @@ clone. Two things keep that true if somebody edits the specimen: the
 in `cargo test` — so the specimen going quiet is caught on a push rather than at
 the next dispatched gate.
 
-Locally verified on the phase branch:
+## Rehearsed locally before this patch was written
+
+The whole join rests on one thing this repository had never actually done:
+`andon-spike compare-records` reading a `MeasurementRecord` that an *engine*
+probe wrote rather than one the spike wrote. A serialization mismatch there
+would surface only in a dispatched matrix run after merge, which is the most
+expensive place to find it. So it was run first, on two independent clones of
+one fixture standing in for two legs:
 
 ```
+$ andon-tamper-probe build-fixture --case fixtures/matrix/all-seven --dest mxA --json shas.json
+$ git clone --quiet mxA mxB
+$ for leg in A B; do
+    andon-tamper-probe --repo mx$leg --base $BASE --head $HEAD --out tamper$leg.json
+    andon-clones-probe --repo mx$leg --base $BASE --head $HEAD --out clones$leg.json
+  done
 tamper: 7 changed path(s), 14 result(s), 7 of 7 detectors fired: test-removal,
         suppression-density, assertion-free-test, coverage-exclusion-drift,
         threshold-config-edit, lookup-table-blowup, parse-error-delta
 clones: 7 changed path(s), index disabled, 9 result(s), 2 clone group(s)
+
+$ andon-spike compare-records --leg a=tamperA.json --leg b=tamperB.json --expect-results 14
+14 result(s) byte-identical across 2 leg(s)                                    # exit 0
+
+$ andon-spike compare-records --leg a=clonesA.json --leg b=clonesB.json --expect-results 9
+9 result(s) byte-identical across 2 leg(s)                                     # exit 0
 ```
+
+Two clones of one fixture is not the cross-OS claim — that is what the matrix
+legs are for. It is the claim that the plumbing in this patch works, which is
+the part a patch file can be wrong about.
 
 ---
 
