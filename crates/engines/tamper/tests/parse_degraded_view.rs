@@ -97,7 +97,11 @@ fn context() -> MeasureContext {
 }
 
 fn measure(base: &str, head: &str) -> Vec<MeasurementResult> {
-    let view = ChangeView::new(vec![FileChange::modified("src/cart.spec.tsx", base, head)]);
+    measure_at("src/cart.spec.tsx", base, head)
+}
+
+fn measure_at(path: &str, base: &str, head: &str) -> Vec<MeasurementResult> {
+    let view = ChangeView::new(vec![FileChange::modified(path, base, head)]);
     run_engine(&TamperEngine::for_view(view), &context()).expect("measures")
 }
 
@@ -162,6 +166,68 @@ fn the_deletion_the_parser_could_not_see() {
         result(&unseen, "tamper.parse-error-delta").value,
         MetricValue::Flag(true)
     );
+}
+
+/// An unclosed block, in plain TypeScript, wrapping the cases below it.
+///
+/// The other half of the pair with [`OPENS_JSX`], and the reason it is here: no
+/// JSX, no template literal, nothing that changes how a byte is *lexed*. This is
+/// an ordinary syntax error of the kind anyone can commit by accident, and the
+/// grammar's recovery loses the tests inside it anyway.
+const OPENS_SCOPE: &str = "function f( {\n";
+
+#[test]
+fn the_demotion_is_not_a_property_of_the_jsx_route() {
+    // The fix must not be readable as "JSX files get a caveat". What it keys on
+    // is a tree carrying ERROR or MISSING nodes, whatever put them there — and a
+    // refactor that narrowed it back to the shape the other test happens to use
+    // would pass every assertion in this file except these.
+    //
+    // The shape matters because it is the one that looked safe. This file used
+    // to claim a broken brace "leaves the cases perfectly visible", from a probe
+    // that put the break at the end of the file where it wrapped nothing. Placed
+    // before the cases it swallows them exactly as the unclosed tag does, and
+    // the two failures share no mechanism: one is a lexer mode, this is a scope
+    // the parser never sees closed.
+    let unseen = measure_at(
+        "src/cart.spec.ts",
+        &format!("{OPENS_SCOPE}{TWO_CASES}"),
+        &format!("{OPENS_SCOPE}{ONE_CASE}"),
+    );
+    let flag = result(&unseen, "tamper.test-removal");
+    assert_eq!(
+        flag.value,
+        MetricValue::Flag(false),
+        "the premise: a plain unclosed block hides the cases too"
+    );
+    assert_eq!(
+        result(&unseen, "tamper.test-removal.magnitude").value,
+        MetricValue::Integer(0)
+    );
+    assert_eq!(
+        flag.completeness,
+        Completeness::ParseDegraded,
+        "the demotion keys on ERROR and MISSING nodes, not on which construct \
+         produced them"
+    );
+
+    // And it is a genuinely different fault mix from the JSX route, which is
+    // what makes this a second mechanism rather than a second spelling of the
+    // first: an unclosed scope leaves MISSING nodes — tokens the parser inserted
+    // to finish the tree — where the unclosed tag leaves only ERROR regions.
+    let view = ChangeView::new(vec![FileChange::modified(
+        "src/cart.spec.ts",
+        &format!("{OPENS_SCOPE}{TWO_CASES}"),
+        &format!("{OPENS_SCOPE}{ONE_CASE}"),
+    )]);
+    let health = TamperEngine::for_view(view)
+        .outcomes()
+        .into_iter()
+        .find(|(detector, _)| detector.metric_id() == "tamper.test-removal")
+        .map(|(_, outcome)| outcome.view_health)
+        .expect("test-removal always runs");
+    assert!(health.missing_nodes > 0, "{health:?}");
+    assert!(health.error_nodes > 0, "{health:?}");
 }
 
 #[test]
