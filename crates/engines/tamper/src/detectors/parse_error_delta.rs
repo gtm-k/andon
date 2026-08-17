@@ -29,6 +29,12 @@
 //! code is inside a region no static engine reads. P2's adversarial lens found
 //! this shape and it applies here unchanged.
 //!
+//! The cleanest entry into that shape needs no invalid syntax at all. tree-sitter's
+//! Python scanner keeps a fixed-size indent stack, so a file that is legal Python
+//! at every line becomes unparseable past a certain nesting depth — pure
+//! whitespace, nothing a reviewer would call a syntax error. See
+//! `INDENT_STACK_LIMIT_PYTHON`.
+//!
 //! So there is a second arm: a **changed** file that is degraded at all fires,
 //! at `Low`, even when the delta is zero. It is a weaker claim and says so —
 //! an honest legacy file with an old syntax error and a deliberately parked one
@@ -49,6 +55,32 @@ use andon_core::schema::enums::{Severity, TamperSignal};
 
 /// The detector.
 pub struct ParseErrorDelta;
+
+/// Indentation levels past which the pinned Python grammar stops parsing.
+///
+/// # A blind spot that costs no invalid syntax
+///
+/// tree-sitter's Python external scanner keeps a fixed-size indent stack. Past
+/// its capacity the parse fails — on a file that is legal Python on every line.
+/// Whitespace alone makes a file unreadable to every static engine, which is the
+/// most deniable possible way to prepare the pre-seeded-degradation shape above:
+/// nothing in the diff looks like an error, because nothing is one.
+///
+/// Measured on this crate's pin, `tree-sitter-python 0.25.0`, by bisection:
+/// **512 levels**, identical for four-space, one-space, and tab indentation —
+/// so it is a count of levels rather than of columns or bytes. P2 reports ~64 on
+/// `0.23.6`, an eightfold difference between two pins of the same grammar.
+///
+/// Two consequences worth stating rather than discovering:
+///
+/// 1. The constant is a property of the pinned grammar, not of Python, so it
+///    belongs with the pins and moves with them. `tests/regime_pins.rs` holds the
+///    pins against `Cargo.lock`; this is asserted directly against the parser.
+/// 2. Two engines on different pins disagree about whether the same file is
+///    degraded. That is exactly what `measurement_regime` exists to expose —
+///    but only to a reader who compares regimes, which is a P5a concern once one
+///    payload carries both engines' results.
+pub const INDENT_STACK_LIMIT_PYTHON: usize = 512;
 
 impl Detector for ParseErrorDelta {
     fn signal(&self) -> TamperSignal {
@@ -201,6 +233,74 @@ mod tests {
             FileChange::modified("src/b.ts", CLEAN, CLEAN),
         ]);
         assert!(!ParseErrorDelta.run(&view).fired);
+    }
+
+    /// Legal Python at every line, nested past the grammar's indent stack.
+    fn whitespace_degraded(levels: usize) -> String {
+        let mut source = String::from(
+            "def f():
+",
+        );
+        for level in 0..levels {
+            source.push_str(&"    ".repeat(level + 1));
+            source.push_str(
+                "if True:
+",
+            );
+        }
+        source.push_str(&"    ".repeat(levels + 1));
+        source.push_str(
+            "return 1
+",
+        );
+        source
+    }
+
+    #[test]
+    fn the_pinned_python_grammar_degrades_past_its_indent_stack() {
+        // Asserted against the parser rather than trusted from a changelog: the
+        // limit is a property of the pin and a grammar bump moves it. Both sides
+        // of the boundary, so a bump in either direction shows up here.
+        let below = whitespace_degraded(INDENT_STACK_LIMIT_PYTHON - 1);
+        let at = whitespace_degraded(INDENT_STACK_LIMIT_PYTHON);
+        assert_eq!(
+            Parsed::new("t.py", below.as_bytes())
+                .unwrap()
+                .parse_faults(),
+            0,
+            "the indent stack now holds fewer than {INDENT_STACK_LIMIT_PYTHON} levels"
+        );
+        assert!(
+            Parsed::new("t.py", at.as_bytes()).unwrap().parse_faults() > 0,
+            "the indent stack now holds more than {INDENT_STACK_LIMIT_PYTHON} levels"
+        );
+        // And the file really is legal Python: no invalid token anywhere, which
+        // is what makes this route deniable.
+        assert!(at.is_ascii());
+        assert!(!at.contains("!!!"));
+    }
+
+    #[test]
+    fn a_whitespace_only_blind_spot_is_caught_on_the_next_change() {
+        // The two-commit shape, second commit. The file was made unparseable by
+        // indentation alone; this change adds a payload and the fault count does
+        // not move. Cross-phase intel from P2's adversarial lens.
+        let base = whitespace_degraded(INDENT_STACK_LIMIT_PYTHON);
+        let head = format!(
+            "{base}
+
+def evasive(x):
+    return x * 2
+"
+        );
+        let view = ChangeView::new(vec![FileChange::modified("src/deep.py", &base, &head)]);
+        let outcome = ParseErrorDelta.run(&view);
+        assert!(
+            outcome.fired,
+            "a payload added to a whitespace-degraded file must not be silent: {outcome:?}"
+        );
+        assert_eq!(outcome.severity, Some(Severity::Low));
+        assert!(outcome.findings[0].detail.contains("parse-degraded"));
     }
 
     #[test]
