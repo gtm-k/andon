@@ -972,3 +972,51 @@ fn assembly_does_not_disturb_a_sealed_digest() {
         assert_eq!(result.digest, recomputed, "{}", result.metric_id);
     }
 }
+
+#[test]
+fn the_countable_answer_survives_the_round_trip() {
+    // `prepare` answers "is there anything to act on?" so the caller can advance
+    // the counter, and `finish` asks the same question again to decide whether
+    // the cap fired. The two must agree: if they ever drifted, the counter would
+    // advance against a verdict that had already decided there was nothing to
+    // count, and a branch would escalate for work it had finished.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+
+    let firing = || {
+        let mut engines = five_engines();
+        let tamper = engines
+            .iter_mut()
+            .find(|e| e.descriptor.engine_id == "tamper")
+            .unwrap();
+        tamper.results[0].value = MetricValue::Flag(true);
+        tamper.results[0].severity = Severity::High;
+        tamper.results[0].seal(&compare_context()).unwrap();
+        engines
+    };
+
+    // Both shapes, and both directions of the recovery flag that `prepare` has
+    // to guess at because the counter has not been read yet.
+    for (engines, expected) in [(five_engines(), false), (firing(), true)] {
+        let prepared = prepare(request(&policy, &registry, engines)).expect("assembles");
+        assert_eq!(prepared.has_countable_finding(), expected);
+
+        for recovered in [false, true] {
+            let record = prepared.clone().finish(Advance {
+                state: crate::schema::payload::IterationState {
+                    count: 9,
+                    cap: 3,
+                    escalated: true,
+                },
+                recovered,
+            });
+            // `escalate_to_human` fires exactly when the counter had something
+            // to count, which is the answer `prepare` handed out.
+            assert_eq!(
+                record.verdict.verdict == Verdict::EscalateToHuman,
+                expected,
+                "recovered={recovered}"
+            );
+        }
+    }
+}

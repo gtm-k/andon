@@ -317,6 +317,15 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
 
     let completeness = record_completeness(&results, &engine_failures);
     let stale_claim_ids = registry.stale_claim_ids();
+    // `iteration_state_recovered` is not known until the counter has been read,
+    // which is the step this answer feeds. Passing `false` is safe rather than
+    // merely convenient: `has_countable_finding` is a pure function of the
+    // results, the policy, and the policy edit, all three of which `Prepared`
+    // then owns unchanged — so the recomputation inside `finish` cannot reach a
+    // different answer. `the_countable_answer_survives_the_round_trip` pins that,
+    // because a future dependency on the recovery flag would make the two
+    // disagree and the counter would advance against a verdict that had already
+    // decided otherwise.
     let countable = verdict::has_countable_finding(
         &results,
         &VerdictContext {
