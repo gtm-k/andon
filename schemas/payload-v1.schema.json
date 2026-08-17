@@ -152,6 +152,13 @@
     "CompareOutcome": {
       "description": "The result of comparing a self-report against a recompute.",
       "properties": {
+        "flag_disagreements": {
+          "description": "Metric ids the two sides paired but disagreed about the `deterministic` flag on.\n\nThe verifier's flag decides compare-set membership, so a disagreement changes nothing about the outcome — but it is exactly the shape an attempt to duck the compare would leave, and a signal nobody can see is a signal that does not exist. Entries here are worth a look; they are not an accusation, since an engine version can legitimately change whether a metric is seed-free.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "matched": {
           "description": "Metric ids whose digests were compared and agreed.",
           "items": {
@@ -183,6 +190,7 @@
         }
       },
       "required": [
+        "flag_disagreements",
         "matched",
         "mismatched",
         "regime_equal",
@@ -746,7 +754,7 @@
           "description": "Change against the base. `None` where a delta is meaningless."
         },
         "deterministic": {
-          "description": "Whether this result is seed-free and reproducible, and therefore inside the digest compare set. Seeded or timing-dependent results are CI-authoritative only (APPROACH graft 2).",
+          "description": "Whether this result is seed-free and reproducible. Seeded or timing-dependent results are CI-authoritative only (APPROACH graft 2).\n\nOn a **self-report this is a claim, not a grant of exemption**. Compare-set membership is decided by the verifier's own copy of this flag: the field is outside [`ResultDigestInput`] and therefore unsigned, so honouring a self-report's `false` would let any result be excused from the compare by setting one boolean. A disagreement between the two sides is recorded in [`CompareOutcome::flag_disagreements`].",
           "type": "boolean"
         },
         "digest": {

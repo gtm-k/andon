@@ -86,6 +86,17 @@ Only results marked `deterministic` enter the compare at all. Seeded and
 timing-dependent checks are CI-authoritative and excluded by design — see
 `docs/trust-boundary.md` from P1.5.
 
+**Whose `deterministic` flag decides is the verifier's.** The field is in the
+table above — outside the digest input, and so unsigned. If a self-report's
+`false` excused a result from the compare, every result would carry its own
+opt-out: flip the flags, forge the numbers, and the compare walks past all of
+them and reports a pass over nothing. So membership is read off the verifier's
+own copy, which it can vouch for because it produced it, and a pair the verifier
+calls deterministic is compared whatever the report claims. Where the two sides
+disagree, the metric id appears in `compare.flag_disagreements` — visible, but
+not an accusation on its own, since an engine upgrade can legitimately change
+whether a metric is seed-free.
+
 ## The compare pipeline
 
 The **order of these three checks is the contract**, because reordering them
@@ -103,11 +114,19 @@ P1.5 and P9 build against a function rather than re-deriving it from prose.
 2. **Regime equality.** Different engine, grammar, or git versions produce
    legitimately different numbers → `unwitnessed-version-skew`, never
    `divergent`.
-3. **Digest compare**, over deterministic results only. Reaching this step means
-   both sides measured the same change with the same tooling, so a disagreement
-   is a real one → `confirmed`, else `divergent`.
+3. **Digest compare**, over the results the *verifier* marks deterministic.
+   Reaching this step means both sides measured the same change with the same
+   tooling, so a disagreement is a real one → `divergent`.
+4. **Confirmation is earned, not defaulted to.** Every check above is phrased
+   over the results the two sides have in common, so a report with nothing in
+   common passes all three vacuously. `confirmed` additionally requires that at
+   least one pair was compared, and that no deterministic result the verifier
+   produced was left unpaired. Failing either demotes to `unwitnessed` — never
+   `divergent`, because unpaired results have honest causes (an async lane still
+   running, `completeness: partial`).
 
-The verifier resolves the base itself and never takes the record's word for it.
+The verifier resolves the base itself and never takes the record's word for it —
+for the base, for the regime, or for what belongs in the compare set.
 
 ## Vocabularies
 

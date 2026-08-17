@@ -17,9 +17,14 @@
 //! 2. **Regime equality second.** Different engine, grammar, or git versions
 //!    produce legitimately different numbers. `unwitnessed-version-skew`, never
 //!    `divergent` (PREMORTEM S4).
-//! 3. **Digest compare last**, and only over deterministic results. Reaching
-//!    this step means both sides measured the same change with the same tooling,
-//!    so a disagreement is a real one.
+//! 3. **Digest compare last**, over the deterministic results — as the
+//!    *verifier* marks them. Reaching this step means both sides measured the
+//!    same change with the same tooling, so a disagreement is a real one.
+//!    Compare-set membership is deliberately not the report's to decide: the
+//!    `deterministic` flag is outside the digest input and so unsigned, and
+//!    honouring a self-report's `false` would let any result buy its way out of
+//!    the compare with one boolean. Where the two sides disagree about the flag,
+//!    the verifier's answer is used and the disagreement is recorded.
 //!
 //! Passing all three is necessary but not sufficient. Every check above is
 //! phrased over the results the two sides have *in common*, so a self-report
@@ -152,17 +157,39 @@ pub fn classify(
                 matched: Vec::new(),
                 mismatched: Vec::new(),
                 unpaired: unpaired_ids(report, recompute),
+                // The compare stopped at the regime, before any pair's flags
+                // were examined.
+                flag_disagreements: Vec::new(),
             }),
         };
     }
 
-    // Step 3 — digest compare, deterministic results only. Seeded and
-    // timing-dependent results are CI-authoritative and never compared
-    // (APPROACH graft 2).
+    // Step 3 — digest compare. Seeded and timing-dependent results are
+    // CI-authoritative and never compared (APPROACH graft 2), but **which
+    // results those are is the verifier's call, never the report's**.
+    //
+    // `deterministic` sits outside `ResultDigestInput`, so nothing signs it and
+    // a self-report can say anything it likes. Skipping a pair because the
+    // *report* claimed non-determinism handed every result an opt-out from the
+    // compare for the price of one boolean: flip the flags, forge the numbers,
+    // write garbage digests, and the loop walks past all of it leaving matched,
+    // mismatched and unpaired empty — a `confirmed` with no trace of what was
+    // never checked.
+    //
+    // Keying the skip on the recompute alone closes it. The verifier knows
+    // whether it produced a seed-free number, because it produced it. A pair the
+    // verifier calls deterministic is compared whatever the report claims, and a
+    // digest disagreement there is a real one.
     let mut matched = Vec::new();
     let mut mismatched = Vec::new();
+    let mut flag_disagreements = Vec::new();
     for (reported, recomputed) in &pairs {
-        if !reported.deterministic || !recomputed.deterministic {
+        // Recorded before the skip, so the disagreement is visible in both
+        // directions rather than only on the pairs that go on to be compared.
+        if reported.deterministic != recomputed.deterministic {
+            flag_disagreements.push(reported.metric_id.clone());
+        }
+        if !recomputed.deterministic {
             continue;
         }
         if reported.digest == recomputed.digest {
@@ -173,6 +200,7 @@ pub fn classify(
     }
     matched.sort();
     mismatched.sort();
+    flag_disagreements.sort();
 
     // Step 4 — a confirmation has to be earned, and there are two ways to reach
     // this line having earned nothing.
@@ -218,6 +246,7 @@ pub fn classify(
             matched,
             mismatched,
             unpaired: unpaired_ids(report, recompute),
+            flag_disagreements,
         }),
     }
 }
@@ -229,6 +258,8 @@ fn tuple_failure_outcome() -> CompareOutcome {
         matched: Vec::new(),
         mismatched: Vec::new(),
         unpaired: Vec::new(),
+        // Nothing was paired, so nothing could disagree.
+        flag_disagreements: Vec::new(),
     }
 }
 
@@ -281,6 +312,7 @@ fn unpaired_ids(report: &MeasurementRecord, recompute: &MeasurementRecord) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::payload::MetricValue;
     use crate::testing::sample_record;
 
     fn inputs(base_relation: BaseRelation) -> CompareInputs {
@@ -538,6 +570,129 @@ mod tests {
         );
     }
 
+    /// PROBE8: every result flipped to non-deterministic, values forged.
+    ///
+    /// The whole self-report opts out of the compare by setting one unsigned
+    /// boolean per result. Before the verifier's flag became authoritative, this
+    /// returned `confirmed` with matched, mismatched and unpaired all empty —
+    /// a pass whose compare detail recorded nothing at all, so the record did
+    /// not even look suspicious.
+    #[test]
+    fn a_report_that_flips_every_deterministic_flag_cannot_confirm() {
+        let mut report = sample_record();
+        report.results.push(second_result());
+        for result in &mut report.results {
+            result.deterministic = false;
+            result.value = MetricValue::Count(1);
+            result.digest = "0".repeat(64);
+        }
+        let mut recompute = sample_record();
+        recompute.results.push(second_result());
+
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(out.attestation, Attestation::Divergent);
+        let compare = out.compare.expect("the compare happened");
+        assert_eq!(
+            compare.mismatched,
+            vec![
+                "static.cognitive-complexity",
+                "static.cyclomatic-complexity"
+            ],
+            "the forged results must be named, not silently skipped"
+        );
+        assert_eq!(
+            compare.flag_disagreements,
+            vec![
+                "static.cognitive-complexity",
+                "static.cyclomatic-complexity"
+            ],
+            "the dodge itself must be visible"
+        );
+    }
+
+    /// PROBE9: one honest result, one flipped and forged alongside it.
+    ///
+    /// The subtler shape — the record carries a genuine matching pair, so the
+    /// compare has something to show, and the forged number hides in the results
+    /// the loop used to walk past.
+    #[test]
+    fn one_flipped_result_beside_an_honest_one_is_still_caught() {
+        let mut report = sample_record();
+        let mut forged = second_result();
+        forged.deterministic = false;
+        forged.value = MetricValue::Count(1);
+        forged.digest = "0".repeat(64);
+        report.results.push(forged);
+
+        let mut recompute = sample_record();
+        recompute.results.push(second_result());
+
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(out.attestation, Attestation::Divergent);
+        let compare = out.compare.expect("the compare happened");
+        assert_eq!(compare.matched, vec!["static.cognitive-complexity"]);
+        assert_eq!(compare.mismatched, vec!["static.cyclomatic-complexity"]);
+        assert_eq!(
+            compare.flag_disagreements,
+            vec!["static.cyclomatic-complexity"]
+        );
+    }
+
+    /// A flipped flag over an honest number is surfaced without being accused.
+    ///
+    /// Constructible only because `deterministic` is outside `ResultDigestInput`:
+    /// the digest stays valid when the flag flips, so this is the case where the
+    /// dodge leaves no trace in the digests at all. The pass is still correct —
+    /// the number is right — and `flag_disagreements` is the only thing that
+    /// makes the attempt observable.
+    #[test]
+    fn a_flipped_flag_over_an_honest_digest_confirms_and_is_recorded() {
+        let mut report = sample_record();
+        report.results[0].deterministic = false;
+        let recompute = sample_record();
+
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(
+            out.attestation,
+            Attestation::Confirmed,
+            "an honest number is an honest number"
+        );
+        let compare = out.compare.expect("the compare happened");
+        assert_eq!(
+            compare.matched,
+            vec!["static.cognitive-complexity"],
+            "the verifier's flag decides membership, so the pair is compared"
+        );
+        assert!(compare.mismatched.is_empty());
+        assert_eq!(
+            compare.flag_disagreements,
+            vec!["static.cognitive-complexity"],
+            "and the disagreement is visible even though nothing else moved"
+        );
+    }
+
+    /// The honest direction of the same disagreement, recorded and no more.
+    ///
+    /// The verifier calls a result non-deterministic and the report calls it
+    /// deterministic — an engine upgrade can do this legitimately. It stays out
+    /// of the compare, on the verifier's word, and confirms.
+    #[test]
+    fn the_verifier_may_exclude_a_result_the_report_calls_deterministic() {
+        let report = sample_record();
+        let mut recompute = sample_record();
+        recompute.results[0].deterministic = false;
+        recompute.results[0].digest = "0".repeat(64);
+
+        let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(out.attestation, Attestation::Confirmed);
+        let compare = out.compare.expect("the compare happened");
+        assert!(compare.matched.is_empty() && compare.mismatched.is_empty());
+        assert_eq!(
+            compare.flag_disagreements,
+            vec!["static.cognitive-complexity"]
+        );
+    }
+
     #[test]
     fn non_deterministic_results_stay_out_of_the_compare() {
         let mut report = sample_record();
@@ -549,5 +704,9 @@ mod tests {
         assert_eq!(out.attestation, Attestation::Confirmed);
         let compare = out.compare.unwrap();
         assert!(compare.matched.is_empty() && compare.mismatched.is_empty());
+        assert!(
+            compare.flag_disagreements.is_empty(),
+            "both sides agree the result is seeded; there is nothing to flag"
+        );
     }
 }

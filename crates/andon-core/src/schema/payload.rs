@@ -136,9 +136,15 @@ pub struct MeasurementResult {
     pub measurement_regime: MeasurementRegime,
     /// What this number does and does not support, resolved from the registry.
     pub evidence: EvidenceRef,
-    /// Whether this result is seed-free and reproducible, and therefore inside
-    /// the digest compare set. Seeded or timing-dependent results are
-    /// CI-authoritative only (APPROACH graft 2).
+    /// Whether this result is seed-free and reproducible. Seeded or
+    /// timing-dependent results are CI-authoritative only (APPROACH graft 2).
+    ///
+    /// On a **self-report this is a claim, not a grant of exemption**. Compare-set
+    /// membership is decided by the verifier's own copy of this flag: the field
+    /// is outside [`ResultDigestInput`] and therefore unsigned, so honouring a
+    /// self-report's `false` would let any result be excused from the compare by
+    /// setting one boolean. A disagreement between the two sides is recorded in
+    /// [`CompareOutcome::flag_disagreements`].
     pub deterministic: bool,
     /// SHA-256 over [`ResultDigestInput`]. Empty until [`MeasurementResult::seal`].
     pub digest: String,
@@ -504,4 +510,14 @@ pub struct CompareOutcome {
     pub mismatched: Vec<String>,
     /// Metric ids present on one side only.
     pub unpaired: Vec<String>,
+    /// Metric ids the two sides paired but disagreed about the `deterministic`
+    /// flag on.
+    ///
+    /// The verifier's flag decides compare-set membership, so a disagreement
+    /// changes nothing about the outcome — but it is exactly the shape an
+    /// attempt to duck the compare would leave, and a signal nobody can see is
+    /// a signal that does not exist. Entries here are worth a look; they are
+    /// not an accusation, since an engine version can legitimately change
+    /// whether a metric is seed-free.
+    pub flag_disagreements: Vec<String>,
 }
