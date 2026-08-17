@@ -413,6 +413,13 @@ impl Walker<'_, '_> {
     /// resolution across files, which the static family does not do — and a
     /// metric that caught some mutual recursion and not the rest would be worse
     /// than one that is clear about catching none.
+    ///
+    /// Scoped to the **measured** function's name, which has a consequence worth
+    /// stating: a nested function that recurses on its own name contributes its
+    /// body to the outer number, as every nested function does, but adds no
+    /// recursion increment — nothing in the outer function recurses. Consistent
+    /// with reporting one result per outermost function, and pinned below so it
+    /// is a boundary rather than a surprise.
     fn is_self_call(&self, callee: Option<Node<'_>>) -> bool {
         let (Some(callee), Some(own)) = (callee, self.own_name.as_deref()) else {
             return false;
@@ -844,6 +851,21 @@ mod tests {
                 "class C:\n    def walk(self, n):\n        return self.walk(n - 1)\n"
             ),
             1
+        );
+    }
+
+    #[test]
+    fn a_nested_function_recursing_on_its_own_name_is_not_the_outer_recursion() {
+        // A stated boundary of scoping recursion to the measured function's
+        // name. `inner` recurses; `outer` does not, and it is `outer` that is
+        // being reported on. Its body still costs what it costs — the ternary at
+        // one level of nesting is 2 — and no recursion increment is added.
+        assert_eq!(
+            first(
+                Language::JavaScript,
+                "function outer(n) { function inner(k) { return k <= 0 ? 0 : inner(k - 1) } return inner(n) }"
+            ),
+            2
         );
     }
 
