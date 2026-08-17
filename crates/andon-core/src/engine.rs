@@ -116,6 +116,22 @@ pub trait MeasureEngine {
 /// The one supported way to invoke an engine. Calling `measure` directly skips
 /// the sandbox check, which is why every caller in the workspace goes through
 /// here.
+///
+/// # The family stamp is checked before sealing, not after
+///
+/// `family` is inside [`crate::schema::payload::ResultDigestInput`] and so is
+/// the `measurement_regime` that implies it. A result stamped with the wrong
+/// family therefore seals *consistently*: the agent and the verifier both make
+/// the same mistake, both digests agree, and the compare returns `confirmed`
+/// over a number filed under an engine family it never came from. Nothing
+/// downstream can detect it, because the mechanism that detects disagreement is
+/// the one thing that agrees.
+///
+/// So it is caught here, where the three statements of the same fact are all in
+/// scope: the result's own stamp, the engine's descriptor, and the family its
+/// regime belongs to. A refusal rather than a panic — this runs inside an agent
+/// loop, and the caller's job is to report the engine as unavailable, not to
+/// take the process down (PLAN wave-1 integration, P5a-entry note 1).
 pub fn run_engine(
     engine: &dyn MeasureEngine,
     ctx: &MeasureContext,
@@ -126,8 +142,31 @@ pub fn run_engine(
             engine_id: descriptor.engine_id,
         });
     }
+
+    let declared = engine.regime().family();
+    if declared != descriptor.family {
+        return Err(EngineError::Failed {
+            engine_id: descriptor.engine_id.clone(),
+            reason: format!(
+                "engine reports family {:?} but its regime belongs to {declared:?}",
+                descriptor.family
+            ),
+        });
+    }
+
     let mut results = engine.measure(ctx)?;
     for result in &mut results {
+        let regime_family = result.measurement_regime.family();
+        if result.family != descriptor.family || result.family != regime_family {
+            return Err(EngineError::Failed {
+                engine_id: descriptor.engine_id.clone(),
+                reason: format!(
+                    "result '{}' is stamped {:?} but the engine reports {:?} and the result's \
+                     regime belongs to {regime_family:?}",
+                    result.metric_id, result.family, descriptor.family
+                ),
+            });
+        }
         result
             .seal(&ctx.compare_context)
             .map_err(|e| EngineError::Failed {
