@@ -935,6 +935,44 @@ fn a_dirty_base_is_refused_rather_than_quietly_enumerated() {
     assert_eq!(ChangedSet::enumerate(repo.git(), &ok).unwrap().len(), 1);
 }
 
+/// `core.fileMode` is off on Windows, where the working-tree mode always mirrors
+/// the index and this change cannot be made at all.
+#[cfg(unix)]
+#[test]
+fn a_mode_only_change_is_dirt_and_survives_the_conversion_re_check() {
+    // The shape a mode change shares with a conversion phantom: `.M`, identical
+    // blob OIDs on both sides, and the only difference in the mode. Clearing on
+    // OID agreement alone would drop it — and `core.fileMode` is left unpinned
+    // precisely so that a real exec-bit change reaches the cache key.
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("mode-only");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"unchanged\n", "base");
+    let head = repo.rev_parse("HEAD");
+    let clean = DirtySnapshot::incremental(repo.git(), &head, false).expect("snapshot");
+    assert!(clean.is_empty(), "the fixture starts clean");
+
+    let path = repo.path().join("src/a.ts");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let snapshot = DirtySnapshot::incremental(repo.git(), &head, false).expect("snapshot");
+    let entry = snapshot
+        .entries
+        .get("src/a.ts")
+        .expect("an exec-bit change is a change to this tree");
+    assert_eq!(
+        entry.head_oid, entry.staged_oid,
+        "the fixture depends on the content being byte-identical"
+    );
+    assert_eq!(entry.worktree_mode.as_deref(), Some("100755"));
+    assert_ne!(
+        clean.digest(),
+        snapshot.digest(),
+        "and the cache key has to move with it"
+    );
+}
+
 /// A newline is a legal character in a POSIX filename and a record separator in
 /// `hash-object --stdin-paths`. Windows forbids it outright, so there is no way
 /// to build the fixture there; the unit test on `check_stdin_path` covers the

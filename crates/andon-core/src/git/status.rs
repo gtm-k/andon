@@ -494,10 +494,15 @@ fn keep_nonnull(oid: &str) -> Option<String> {
 /// suspect. One batched `hash-object` — the only invocation in the workspace
 /// that lets the checkout's own conversion speak, see
 /// [`Git::cmd_in_checkout_conversion`] — asks what those files hash to *in the
-/// terms that produced them*. Where that equals the index blob the working-tree
-/// side was never modified, and the status letter is corrected: a `.M` becomes
-/// `..` and the entry is dropped entirely, an `MM` becomes `M.` and keeps its
-/// staged change.
+/// terms that produced them*. Where that equals the index blob **and the mode
+/// has not moved**, the working-tree side was never modified, and the status
+/// letter is corrected: a `.M` becomes `..` and the entry is dropped entirely,
+/// an `MM` becomes `M.` and keeps its staged change.
+///
+/// The mode condition is not belt and braces. `chmod +x` on a file whose content
+/// is untouched produces the same `.M` with the same blob OID on both sides, and
+/// it is a real change that has to reach the cache key — which is the stated
+/// reason [`super::command::PINNED_CONFIG`] leaves `core.fileMode` alone.
 ///
 /// # What it does not do
 ///
@@ -533,7 +538,23 @@ fn drop_conversion_phantoms(
         let Some(entry) = entries.get_mut(&path) else {
             continue;
         };
-        if entry.staged_oid.as_deref() == Some(effective_oid.as_str()) {
+        // Content agreement is not enough. `chmod +x` on an unchanged file is
+        // reported `.M` with both blob OIDs identical and only the mode moved,
+        // which is the exact shape of a conversion phantom — and it is a real
+        // change to the tree. This module's own docs say `core.fileMode` is left
+        // unpinned *because* a mode change has to reach the cache key, so
+        // clearing on the OID alone would contradict the invariant one file
+        // over. A conversion never changes a mode, so every genuine phantom
+        // still clears.
+        //
+        // The mode compared is `HEAD`'s rather than the index's, which the
+        // parser discards. For an unstaged edit the two are the same. For a
+        // staged mode change followed by a conversion-only worktree difference
+        // they are not, and the entry stays `MM` where `M.` would have been
+        // exact — a path that is genuinely dirty being reported as slightly
+        // more dirty, which is the direction to be wrong in.
+        let mode_unchanged = entry.head_mode.is_none() || entry.worktree_mode == entry.head_mode;
+        if mode_unchanged && entry.staged_oid.as_deref() == Some(effective_oid.as_str()) {
             entry.clear_worktree_modification();
         }
     }
