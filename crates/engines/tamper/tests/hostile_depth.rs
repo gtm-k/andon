@@ -91,20 +91,65 @@ fn every_detector_survives_hostile_nesting() {
     }
 }
 
+/// Run the whole detector suite `reps` times and return the total elapsed.
+///
+/// Repetition rather than a bigger input, because the ratio has to stay a
+/// statement about *depth*: the same `reps` on both sides cancels, so tripling
+/// the depth is still the only variable.
+fn run_everything_n(path: &str, source: &str, reps: u32) -> Duration {
+    (0..reps).map(|_| run_everything(path, source)).sum()
+}
+
 #[test]
 fn the_cost_does_not_grow_quadratically_with_depth() {
     // A wall-clock ceiling alone passes on a quadratic implementation given a
     // fast enough machine. Tripling the depth of a linear walk should cost far
     // less than the ninefold a quadratic one would.
-    let baseline = run_everything("src/deep.test.ts", &nested_arrays(1_000));
-    let deeper = run_everything("src/deep.test.ts", &nested_arrays(3_000));
+    //
+    // # Why the workload is scaled instead of the floor being trusted
+    //
+    // This assertion used to divide by `baseline.max(floor)` with a 20 ms floor,
+    // which protected against dividing by a near-zero measurement — and, on any
+    // machine where the real baseline came in under 20 ms, quietly stopped
+    // testing anything. Substituting the floor makes the denominator a constant,
+    // so the ratio becomes "how long did the deep run take" rather than "how did
+    // cost grow", and a genuinely quadratic implementation passes: a 3 ms
+    // baseline against a 27 ms deeper run is a ninefold blow-up and scores 1.35
+    // against the floor.
+    //
+    // The failure mode is the vacuous-green shape this repository refuses
+    // everywhere else, so the fix is the same one: make the measurement real
+    // rather than make the check lenient. The workload is repeated until the
+    // baseline genuinely clears the floor, both sides get the same repetition
+    // count so it cancels out of the ratio, and clearing it is asserted rather
+    // than assumed.
     let floor = Duration::from_millis(20);
-    let ratio = deeper.as_secs_f64() / baseline.max(floor).as_secs_f64();
-    println!("1000 -> {baseline:?}, 3000 -> {deeper:?}, ratio {ratio:.1}x for 3x the depth");
+    const MAX_REPS: u32 = 64;
+
+    let mut reps = 1;
+    let mut baseline = run_everything_n("src/deep.test.ts", &nested_arrays(1_000), reps);
+    while baseline < floor && reps < MAX_REPS {
+        reps *= 2;
+        baseline = run_everything_n("src/deep.test.ts", &nested_arrays(1_000), reps);
+    }
+    let deeper = run_everything_n("src/deep.test.ts", &nested_arrays(3_000), reps);
+
+    println!("{reps} rep(s): 1000 -> {baseline:?}, 3000 -> {deeper:?}");
+    assert!(
+        baseline >= floor,
+        "the baseline is {baseline:?} after {MAX_REPS} repetitions, still under the {floor:?} \
+         needed for the ratio below to mean anything. This machine is fast enough that the \
+         measurement is noise; raise MAX_REPS or the depth rather than lowering the floor, \
+         because a floor substituted for a real baseline turns this assertion into a \
+         restatement of how long the deep run took"
+    );
+
+    let ratio = deeper.as_secs_f64() / baseline.as_secs_f64();
+    println!("ratio {ratio:.1}x for 3x the depth");
     assert!(
         ratio < 6.0,
-        "tripling the depth cost {ratio:.1}x ({baseline:?} -> {deeper:?}); a quadratic walk \
-         costs about 9x and that is what `Node::parent()` per node used to do"
+        "tripling the depth cost {ratio:.1}x ({baseline:?} -> {deeper:?} over {reps} rep(s)); \
+         a quadratic walk costs about 9x and that is what `Node::parent()` per node used to do"
     );
 }
 
