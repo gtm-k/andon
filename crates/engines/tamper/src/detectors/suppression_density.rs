@@ -36,8 +36,25 @@ pub const MIN_ADDED_SUPPRESSIONS: i64 = 2;
 /// Deliberately the directive text and not a full pattern: `eslint-disable`
 /// covers `eslint-disable`, `eslint-disable-next-line`, and the block form,
 /// which is what a reader means by "an eslint suppression".
+///
+/// # This list is the claim
+///
+/// It is an enumeration of recognised tools, not a general rule, and the
+/// registry claim says so rather than implying coverage this does not have. A
+/// suppression from a linter absent here is not detected, and adding one is a
+/// rule-pack change: `RULE_PACK_VERSION` moves, the regime moves, and old
+/// numbers stop being comparable to new ones — which is the correct
+/// consequence, since what counts as a suppression has changed.
+///
+/// `# pragma: no cover` is deliberately *not* here. It suppresses coverage
+/// measurement rather than a linter, which is
+/// [`crate::detectors::coverage_exclusion_drift`]'s outcome; counting it as a
+/// lint suppression would put one behaviour under two signals and double-count
+/// it in any report that showed both.
 pub const MARKERS: &[&str] = &[
     "eslint-disable",
+    "deno-lint-ignore",
+    "oxlint-disable",
     "@ts-ignore",
     "@ts-expect-error",
     "@ts-nocheck",

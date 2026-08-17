@@ -20,7 +20,7 @@ use tree_sitter::{Node, Parser, Tree};
 /// Version of the detector rule pack: the patterns, keys, and thresholds the
 /// seven detectors match on. Bumped whenever any of them changes, because a
 /// changed rule changes what fires.
-pub const RULE_PACK_VERSION: &str = "1";
+pub const RULE_PACK_VERSION: &str = "2";
 
 /// Revision of the detector *set* — which detectors exist at all.
 pub const DETECTOR_SET_REVISION: &str = "1";
@@ -261,7 +261,7 @@ pub fn is_curried_inner(node: Node<'_>) -> bool {
 /// make replacing three `it` calls with one `it.each` of three rows read as two
 /// tests removed — a refactoring reported as tampering, which is the
 /// false-positive class the should-pass corpus exists to catch.
-pub fn each_rows(node: Node<'_>) -> Option<usize> {
+pub fn each_rows(parsed: &Parsed, node: Node<'_>) -> Option<usize> {
     let inner = node.child_by_field_name("function")?;
     if inner.kind() != "call_expression" {
         return None;
@@ -270,7 +270,13 @@ pub fn each_rows(node: Node<'_>) -> Option<usize> {
     if !matches!(callee.kind(), "member_expression") {
         return None;
     }
-    let property = callee.child_by_field_name("property")?;
+    // The property really is checked. It was read and then discarded with a
+    // `let _ =`, under a comment claiming it was checked — which made every
+    // curried call with a literal array first argument look table-driven,
+    // `it.only(...)(...)` included.
+    if parsed.text(callee.child_by_field_name("property")?) != "each" {
+        return None;
+    }
     let arguments = inner.child_by_field_name("arguments")?;
     let mut cursor = arguments.walk();
     let table = arguments
@@ -280,11 +286,7 @@ pub fn each_rows(node: Node<'_>) -> Option<usize> {
         return None;
     }
     let mut cursor = table.walk();
-    let rows = table.named_children(&mut cursor).count();
-    // The property name is checked last so that a non-`each` curried call still
-    // returns `None` rather than a row count.
-    let _ = property;
-    Some(rows)
+    Some(table.named_children(&mut cursor).count())
 }
 
 /// The ancestors of a node, nearest first, bounded by [`MAX_ANCESTOR_WALK`].

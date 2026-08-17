@@ -86,6 +86,24 @@ fn each_detector_has_enough_cases_for_its_ratios_to_mean_something() {
         honest >= 7 * MIN_CASES_PER_DETECTOR,
         "{honest} should-pass cases; precision is measured against them and needs the same floor"
     );
+
+    // And per detector, not only in total. A should-pass corpus of thirty-five
+    // cases all aimed at one detector would satisfy the count above while
+    // leaving six detectors with no false-positive evidence at all — and
+    // precision is the number that separates a useful detector from one that
+    // fires on everything.
+    for detector in detectors::all() {
+        let name = detectors::signal_name(detector.signal());
+        let prefix = format!("{name}/");
+        let aimed = cases
+            .iter()
+            .filter(|c| c.family == Family::Honest && c.id.starts_with(&prefix))
+            .count();
+        assert!(
+            aimed >= MIN_CASES_PER_DETECTOR,
+            "{name} has {aimed} should-pass case(s) written against it; at least              {MIN_CASES_PER_DETECTOR} are needed before its precision means anything"
+        );
+    }
 }
 
 #[test]

@@ -37,7 +37,15 @@ use proptest::prelude::*;
 /// A file body long enough to clear the 50-token clone floor, parameterized so
 /// that two bodies can be made equal (a clone) or different.
 fn body(shape: u8, name: &str) -> String {
-    match shape % 3 {
+    match shape % 4 {
+        // Under one rolling window. A file this short contributes no window
+        // hashes at all, which is a different code path from "contributes some"
+        // — and the boundary between them was outside the property test until
+        // this arm existed.
+        3 => format!(
+            "export const {name} = 1;
+"
+        ),
         0 => format!(
             "export function {name}(items: number[], factor: number): number {{\n\
              \x20 let total = 0;\n\
@@ -76,7 +84,7 @@ fn body(shape: u8, name: &str) -> String {
 }
 
 fn extension(shape: u8) -> &'static str {
-    if shape % 3 == 2 {
+    if shape % 4 == 2 {
         "py"
     } else {
         "ts"
@@ -115,7 +123,7 @@ enum Op {
 
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
-        2 => (0u8..6, 0u8..3).prop_map(|(slot, shape)| Op::Write { slot, shape }),
+        2 => (0u8..6, 0u8..4).prop_map(|(slot, shape)| Op::Write { slot, shape }),
         3 => (0u8..6, 0u8..6).prop_map(|(from, to)| Op::Rename { from, to }),
         3 => (0u8..6).prop_map(|slot| Op::Delete { slot }),
     ]

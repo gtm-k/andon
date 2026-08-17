@@ -142,6 +142,7 @@ effect = "none claimed beyond detection. Two counts: the net linter and type-che
 does_not_predict = [
     "that either was deliberate — a documented suppression is normal practice, and a grammar older than a language feature produces parse faults on correct code",
     "that the suppressed findings were true positives, or that the unparseable code is wrong",
+    "suppressions from tools outside the enumerated marker list — this is a list of recognised directives, not a general rule, and a linter absent from it is not counted",
     "defect density",
     "anything about files no vendored grammar reads, which are never counted as zero",
 ]

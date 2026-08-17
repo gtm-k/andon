@@ -154,7 +154,7 @@ fn count_js(parsed: &Parsed) -> Counts {
         // A table-driven case is one call and *n* tests. Counting it as one
         // would report the ordinary `it` -> `it.each` refactoring as tests
         // removed.
-        let rows = each_rows(node).unwrap_or(1).max(1) as u32;
+        let rows = each_rows(parsed, node).unwrap_or(1).max(1) as u32;
         counts.cases += rows;
         // The *name*, not the callee text: for `it.skip.each(table)(...)` the
         // callee text is the whole inner call with its table inlined, and no

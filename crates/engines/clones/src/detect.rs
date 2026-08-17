@@ -106,9 +106,20 @@ impl CloneReport {
     }
 }
 
-/// A clone group's identity: its length in tokens and a hash of the shared
-/// normalized sequence. Two fragments belong together exactly when both agree.
-type GroupKey = (u32, u64);
+/// A clone group's identity: length, a hash of the shared normalized sequence,
+/// and its first and last symbols. Two fragments belong together when all four
+/// agree.
+///
+/// # Why the endpoints are in the key
+///
+/// Every *pair* in a group was confirmed symbol by symbol, so no member is in it
+/// by accident. What the hash alone left open was two independently-correct
+/// groups of the same length colliding into one — reporting "these six places
+/// are the same code" when they are two sets of three. The endpoints cost two
+/// `u64` comparisons and remove the cheapest way for that to happen. It remains
+/// possible in principle; [`sequence_hash`] says so rather than claiming the
+/// hash is a proof.
+type GroupKey = (u32, u64, u64, u64);
 
 /// Where a fragment starts: index into the measured file list, then token
 /// offset within that file.
@@ -225,9 +236,12 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
                 if len < MIN_CLONE_TOKENS {
                     continue;
                 }
+                let sequence = &symbols[a.file as usize][a.window as usize..][..len as usize];
                 let key = (
                     len,
-                    sequence_hash(&symbols[a.file as usize][a.window as usize..][..len as usize]),
+                    sequence_hash(sequence),
+                    sequence[0],
+                    sequence[sequence.len() - 1],
                 );
                 let members = groups.entry(key).or_default();
                 members.insert((a.file, a.window));
@@ -254,7 +268,7 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
     // takes the union over every confirmed maximal match and needs no selection
     // at all. Group *reporting* still does, for the reason below.
     let mut covered: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
-    for ((len, _), members) in &groups {
+    for ((len, ..), members) in &groups {
         for (file, window) in members {
             let tokens = symbols[*file as usize].len() as u32;
             covered
@@ -288,7 +302,7 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
             .0
             .cmp(&a_key.0)
             .then_with(|| a_members.cmp(b_members))
-            .then_with(|| a_key.1.cmp(&b_key.1))
+            .then_with(|| a_key.cmp(b_key))
     });
 
     let mut claimed: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
@@ -310,7 +324,7 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
     }
 
     let mut out_groups = Vec::new();
-    for ((len, _), members) in kept {
+    for ((len, ..), members) in kept {
         let mut fragments = Vec::new();
         for (file, window) in &members {
             let path = files[*file as usize];
@@ -375,6 +389,16 @@ fn extend(symbols: &[&[u64]], a: &Occurrence, b: &Occurrence) -> u32 {
     len as u32
 }
 
+/// A 64-bit identity for a token sequence, used only to group fragments that
+/// [`extend`] already confirmed pairwise.
+///
+/// Not a proof of equality, and nothing here treats it as one. A collision
+/// between two equal-length sequences would merge two groups that are each
+/// internally correct — the lengths and counts stay right, the "these places are
+/// the same code" claim becomes wrong across the merged halves. [`GroupKey`]
+/// carries the first and last symbols alongside it for that reason. The
+/// exactness claim in this module's header is about [`extend`], which compares
+/// symbols directly; it is not a claim about this function.
 fn sequence_hash(symbols: &[u64]) -> u64 {
     let mut bytes = Vec::with_capacity(symbols.len() * 8);
     for symbol in symbols {

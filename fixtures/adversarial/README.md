@@ -28,8 +28,8 @@ cargo run -p andon-engine-tamper --bin andon-corpus-report -- --check-freeze --c
 ```
 
 Corpus v1, frozen 2026-08-17, digest `9aa97c6d5b8289b2`, refresh due
-2026-11-17. Measured against `andon-engine-tamper` 0.1.0 with the grammar pins
-in `crates/engines/tamper/src/syntax.rs`.
+2026-11-17. Measured against `andon-engine-tamper` 0.1.0 at rule pack 2 (repair
+round 1) with the grammar pins in `crates/engines/tamper/src/syntax.rs`.
 
 | detector | TP | FN | FP | TN | precision | recall |
 |---|---:|---:|---:|---:|---:|---:|
@@ -39,7 +39,7 @@ in `crates/engines/tamper/src/syntax.rs`.
 | `coverage-exclusion-drift` | 7 | 0 | 0 | 51 | 1.00 | 1.00 |
 | `threshold-config-edit` | 7 | 1 | 0 | 51 | 1.00 | 0.88 |
 | `lookup-table-blowup` | 7 | 0 | 0 | 51 | 1.00 | 1.00 |
-| `parse-error-delta` | 7 | 0 | 0 | 51 | 1.00 | 1.00 |
+| `parse-error-delta` | 7 | 0 | 1 | 50 | 0.88 | 1.00 |
 
 Every detector clears both floors. `tests/corpus_floors.rs` asserts it, asserts
 the freeze digest still matches, asserts each detector has at least five
@@ -58,13 +58,26 @@ something is the false-positive rate on real changes, which is what PLAN.md's
 P9b instrumentation and P10b entry gate measure, over at least 30 honest changes
 and at least 14 days.
 
-**One false negative is real and deliberate.** `threshold-config-edit` misses
-`eslint-rule-deleted`: a rule removed from a config file rather than downgraded
-leaves no head-side value to compare against, and the detector only compares keys
-present on both sides. Deleting a rule loosens as surely as setting it to `off`.
-The case is in the corpus so that the gap appears in the recall column rather
-than in a footnote. Closing it means comparing the base's key set against the
-head's, which is a v1.1 change.
+**One false negative and one false positive are real, and neither is a
+defect.**
+
+`threshold-config-edit` misses `eslint-rule-deleted`: a rule removed from a
+config file rather than downgraded leaves no head-side value to compare against,
+and the detector only compares keys present on both sides. Deleting a rule
+loosens as surely as setting it to `off`. The case is in the corpus so that the
+gap appears in the recall column rather than in a footnote. Closing it means
+comparing the base's key set against the head's, which is a v1.1 change.
+
+`parse-error-delta` fires on `pre-existing-errors-left-alone`, a should-pass
+case. That is a **contract change**, not a regression. Repair round 1 added a
+second arm to the detector: a *changed* file that is parse-degraded fires at
+`Low` even when the delta is zero, because parking the faults in one commit and
+adding the evasive code in the next reads as a zero delta (P2's adversarial lens
+found the shape). Under the new contract that case *should* fire softly — an
+honest legacy file with an old syntax error and a deliberately parked one are the
+same bytes, and no static rule separates them. The corpus is frozen, so the case
+moves to the adversarial side at the v1.1 refresh rather than being edited now.
+Precision 1.00 → 0.88, above the 0.80 floor.
 
 **The perfect columns are the weakest evidence here.** A first pass of this
 corpus scored 1.00/1.00 on all seven detectors with no cross-fires, which was not
@@ -78,8 +91,57 @@ added before the freeze found four real bugs:
 - `True`/`False` in an INI file compared as strings, so mypy's strictness flags
   could be turned off silently.
 
-That is what the corpus is for. The current table is what it looks like after
-those were fixed, and the next refresh should expect to find more.
+That is what the corpus is for. Repair round 1 then found five more that the
+corpus had not — see the known limitations below — which is the ensemble doing
+what the corpus alone could not.
+
+## Known limitations
+
+Written down rather than discovered. Each is a shape the suite does not catch, or
+catches in a way worth knowing about; the frontier ones have a specimen in the
+held-back set (`gtm-k/andon-evasion`) so that they keep being re-run.
+
+### Evasions the suite does not catch
+
+| shape | detector | why, and what closing it needs |
+|---|---|---|
+| `extends` swapped to a loose base config | `threshold-config-edit` | Every value in the file is untouched; the strictness profile changes by inheritance. Closing it means resolving and diffing another config graph. |
+| Real cases replaced by differently-named tautologies | `assertion-free-test`, `test-removal` | The case count is preserved and every replacement contains an `expect`, so both detectors stay quiet while three behaviours stop being checked. Closing it means relating an assertion's arguments to the code under test — a data-flow question, not a syntactic one. |
+| A rule deleted rather than downgraded | `threshold-config-edit` | Scored: it is the false negative in the table above. |
+| An option raised inside an array-form rule (`["error", 10]` → `["error", 40]`) | `threshold-config-edit` | Only the severity is read out of the array form. Knowing which option is a threshold means knowing the rule, which is a per-linter rule table this detector does not have. |
+| A runtime early return in every case | `test-removal` | No skip marker, no deleted case. Needs reachability. |
+| One blanket file-level `eslint-disable` | `suppression-density` | Walks under the floor of two added directives, which exists for precision. Closing it means weighting blanket directives above targeted ones. |
+| An exclusion pattern widened rather than added | `coverage-exclusion-drift` | Entry count is the metric and it does not move. Needs globs compared by breadth. |
+| A lookup table assembled at run time | `lookup-table-blowup` | No literal collection node exists. Needs constant folding. |
+| Logic moved into a string and evaluated | `parse-error-delta` | The file parses cleanly on both sides. Needs dynamic-evaluation detection. |
+
+### Bounds that can change an answer
+
+- **Suppression markers are an enumerated list**, not a general rule. A linter
+  absent from `detectors::suppression_density::MARKERS` is not detected. Adding
+  one moves `RULE_PACK_VERSION` and therefore the measurement regime, which is
+  the correct consequence: what counts as a suppression has changed.
+- **Ancestor walks stop at 256 levels.** `Node::parent()` costs O(depth) in
+  tree-sitter, so an unbounded walk is quadratic — this was a five-second-per-
+  detector hang on a 10 KB file before repair round 1. A construct nested deeper
+  than 256 is not classified.
+- **Clone detection saturates above 32 occurrences of one window hash.** In a
+  saturated bucket a longer match between two far-apart occurrences can be missed
+  when a nearer partner offers a shorter one. The alternative is quadratic.
+- **The clone group list is not a partition of the per-file token counts.** Five
+  files can hold a copy while the group list names two of them, because a longer
+  clone between that pair won the region. The counts are the coverage; the groups
+  are the description.
+
+### Corpus errata, to fix at the v1.1 refresh
+
+- `honest/lookup-table-blowup/module-level-reference-data` is titled "a
+  forty-entry country list" and contains a table of squares. The case exercises
+  what it should — a large literal at module scope — and only the label is wrong.
+  Not corrected now: the corpus is frozen, and a re-freeze to fix a title would
+  spend the discipline that makes the floors meaningful on a cosmetic edit.
+- `honest/parse-error-delta/pre-existing-errors-left-alone` moves to the
+  adversarial side, for the contract reason given above.
 
 ## Writing a case
 

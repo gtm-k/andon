@@ -39,18 +39,28 @@ pub const MIN_CLONE_TOKENS: u32 = 50;
 /// large generated file would blow the fast lane's 1000 ms warm budget on its
 /// own, which is PREMORTEM T6 arriving through an engine instead of through git.
 ///
-/// # Why the answer does not change
+/// # What the cap preserves, and what it gives up
 ///
-/// Above the cap, only *adjacent* occurrences are paired. In a periodic region
-/// that is the shortest lag, and the greedy disjoint selection in
-/// [`crate::detect`] keeps exactly that one anyway — the longer-lag matches it
-/// would have found are the ones it then discards. Where a bucket is large
-/// because a helper really was copied a hundred times, adjacent pairs share one
-/// group key and accumulate into the same group, so all hundred members are
-/// still reported.
+/// Above the cap, each occurrence is paired only with its nearest *usable*
+/// partner rather than with all of them.
 ///
-/// The cap can nonetheless change a number, so it is part of the regime: see
-/// [`ALGORITHM`].
+/// Preserved: the reported answer for periodic content, which is the case the
+/// cap exists for. In a repeating region the nearest usable partner is the
+/// shortest reportable lag, and the greedy disjoint selection in
+/// [`crate::detect`] keeps exactly that one — the longer-lag matches are the
+/// ones it discards anyway. Preserved too: a helper copied into a hundred
+/// files, because adjacent pairs share one group key and accumulate into the
+/// same group.
+///
+/// Given up, and this is a real loss rather than a rounding one: in a saturated
+/// bucket, a *longer* match between two far-apart occurrences can be missed
+/// when a nearer partner offers a shorter one. Two copies of a large block at
+/// opposite ends of a file full of repeated syntax are the shape. The cap only
+/// engages above 32 occurrences of one window hash, which takes genuinely
+/// repetitive content to reach, and the alternative is quadratic — but "the
+/// answer does not change" would be a false claim and this used to make it.
+///
+/// The cap changes numbers, so it is part of the regime: see [`ALGORITHM`].
 pub const SATURATED_OCCURRENCES: usize = 32;
 
 /// The algorithm name stamped into the `measurement_regime`.
