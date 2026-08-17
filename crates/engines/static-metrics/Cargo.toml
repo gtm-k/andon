@@ -1,0 +1,69 @@
+# The static family: tree-sitter size and complexity for TS/JS/Python, a
+# tokenization tier for Rust, and parse health as a first-class payload state.
+#
+# Picked up by the root manifest's `crates/engines/*` member glob, so the root
+# Cargo.toml is untouched (PLAN R2-2).
+#
+# GRAMMAR PINNING
+# ---------------
+# PLAN P2 says "vendored pinned grammars". These are `=`-pinned registry
+# dependencies rather than generated C committed into the tree, and the
+# substitution is deliberate:
+#
+#   * deny.toml's [sources] section bars git dependencies outright and states
+#     the reason — "the release binaries this project ships must be reproducible
+#     from published crates alone". Vendored C would either arrive through a git
+#     source or through a hand-copied tree with no checksum at all, which is
+#     weaker than what Cargo.lock already gives.
+#   * `=` requirements plus the committed Cargo.lock make the resolved grammar a
+#     fixed, checksummed artifact. There is no version range for cargo to move
+#     within.
+#   * `src/lang.rs` carries the same versions as constants, stamped into every
+#     `measurement_regime`, and `tests/grammar_pins.rs` fails the build if the
+#     constants and this file disagree. So a grammar bump is a visible diff in
+#     two places and re-runs the parse corpus (see fixtures/parse-corpus).
+#
+# The intent of the AC — a grammar cannot drift under a measurement without
+# somebody seeing it — is preserved; the mechanism is the one this repository
+# already trusts everywhere else.
+#
+# The `wasm` feature of tree-sitter pulls wasmtime-c-api, whose dependency tree
+# has not been through the licence gate. `default-features = false` with `std`
+# named explicitly means enabling it would be an edit to this file rather than a
+# side effect of one.
+[package]
+name = "andon-static-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Andon static engine: size, cyclomatic and cognitive complexity over tree-sitter, with parse health first-class."
+
+[dependencies]
+andon-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+
+tree-sitter = { version = "=0.25.10", default-features = false, features = ["std"] }
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-javascript = "=0.23.1"
+tree-sitter-python = "=0.23.6"
+
+[dev-dependencies]
+# The union pin test and the fixture builder tests need real repositories, each
+# in a directory that disappears afterwards. Same reason andon-core takes it.
+tempfile = "3"
+
+# One binary. It is the P2 harness — the matrix legs, the fixture builder, and
+# the parse-corpus runner — and it is explicitly not the product CLI, which
+# arrives at P5b. `tool.name` on the records it writes says `andon-static` for
+# the same reason the spike's says `andon-spike`: a ledger that cannot tell a
+# harness measurement from a product one would let phase numbers be read as
+# release numbers later.
+[[bin]]
+name = "andon-static"
+path = "src/bin/andon-static.rs"
