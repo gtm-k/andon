@@ -73,7 +73,7 @@ fn workspace_root() -> PathBuf {
 fn fixture_dir() -> PathBuf {
     std::env::var_os("ANDON_PERF_FIXTURE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| workspace_root().join("target").join("perf-fixture"))
+        .unwrap_or_else(|| workspace_root().join(".perf-fixture"))
 }
 
 /// Commits and dirty paths, as the generator recorded them.

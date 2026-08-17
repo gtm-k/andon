@@ -18,7 +18,7 @@ measurement of `-O0`.
 |---|---|
 | `series.toml` | The definition: layout, content seed, and the three diff sizes. |
 | `expected.toml` | The pinned commit OIDs generation must produce. |
-| `generate.sh` | The entry point. Builds into `target/perf-fixture/` (git-ignored). |
+| `generate.sh` | The entry point. Builds into `.perf-fixture/` (git-ignored, and deliberately outside `target/`). |
 
 ## Why generated rather than committed
 

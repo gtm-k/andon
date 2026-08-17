@@ -1,3 +1,8 @@
 /target
 **/*.rs.bk
 *.pdb
+
+# The generated perf fixture (fixtures/perf/README.md). Outside target/ on
+# purpose: the Rust build cache manages that directory, and on CI it restored a
+# partial copy that the generator then tried to reuse.
+/.perf-fixture

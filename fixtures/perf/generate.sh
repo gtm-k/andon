@@ -13,17 +13,24 @@
 # longer comparable to the previous run's; that is a ledgered budget decision,
 # not a pin to quietly refresh.
 #
-# Output lands in `target/perf-fixture/`, which is git-ignored: a hundred
-# thousand generated files must never appear in `git status` of the repository
-# being measured.
+# Output lands in `.perf-fixture/`, which is git-ignored: a hundred thousand
+# generated files must never appear in `git status` of the repository being
+# measured.
 #
-# Re-running is cheap. The generator reuses an existing fixture, so CI can cache
-# the directory and the gate pays the build cost once per fixture definition.
+# Deliberately NOT under `target/`. The Rust build cache manages that directory
+# and restored a partial copy of the fixture on CI — a `.git` with no refs in it
+# — which the generator then tried to reuse. Keeping the fixture outside the
+# build tree means no cache has an opinion about it. The generator also verifies
+# completeness now rather than trusting that a `.git` directory implies a
+# working fixture; both fixes, because either alone would have left the other
+# failure mode live.
+#
+# Re-running is cheap: generation is `git fast-import` and takes seconds.
 
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-out="${ANDON_PERF_FIXTURE:-$root/target/perf-fixture}"
+out="${ANDON_PERF_FIXTURE:-$root/.perf-fixture}"
 
 # Release mode is not optional. The generator writes tens of megabytes through a
 # pipe, and a debug build turns seconds into minutes.
