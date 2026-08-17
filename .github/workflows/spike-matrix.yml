@@ -11,6 +11,25 @@
 # shared-files rows), which is why the workflow is theirs to extend rather than
 # a P1.5 artifact.
 #
+# WHO HAS JOINED
+#
+#   P1.5  the spike's three byte counts, over `fixtures/honest/determinism`.
+#   P2    the static family — size, cyclomatic and cognitive complexity, and
+#         parse health — over `crates/engines/static-metrics/fixtures/matrix.toml`.
+#
+# A joining phase brings its own fixture and its own legs rather than adding
+# files to somebody else's fixture. The two fixtures answer the same question
+# about different engines, and a shared one would mean a P3 change could turn a
+# P1.5 leg red. What is shared is the comparator: `andon-spike compare-records`
+# reads a `MeasurementRecord` and cares nothing about which engine produced it,
+# so every joining phase's digests are held to one tested implementation of
+# "byte-identical", with one set of failure messages.
+#
+# P2's fixture carries a deliberately-unparsable file, and that is load-bearing
+# rather than decorative: `completeness: parse-degraded` is INSIDE the per-result
+# digest input, so the matrix proves three operating systems agree about *which*
+# file the parser failed on and by how much — not merely that clean files agree.
+#
 # EXECUTION MODE: dispatch-at-gates (user decision D2)
 #
 # `push` runs one cheap Linux job. The three-OS legs run on `workflow_dispatch`
@@ -86,6 +105,24 @@ jobs:
           spike measure --repo fixture-src --base merge-base:main \
             --head "$head" --no-note --quiet --out record-linux.json
           spike digests --record record-linux.json
+
+      # P2's join, at the same tier and for the same reason: the cheapest place
+      # to find out that the expensive sweep will fail. The static engine has far
+      # more moving parts than the spike's byte counts — four grammars, a
+      # tree-sitter runtime, and a tree walk per file — so a Linux-only digest
+      # table on every push is worth its seconds.
+      - name: Static-metrics fixture digests (cross-check surface)
+        run: |
+          set -euo pipefail
+          static() { cargo run -q -p andon-static-metrics --bin andon-static -- "$@"; }
+          spike() { cargo run -q -p andon-ledger-min --bin andon-spike -- "$@"; }
+          static fixture --dest static-fixture-src --json static-fixture.json
+          static measure \
+            --repo static-fixture-src \
+            --base "$(jq -r .base static-fixture.json)" \
+            --head "$(jq -r .head static-fixture.json)" \
+            --out record-static-linux.json
+          spike digests --record record-static-linux.json
 
   # ----------------------------------------------------------- dispatch tier
   build-fixture:
@@ -258,6 +295,200 @@ jobs:
             --leg macos=legs/record-macos-latest/record-macos-latest.json \
             --leg windows=legs/record-windows-latest/record-windows-latest.json \
             --leg verifier=record-verifier.json             --expect-results "${{ needs.build-fixture.outputs.expect-results }}"
+
+  # ============================================================= P2's join ===
+  #
+  # Same three questions as the spike's legs, asked of the static family:
+  #
+  #   build once, ship          so the comparison does not depend on three
+  #                             operating systems producing identical commit
+  #                             OIDs — a second determinism claim nested inside
+  #                             the one under test.
+  #   clone with the runner's   so a Windows leg gets the CRLF working tree its
+  #     own git config          own git insists on, and the blobs stay what was
+  #                             committed.
+  #   compare per-result        `freshness.measured_at`, `git_version` and
+  #     digests only            `build_oid` differ between honest machines by
+  #                             construction.
+
+  build-static-fixture:
+    name: build the static-metrics fixture
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    outputs:
+      base: ${{ steps.fixture.outputs.base }}
+      head: ${{ steps.fixture.outputs.head }}
+      expect-results: ${{ steps.fixture.outputs.expect_results }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the harness
+        run: cargo build --release -p andon-static-metrics --bin andon-static
+
+      - name: Build and pack the fixture
+        id: fixture
+        run: |
+          set -euo pipefail
+          ./target/release/andon-static fixture \
+            --dest static-fixture-src \
+            --json static-fixture.json
+          echo "base=$(jq -r .base static-fixture.json)" >> "$GITHUB_OUTPUT"
+          echo "head=$(jq -r .head static-fixture.json)" >> "$GITHUB_OUTPUT"
+          # The floor comes from the fixture manifest, never from what this run
+          # happened to measure. `jq -e` fails the step if it is absent, so the
+          # assertion cannot quietly become optional.
+          echo "expect_results=$(jq -e -r .expect_result_count static-fixture.json)" >> "$GITHUB_OUTPUT"
+
+          git clone --quiet --mirror static-fixture-src static-determinism.git
+          git --git-dir=static-determinism.git symbolic-ref HEAD refs/heads/main
+          tar -czf static-determinism.tar.gz static-determinism.git
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: static-determinism-fixture
+          path: |
+            static-determinism.tar.gz
+            static-fixture.json
+          retention-days: 7
+
+  static-measure:
+    name: static measure (${{ matrix.os }})
+    needs: build-static-fixture
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the harness
+        run: cargo build --release -p andon-static-metrics --bin andon-static
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: static-determinism-fixture
+
+      # No `$RUNNER_TEMP`: on Windows it is a backslash path, and every path in
+      # this job goes through bash.
+      - name: Clone the fixture with this runner's own git config
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf static-determinism.tar.gz
+          git clone --quiet static-determinism.git work
+          git config --show-origin --get core.autocrlf || echo "core.autocrlf: unset"
+
+      # Whether this runner mangled the checkout, in git's own terms: the
+      # committed blob OID against the OID of the bytes now on disk, hashed with
+      # every filter off. Printed rather than asserted — a green matrix must not
+      # depend on a runner image's git config staying as it is today.
+      - name: Did this checkout change the bytes?
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in src/clean.ts src/crlf.ts src/mixed.py src/broken.ts; do
+            committed="$(git -C work rev-parse "HEAD:$path")"
+            on_disk="$(git -C work hash-object --no-filters "$path")"
+            if [ "$committed" = "$on_disk" ]; then
+              echo "unchanged  $path  $committed"
+            else
+              echo "MANGLED    $path  blob=$committed disk=$on_disk"
+            fi
+          done
+          echo
+          echo "A MANGLED line is PREMORTEM Story 1's setup, reproduced. The"
+          echo "static engine parses blob bytes, so the digests below must agree"
+          echo "with the other legs regardless of which lines above say what --"
+          echo "including the parse-degraded ones, whose completeness is inside"
+          echo "the digest input."
+
+      - name: Measure
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.build-static-fixture.outputs.base }}
+          HEAD_SHA: ${{ needs.build-static-fixture.outputs.head }}
+        run: |
+          set -euo pipefail
+          bin=./target/release/andon-static
+          [ -x "$bin" ] || bin="${bin}.exe"
+          "$bin" measure \
+            --repo work \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --out "record-static-${{ matrix.os }}.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: record-static-${{ matrix.os }}
+          path: record-static-${{ matrix.os }}.json
+          retention-days: 7
+
+  static-digest-equality:
+    name: static-metrics digests must be byte-identical
+    needs: [build-static-fixture, static-measure]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # Two binaries: the P2 harness to recompute, and the spike's comparator.
+      # `compare-records` reads a `MeasurementRecord` and does not care which
+      # engine produced it, so P2 reuses it rather than shipping a second
+      # cross-leg comparison with its own failure messages.
+      - name: Build the harness and the comparator
+        run: |
+          cargo build --release -p andon-static-metrics --bin andon-static
+          cargo build --release -p andon-ledger-min --bin andon-spike
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: legs
+
+      - name: Recompute as the verifier
+        env:
+          BASE_SHA: ${{ needs.build-static-fixture.outputs.base }}
+          HEAD_SHA: ${{ needs.build-static-fixture.outputs.head }}
+        run: |
+          set -euo pipefail
+          tar -xzf legs/static-determinism-fixture/static-determinism.tar.gz
+          git clone --quiet static-determinism.git verifier-work
+          ./target/release/andon-static measure \
+            --repo verifier-work \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --out record-static-verifier.json
+
+      - name: Per-result digests must be byte-identical
+        run: |
+          set -euo pipefail
+          ./target/release/andon-spike compare-records \
+            --leg linux=legs/record-static-ubuntu-latest/record-static-ubuntu-latest.json \
+            --leg macos=legs/record-static-macos-latest/record-static-macos-latest.json \
+            --leg windows=legs/record-static-windows-latest/record-static-windows-latest.json \
+            --leg verifier=record-static-verifier.json \
+            --expect-results "${{ needs.build-static-fixture.outputs.expect-results }}"
+
+      # The digest table proves the numbers agree. This proves they agree about
+      # the *degraded* file specifically — the assertion the parse-health half of
+      # P2 rests on, and the one a reader of a green matrix would otherwise have
+      # to infer from a row count.
+      - name: Every leg must agree that src/broken.ts was degraded
+        run: |
+          set -euo pipefail
+          for leg in ubuntu-latest macos-latest windows-latest; do
+            file="legs/record-static-${leg}/record-static-${leg}.json"
+            count=$(jq '[.results[]
+              | select(.scope.path == "src/broken.ts")
+              | select(.completeness == "parse-degraded")] | length' "$file")
+            echo "$leg: $count parse-degraded result(s) on src/broken.ts"
+            [ "$count" -gt 0 ] || {
+              echo "::error::$leg did not mark src/broken.ts as parse-degraded" >&2
+              exit 1
+            }
+          done
 
   scenarios:
     name: verdict set (${{ matrix.os }})
