@@ -142,15 +142,19 @@ fn cases(parsed: &Parsed) -> Vec<(String, u32, u32)> {
 fn js_cases(parsed: &Parsed) -> Vec<(String, u32, u32)> {
     let mut out = Vec::new();
     for node in parsed.nodes() {
-        // The inner half of `it.each(table)(name, fn)` names no body; the outer
-        // one does, and counting both would report one case twice.
-        if is_curried_inner(node) {
-            continue;
-        }
+        // Call sites first: `is_curried_inner` costs O(depth) because
+        // tree-sitter's `parent()` does, and asking it of every node is the
+        // quadratic that made a deeply nested file take seconds
+        // (`syntax::MAX_ANCESTOR_WALK`).
         let Some(callee) = callee_text(parsed, node) else {
             continue;
         };
         if !JS_CASE.contains(&first_segment(&callee)) {
+            continue;
+        }
+        // The inner half of `it.each(table)(name, fn)` names no body; the outer
+        // one does, and counting both would report one case twice.
+        if is_curried_inner(node) {
             continue;
         }
         let name = node

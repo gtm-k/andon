@@ -17,7 +17,7 @@
 use crate::change::{is_test_path, ChangeView};
 use crate::detectors::{Detector, Finding, Outcome};
 use crate::syntax::{
-    callee_name, callee_text, each_rows, first_segment, is_curried_inner, last_segment,
+    ancestors, callee_name, callee_text, each_rows, first_segment, is_curried_inner, last_segment,
     names_a_skip, Parsed,
 };
 use andon_core::schema::enums::TamperSignal;
@@ -133,16 +133,22 @@ fn count(path: &str, source: &[u8]) -> Counts {
 fn count_js(parsed: &Parsed) -> Counts {
     let mut counts = Counts::default();
     for node in parsed.nodes() {
-        // `it.each(table)(name, fn)` is two nested calls naming one test. The
-        // outer carries the name and body, so the inner is skipped.
-        if is_curried_inner(node) {
-            continue;
-        }
+        // Cheapest filter first, and the order is load-bearing rather than
+        // stylistic. `is_curried_inner` calls `Node::parent()`, which in
+        // tree-sitter walks from the root and costs O(depth); asking it of every
+        // node made a 5000-deep file take five seconds in release. Asking it
+        // only of call sites — three in that file — costs nothing. See
+        // `syntax::MAX_ANCESTOR_WALK`.
         let Some(callee) = callee_text(parsed, node) else {
             continue;
         };
         let base = first_segment(&callee);
         if !JS_CASE.contains(&base) {
+            continue;
+        }
+        // `it.each(table)(name, fn)` is two nested calls naming one test. The
+        // outer carries the name and body, so the inner is skipped.
+        if is_curried_inner(node) {
             continue;
         }
         // A table-driven case is one call and *n* tests. Counting it as one
@@ -169,16 +175,10 @@ fn count_js(parsed: &Parsed) -> Counts {
 /// context. A `describe.skip` wrapping twenty cases takes twenty cases out of
 /// the run while every one of them still reads as `it(...)` in the diff.
 fn in_skipped_group(parsed: &Parsed, node: tree_sitter::Node<'_>) -> bool {
-    let mut parent = node.parent();
-    while let Some(current) = parent {
-        if let Some(name) = callee_name(parsed, current) {
-            if JS_GROUP.contains(&first_segment(&name)) && names_a_skip(&name) {
-                return true;
-            }
-        }
-        parent = current.parent();
-    }
-    false
+    ancestors(node).into_iter().any(|current| {
+        callee_name(parsed, current)
+            .is_some_and(|name| JS_GROUP.contains(&first_segment(&name)) && names_a_skip(&name))
+    })
 }
 
 fn count_python(parsed: &Parsed) -> Counts {
@@ -197,8 +197,7 @@ fn count_python(parsed: &Parsed) -> Counts {
 
         // Decorators sit on the `decorated_definition` that wraps the function,
         // so the skip marker is found by looking up rather than down.
-        let mut parent = node.parent();
-        while let Some(node) = parent {
+        for node in ancestors(node) {
             if node.kind() == "decorated_definition" {
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
@@ -215,7 +214,6 @@ fn count_python(parsed: &Parsed) -> Counts {
                 }
                 break;
             }
-            parent = node.parent();
         }
     }
     counts

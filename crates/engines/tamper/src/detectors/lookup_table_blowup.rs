@@ -24,7 +24,7 @@
 
 use crate::change::{is_test_path, ChangeView};
 use crate::detectors::{Detector, Finding, Outcome};
-use crate::syntax::Parsed;
+use crate::syntax::{ancestors, Parsed};
 use andon_core::schema::enums::TamperSignal;
 use tree_sitter::Node;
 
@@ -185,15 +185,13 @@ fn tables(parsed: &Parsed) -> Vec<(u32, usize)> {
 }
 
 fn encloses(node: Node<'_>) -> bool {
-    let mut parent = node.parent();
-    while let Some(current) = parent {
+    for current in ancestors(node) {
         if COLLECTION_KINDS.contains(&current.kind()) {
             return true;
         }
         if FUNCTION_KINDS.contains(&current.kind()) {
             return false;
         }
-        parent = current.parent();
     }
     false
 }
@@ -207,15 +205,14 @@ fn elements(node: Node<'_>) -> usize {
 }
 
 /// Whether a node sits inside a function body.
+///
+/// Bounded by [`ancestors`]: a literal nested more than `MAX_ANCESTOR_WALK`
+/// deep inside a function is not reported, which is the deliberate trade for
+/// not making `Node::parent()`'s O(depth) cost quadratic.
 fn inside_function(node: Node<'_>) -> bool {
-    let mut parent = node.parent();
-    while let Some(current) = parent {
-        if FUNCTION_KINDS.contains(&current.kind()) {
-            return true;
-        }
-        parent = current.parent();
-    }
-    false
+    ancestors(node)
+        .into_iter()
+        .any(|current| FUNCTION_KINDS.contains(&current.kind()))
 }
 
 #[cfg(test)]

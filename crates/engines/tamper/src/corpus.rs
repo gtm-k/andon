@@ -500,23 +500,29 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Result<
     if !dir.is_dir() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(dir).map_err(|e| io(dir, e))? {
-        let entry = entry.map_err(|e| io(dir, e))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect(root, &path, out)?;
-            continue;
+    // Iterative, like every other tree walk in this crate. A directory tree is
+    // not PR-controlled the way a parse tree is, but "the walkers are iterative"
+    // is a property worth being able to state without exceptions.
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(|e| io(&dir, e))? {
+            let entry = entry.map_err(|e| io(&dir, e))?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = file_name(&path);
+            if name == "README.md" || name.starts_with("CORPUS-") {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .expect("walked from root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push((relative, std::fs::read(&path).map_err(|e| io(&path, e))?));
         }
-        let name = file_name(&path);
-        if name == "README.md" || name.starts_with("CORPUS-") {
-            continue;
-        }
-        let relative = path
-            .strip_prefix(root)
-            .expect("walked from root")
-            .to_string_lossy()
-            .replace('\\', "/");
-        out.push((relative, std::fs::read(&path).map_err(|e| io(&path, e))?));
     }
     Ok(())
 }

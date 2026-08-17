@@ -212,8 +212,37 @@ pub fn callee_text(parsed: &Parsed, node: Node<'_>) -> Option<String> {
     Some(parsed.text(callee))
 }
 
+/// How far up an ancestor walk may go before it stops asking.
+///
+/// # Why every ancestor walk is bounded
+///
+/// `Node::parent()` is not a pointer dereference. tree-sitter nodes carry no
+/// parent link, so `parent()` walks down from the root to find the node again —
+/// it costs O(depth), not O(1). Calling it once per node over a deeply nested
+/// file is therefore O(n·depth), and measured that way: a 10 KB TypeScript file
+/// of 5000 nested array literals took **5.1 seconds per detector** in release,
+/// against a fast-lane cold cap of ten seconds for the whole measurement. That
+/// is a denial of measurement on PR-controlled input, reachable by anyone who
+/// can open a pull request.
+///
+/// Two rules follow, and both are applied throughout this crate:
+///
+/// 1. **Never call `parent()` per node.** Filter to the nodes that need it
+///    first — in practice the handful of call sites in a file, not all nine
+///    thousand of its nodes.
+/// 2. **Bound the walk.** A construct nested more than this deep is not
+///    something these rules can meaningfully classify, and refusing to answer is
+///    cheaper than answering slowly.
+///
+/// Chosen far above anything hand-written: real code rarely exceeds twenty.
+pub const MAX_ANCESTOR_WALK: usize = 256;
+
 /// Whether this call is the callee of another call — the inner half of a
 /// curried invocation like `it.each(table)(name, fn)`.
+///
+/// Calls `Node::parent()`, so it is for call nodes only — see
+/// [`MAX_ANCESTOR_WALK`] on why that distinction is a performance property
+/// rather than a tidiness one.
 ///
 /// Both halves are `call_expression`s and both name `it`, so a walk that
 /// counted every matching call would count one test twice. The outer call is
@@ -256,6 +285,24 @@ pub fn each_rows(node: Node<'_>) -> Option<usize> {
     // returns `None` rather than a row count.
     let _ = property;
     Some(rows)
+}
+
+/// The ancestors of a node, nearest first, bounded by [`MAX_ANCESTOR_WALK`].
+///
+/// The one way this crate walks upward. Collecting into a `Vec` rather than
+/// exposing an iterator keeps the bound in one place, and the bound is what
+/// keeps a hostile nesting depth from turning a detector into a hang.
+pub fn ancestors<'a>(node: Node<'a>) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    let mut parent = node.parent();
+    while let Some(current) = parent {
+        if out.len() >= MAX_ANCESTOR_WALK {
+            break;
+        }
+        out.push(current);
+        parent = current.parent();
+    }
+    out
 }
 
 /// The **name** a call invokes, with any arguments stripped.
