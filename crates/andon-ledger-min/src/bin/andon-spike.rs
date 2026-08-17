@@ -12,6 +12,7 @@
 //!                      [--fork-tier] [--no-attest] [--out <FILE>]
 //! andon-spike scenario prepare --manifest <FILE> --dest <DIR> [--json <FILE>]
 //! andon-spike scenario check   --manifest <FILE> --repo <DIR>
+//! andon-spike digests --record <FILE>
 //! andon-spike compare-records --leg <LABEL>=<FILE> --leg <LABEL>=<FILE> [...]
 //! andon-spike notes <list|copy|fetch|merge|push> --repo <PATH> [...]
 //!
@@ -45,7 +46,7 @@ use andon_ledger_min::spike;
 use andon_ledger_min::verify::{attest, verify, VerifyRequest};
 
 const USAGE: &str = "\
-usage: andon-spike <measure|verify|scenario|compare-records|notes> [OPTIONS]
+usage: andon-spike <measure|verify|scenario|digests|compare-records|notes> [OPTIONS]
        run `andon-spike <command> --help` for the options of one command";
 
 fn main() -> ExitCode {
@@ -137,6 +138,7 @@ fn run() -> Result<ExitCode, String> {
         "measure" => cmd_measure(&flags),
         "verify" => cmd_verify(&flags),
         "scenario" => cmd_scenario(&flags),
+        "digests" => cmd_digests(&flags),
         "compare-records" => cmd_compare_records(&flags),
         "notes" => cmd_notes(&flags),
         other => Err(format!("unknown command '{other}'\n{USAGE}")),
@@ -304,6 +306,25 @@ fn cmd_scenario(flags: &Flags) -> Result<ExitCode, String> {
         }
         other => Err(format!("unknown scenario action '{other}'")),
     }
+}
+
+/// Print one record's per-result digests, sorted.
+///
+/// The cheap half of the matrix. `compare-records` needs two legs and a runner
+/// that has both; this prints one leg's answer in a stable form that a human can
+/// diff against another leg's log — which is how the Windows and Linux legs get
+/// cross-checked before anyone spends a macOS minute on the full sweep.
+fn cmd_digests(flags: &Flags) -> Result<ExitCode, String> {
+    let record = records::read(Path::new(flags.require("record")?)).map_err(|e| e.to_string())?;
+    println!(
+        "tuple {}..{}",
+        record.compare_context.base_oid, record.compare_context.head_oid
+    );
+    for row in records::digest_rows(&record).map_err(|e| e.to_string())? {
+        let flag = if row.deterministic { "d" } else { "-" };
+        println!("{} {flag} {} {}", row.digest, row.metric_id, row.scope);
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_compare_records(flags: &Flags) -> Result<ExitCode, String> {

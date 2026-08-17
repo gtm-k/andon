@@ -1,0 +1,339 @@
+# The standing cross-OS determinism gate (PLAN B4), born at P1.5.
+#
+# WHAT THIS PROVES
+#
+# One question, asked of real bytes on three operating systems: **does the same
+# change measure to the same per-result digests everywhere?** PREMORTEM T1 rates
+# a "no" as fatal — CRLF worktrees against LF checkouts, unpinned system git,
+# and randomized map iteration each independently break the digest compare, and
+# a trust tool whose headline verdict fires falsely on honest work has no second
+# chance. Every engine phase from P2 onward joins these fixtures (PLAN P2/P3/P4
+# shared-files rows), which is why the workflow is theirs to extend rather than
+# a P1.5 artifact.
+#
+# EXECUTION MODE: dispatch-at-gates (user decision D2)
+#
+# `push` runs one cheap Linux job. The three-OS legs run on `workflow_dispatch`
+# at each phase-review gate — "standing" means required green at every gate, not
+# on every push. That reconciles the standing-matrix requirement with the
+# Actions conserve rule at zero new spend, and it matters most for macOS, which
+# bills ten minutes for every one.
+#
+# `[spike-matrix]` in a commit message triggers the expensive legs too. It is
+# not a second policy: dispatching is still the deliberate act, and the marker
+# exists so that a workflow living only on a feature branch can be exercised
+# before it reaches the default branch.
+#
+# WHY THE FIXTURE IS BUILT ONCE AND SHIPPED
+#
+# Per-result digests bind `(base_oid, head_oid)`. Building the fixture
+# separately on each leg would make the comparison depend on three operating
+# systems producing byte-identical commit OIDs — a second determinism claim,
+# nested inside the one under test, failing the same way and telling you
+# nothing about which. So one Linux job builds it, ships it as a bare
+# repository, and every leg clones the same objects.
+#
+# Each leg then clones **with its runner's own git config**. On Windows that
+# means `core.autocrlf=true` and a working tree full of CRLF nobody committed —
+# PREMORTEM Story 1's exact setup. The compared lane reads blobs, so the digest
+# does not notice. The `worktree vs blob` step prints both so the mangling is
+# visible in the log rather than asserted in a comment.
+
+name: spike-matrix
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FIXTURE_MANIFEST: fixtures/honest/determinism/manifest.toml
+
+jobs:
+  # ---------------------------------------------------------------- push tier
+  linux-self-check:
+    name: linux self-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # The whole verdict set, the T4 concurrency and squash fixture, and the
+      # binary-separation guard. Cheap, Linux, and the thing that catches a
+      # broken kernel before anyone spends a macOS minute on it.
+      - name: Verdict set, T4 fixture, separation guard
+        run: cargo test -p andon-ledger-min -- --nocapture
+
+      # The cheap two-thirds of the matrix. The fixture builder pins commit
+      # identity and timestamps, so the determinism fixture has the same commit
+      # OIDs everywhere — which means this job's digest table can be diffed
+      # against one produced on a developer's machine without spending a paid
+      # runner minute. Two operating systems agreeing is not the gate, but it is
+      # the cheapest way to find out that the third will not, before dispatching
+      # the sweep that bills macOS at ten times the rate.
+      - name: Determinism fixture digests (cross-check surface)
+        run: |
+          set -euo pipefail
+          spike() { cargo run -q -p andon-ledger-min --bin andon-spike -- "$@"; }
+          spike scenario prepare \
+            --manifest "$FIXTURE_MANIFEST" --dest fixture-src --json fixture.json
+          head="$(jq -r .head fixture.json)"
+          spike measure --repo fixture-src --base merge-base:main \
+            --head "$head" --no-note --quiet --out record-linux.json
+          spike digests --record record-linux.json
+
+  # ----------------------------------------------------------- dispatch tier
+  build-fixture:
+    name: build the determinism fixture
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[spike-matrix]')
+    outputs:
+      head: ${{ steps.fixture.outputs.head }}
+      trusted-branch: ${{ steps.fixture.outputs.trusted_branch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the spike binaries
+        run: cargo build --release -p andon-ledger-min
+
+      - name: Build and pack the fixture
+        id: fixture
+        run: |
+          set -euo pipefail
+          ./target/release/andon-spike scenario prepare \
+            --manifest "$FIXTURE_MANIFEST" \
+            --dest fixture-src \
+            --json fixture.json
+          echo "head=$(jq -r .head fixture.json)" >> "$GITHUB_OUTPUT"
+          echo "trusted_branch=$(jq -r .trusted_branch fixture.json)" >> "$GITHUB_OUTPUT"
+
+          # `--mirror` so every ref travels, then the ledger refs are dropped:
+          # each leg must write its OWN self-report, and shipping the Linux
+          # one would give the other legs a note to agree with rather than a
+          # measurement to make.
+          git clone --quiet --mirror fixture-src determinism.git
+          for ref in refs/notes/andon-measure refs/notes/andon-attest; do
+            git --git-dir=determinism.git update-ref -d "$ref" || true
+          done
+          git --git-dir=determinism.git symbolic-ref HEAD \
+            "refs/heads/$(jq -r .trusted_branch fixture.json)"
+          tar -czf determinism.tar.gz determinism.git
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: determinism-fixture
+          path: |
+            determinism.tar.gz
+            fixture.json
+          retention-days: 7
+
+  agent-measure:
+    name: agent measure (${{ matrix.os }})
+    needs: build-fixture
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the spike binaries
+        run: cargo build --release -p andon-ledger-min
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: determinism-fixture
+
+      # No `$RUNNER_TEMP`: on Windows it is a backslash path, and every path in
+      # this job goes through bash. The workspace is a forward-slash path on all
+      # three runners.
+      - name: Clone the fixture with this runner's own git config
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf determinism.tar.gz
+          git clone --quiet determinism.git work
+          echo "--- what this runner's git does to a checkout ---"
+          git config --show-origin --get core.autocrlf || echo "core.autocrlf: unset"
+          git -C work config --show-origin --get core.eol || echo "core.eol: unset"
+
+      - name: Worktree bytes vs blob bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "--- src/lf.ts as committed (blob) ---"
+          git -C work show HEAD:src/lf.ts | od -c | head -3
+          echo "--- src/lf.ts on disk (worktree) ---"
+          od -c work/src/lf.ts | head -3
+          echo "The compared lane reads the first of these. If they differ on"
+          echo "this runner, that difference is exactly what PREMORTEM T1 says"
+          echo "must not reach a digest."
+
+      - name: Measure
+        shell: bash
+        env:
+          HEAD_SHA: ${{ needs.build-fixture.outputs.head }}
+        run: |
+          set -euo pipefail
+          spike=./target/release/andon-spike
+          [ -x "$spike" ] || spike="${spike}.exe"
+          "$spike" measure \
+            --repo work \
+            --base "merge-base:origin/${{ needs.build-fixture.outputs.trusted-branch }}" \
+            --head "$HEAD_SHA" \
+            --out "record-${{ matrix.os }}.json"
+          echo "--- record ---"
+          cat "record-${{ matrix.os }}.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: record-${{ matrix.os }}
+          path: record-${{ matrix.os }}.json
+          retention-days: 7
+
+  verifier-recompute:
+    name: linux verifier recompute and digest equality
+    needs: [build-fixture, agent-measure]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the spike binaries
+        run: cargo build --release -p andon-ledger-min
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: legs
+
+      - name: Recompute as the verifier
+        env:
+          HEAD_SHA: ${{ needs.build-fixture.outputs.head }}
+        run: |
+          set -euo pipefail
+          tar -xzf legs/determinism-fixture/determinism.tar.gz
+          git clone --quiet determinism.git verifier-work
+          ./target/release/andon-spike measure \
+            --repo verifier-work \
+            --base "merge-base:origin/${{ needs.build-fixture.outputs.trusted-branch }}" \
+            --head "$HEAD_SHA" \
+            --no-note \
+            --out record-verifier.json
+
+      # The assertion the whole workflow exists for. Per-result digests only:
+      # `freshness.measured_at`, `compare_context.git_version` and
+      # `tool.build_oid` differ between honest machines by construction and are
+      # outside the digest input for that reason.
+      - name: Per-result digests must be byte-identical
+        run: |
+          set -euo pipefail
+          ./target/release/andon-spike compare-records \
+            --leg linux=legs/record-ubuntu-latest/record-ubuntu-latest.json \
+            --leg macos=legs/record-macos-latest/record-macos-latest.json \
+            --leg windows=legs/record-windows-latest/record-windows-latest.json \
+            --leg verifier=record-verifier.json
+
+  scenarios:
+    name: verdict set (${{ matrix.os }})
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[spike-matrix]')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # "honest -> `confirmed` on every matrix leg" (PLAN B5) is a claim about
+      # every leg, so the whole verdict set runs on every leg. The should-fail
+      # rows come along for free and are worth having: a tamper detector that
+      # only catches things on Linux is not a tamper detector.
+      - name: The verdict set, on this OS
+        run: cargo test -p andon-ledger-min -- --nocapture
+
+  action-smoke:
+    name: through the action (${{ matrix.scenario }})
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[spike-matrix]')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The first leg deliberately omits `spike-bin`, so the action's own
+          # build step is exercised rather than only its verify step.
+          - scenario: determinism
+            family: honest
+            prebuilt: false
+          - scenario: moving-main
+            family: honest
+            prebuilt: true
+          - scenario: rebased-pr
+            family: honest
+            prebuilt: true
+          - scenario: version-skew
+            family: honest
+            prebuilt: true
+          - scenario: inflated-metric
+            family: gamed
+            prebuilt: true
+          - scenario: flipped-deterministic
+            family: gamed
+            prebuilt: true
+          - scenario: fabricated-base
+            family: gamed
+            prebuilt: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the spike binaries
+        run: cargo build --release -p andon-ledger-min
+
+      # Stage the scenario: build the repository, run the agent-side
+      # measurement, and let the adversary do its work where the manifest says
+      # so. Everything up to the point CI takes over.
+      - name: Prepare
+        id: prepare
+        run: |
+          set -euo pipefail
+          ./target/release/andon-spike scenario prepare \
+            --manifest "fixtures/${{ matrix.family }}/${{ matrix.scenario }}/manifest.toml" \
+            --dest "scenario-repo" \
+            --json scenario.json
+          echo "head=$(jq -r .head scenario.json)" >> "$GITHUB_OUTPUT"
+          echo "trusted=$(jq -r .trusted_branch scenario.json)" >> "$GITHUB_OUTPUT"
+
+      # The point of this job: the verdict comes out of the composite action,
+      # through its YAML, not out of a Rust test calling the same functions.
+      - name: Attest
+        id: attest
+        uses: ./action
+        with:
+          repo-path: scenario-repo
+          head-sha: ${{ steps.prepare.outputs.head }}
+          trusted-branch: ${{ steps.prepare.outputs.trusted }}
+          spike-bin: ${{ matrix.prebuilt && './target/release/andon-spike' || '' }}
+
+      # Read back the note the action actually wrote and hold it against the
+      # expectation committed in the manifest. Checking the step output alone
+      # would prove the action returned a string; this proves the ledger says so.
+      - name: The attest note must match the committed expectation
+        run: |
+          set -euo pipefail
+          echo "action reported: ${{ steps.attest.outputs.attestation }}"
+          ./target/release/andon-spike scenario check \
+            --manifest "fixtures/${{ matrix.family }}/${{ matrix.scenario }}/manifest.toml" \
+            --repo scenario-repo

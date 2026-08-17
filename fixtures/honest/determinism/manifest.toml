@@ -112,6 +112,18 @@ text = "export const 名前 = '新值';\nexport const 数 = 77;\nexport const �
 path = "src/新增.ts"
 text = "export const 新 = 1;\r\nexport const 增 = 2;\n"
 
+# Touched so that every hard file is in the *changed* set and therefore in the
+# compare set. A fixture whose difficult bytes sit outside the diff is a fixture
+# whose difficult bytes are never measured — the digests would agree across the
+# matrix because nothing hard was ever hashed.
+[[step.file]]
+path = "src/mixed.ts"
+text = "one\r\ntwo\nthree\rfour\r\nfive\nsix\r\n"
+
+[[step.file]]
+path = "src/目录/子目录/文件二.ts"
+text = "export const 二 = 2;\r\nexport const 三 = 33;\r\nexport const 四 = 4;\r\n"
+
 [[step]]
 kind = "measure"
 head = "head"

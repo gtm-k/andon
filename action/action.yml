@@ -1,0 +1,186 @@
+# The Andon verifier, as a composite action.
+#
+# This is the CI half of the two-channel trust model: an agent's measurement is
+# self-reported until something the agent does not control recomputes it. That
+# something is this action.
+#
+# WHAT IT DOES, AND WHY EACH STEP EXISTS
+#
+# 1. Pin the checkout to the PR head SHA, and fail loudly if it cannot.
+#    GitHub's `pull_request` event checks out a *synthetic merge commit* by
+#    default — `refs/pull/N/merge`, a commit that exists in no branch and that
+#    the agent never measured. Verifying that instead of the PR head would make
+#    the tuple unequal on every honest PR in the world and report
+#    `unwitnessed-base-mismatch` forever (PLAN B3). The binary checks this too;
+#    the belt is here so a workflow author sees the mistake at the step that
+#    caused it.
+# 2. Fetch the ledger, when asked. Notes refs do not travel with a normal fetch
+#    and they do not travel with fork PRs at all (PREMORTEM T5). Fork transport
+#    via the commit-trailer digest is P9's; what this action does is fetch the
+#    refs when a remote is named, and behave correctly when there is nothing to
+#    fetch — an absent self-report is `unwitnessed`, not an error.
+# 3. Recompute and attest. The verifier resolves the base for itself as
+#    merge-base(trusted branch, head), compares per-result digests conditioned
+#    on tuple equality, classifies a tuple mismatch per R2-4, and writes the
+#    result to refs/notes/andon-attest.
+#
+# WHAT IT DELIBERATELY DOES NOT DO
+#
+# Set a check conclusion. The attestation value is an output; mapping all six
+# values onto green/red/neutral/yellow is PLAN P9's acceptance criterion, and so
+# is the two-axis rule that composes the attestation with the verifier's own
+# verdict. This action reports what it found and lets the workflow decide, which
+# is also why `verify` exits zero on `divergent`: finding tampering is this step
+# succeeding.
+#
+# TRUST DISCLOSURE
+#
+# v1 attestation trust is GitHub Actions provenance, not a signature. Anyone
+# with push access to the repository can write refs/notes/andon-attest by hand.
+# See docs/trust-boundary.md; sigstore signing is the named v1.5 hardening.
+
+name: Andon attest (P1.5 spike)
+description: >-
+  Recompute a change's deterministic measurements from a clean checkout pinned
+  to the PR head SHA, compare them against the agent's self-report, and write an
+  attestation to refs/notes/andon-attest.
+
+inputs:
+  repo-path:
+    description: Path to the repository to verify.
+    required: false
+    default: "."
+  head-sha:
+    description: >-
+      The commit under verification. On a pull_request workflow this is
+      github.event.pull_request.head.sha — never github.sha, which is the
+      synthetic merge commit.
+    required: true
+  trusted-branch:
+    description: The branch the verifier trusts, e.g. origin/main.
+    required: false
+    default: origin/main
+  spike-bin:
+    description: >-
+      Path to a prebuilt andon-spike binary. When empty the action builds one
+      from the checkout it is running in.
+    required: false
+    default: ""
+  fetch-notes-from:
+    description: >-
+      Remote to fetch the ledger refs from before verifying. Empty means the
+      ledger is already local, which is what the fixture scenarios stage.
+    required: false
+    default: ""
+  fork-tier:
+    description: >-
+      Verify as an unprivileged fork job, where no self-report is expected to be
+      available (PREMORTEM T5).
+    required: false
+    default: "false"
+  clean:
+    description: >-
+      Reset and clean the working tree before recomputing. The compared lane
+      reads git blobs and never the working tree, so this changes no digest —
+      it is here so that "clean checkout" is a fact about the run rather than a
+      claim about the code. Ignored files are deliberately left alone (`git
+      clean -fd`, not `-fdx`): a repo-path pointing at the workspace would
+      otherwise delete target/ and with it the binary this action just built.
+    required: false
+    default: "true"
+
+outputs:
+  attestation:
+    description: >-
+      One of confirmed | confirmed-static | divergent | unwitnessed |
+      unwitnessed-version-skew | unwitnessed-base-mismatch.
+    value: ${{ steps.verify.outputs.attestation }}
+
+runs:
+  using: composite
+  steps:
+    # Building first, and only then touching any working tree. The other order
+    # is a foot-gun: `clean` on a repo-path that happens to be the workspace
+    # would delete the binary the previous step had just produced.
+    - name: Build the verifier
+      if: inputs.spike-bin == ''
+      shell: bash
+      run: cargo build --release -p andon-ledger-min --bin andon-spike
+
+    - name: Resolve the verifier binary
+      id: bin
+      shell: bash
+      env:
+        SPIKE_BIN: ${{ inputs.spike-bin }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        if [ -n "$SPIKE_BIN" ]; then
+          resolved="$SPIKE_BIN"
+        else
+          # `github.action_path` is action/, so the workspace root is its parent.
+          resolved="${ACTION_PATH}/../target/release/andon-spike"
+          [ -x "$resolved" ] || resolved="${resolved}.exe"
+        fi
+        [ -x "$resolved" ] || { echo "::error::no andon-spike binary at $resolved" >&2; exit 1; }
+        echo "path=$resolved" >> "$GITHUB_OUTPUT"
+
+    - name: Pin the checkout to the head SHA
+      shell: bash
+      env:
+        REPO_PATH: ${{ inputs.repo-path }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        CLEAN: ${{ inputs.clean }}
+      run: |
+        set -euo pipefail
+        cd "$REPO_PATH"
+        # Inputs reach the script through the environment rather than through
+        # ${{ }} interpolation: direct interpolation pastes the value into the
+        # shell source before bash parses it, so anything shell-significant in
+        # it executes. Same rule the P0 CI workflow states for github.event.
+        if ! git rev-parse --verify --quiet "${HEAD_SHA}^{commit}" >/dev/null; then
+          echo "::error::${HEAD_SHA} is not a commit in this checkout." >&2
+          echo "Fetch the PR head before running this action; verifying the" >&2
+          echo "synthetic merge ref instead would make every honest PR a" >&2
+          echo "tuple mismatch (PLAN B3)." >&2
+          exit 1
+        fi
+        git checkout --quiet --detach "$HEAD_SHA"
+        if [ "$CLEAN" = "true" ]; then
+          git reset --quiet --hard "$HEAD_SHA"
+          git clean -qfd
+        fi
+        echo "verifying $(git rev-parse HEAD)"
+
+    - name: Fetch the ledger
+      if: inputs.fetch-notes-from != ''
+      shell: bash
+      env:
+        SPIKE: ${{ steps.bin.outputs.path }}
+        REPO_PATH: ${{ inputs.repo-path }}
+        REMOTE: ${{ inputs.fetch-notes-from }}
+      run: |
+        set -euo pipefail
+        # A missing ledger is an answer, not a failure: it becomes `unwitnessed`.
+        # So the fetch reports what it found and the run continues either way.
+        for ref in measure attest; do
+          "$SPIKE" notes fetch --repo "$REPO_PATH" --ref "$ref" --remote "$REMOTE"
+          "$SPIKE" notes merge --repo "$REPO_PATH" --ref "$ref"
+        done
+
+    - name: Recompute and attest
+      id: verify
+      shell: bash
+      env:
+        SPIKE: ${{ steps.bin.outputs.path }}
+        REPO_PATH: ${{ inputs.repo-path }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        TRUSTED_BRANCH: ${{ inputs.trusted-branch }}
+        FORK_TIER: ${{ inputs.fork-tier }}
+      run: |
+        set -euo pipefail
+        args=(verify --repo "$REPO_PATH" --head "$HEAD_SHA" --trusted-branch "$TRUSTED_BRANCH")
+        if [ "$FORK_TIER" = "true" ]; then
+          args+=(--fork-tier)
+        fi
+        "$SPIKE" "${args[@]}"
