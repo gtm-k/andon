@@ -159,6 +159,17 @@ impl MeasurementResult {
     /// result, because the tuple lives once on the record: binding it here means
     /// a digest is only ever meaningful for the base/head it was sealed against.
     pub fn seal(&mut self, ctx: &CompareContext) -> Result<(), CanonicalError> {
+        // Cleared first, so a failed seal leaves no digest rather than the
+        // previous one. Re-sealing a result whose contents have since become
+        // unserializable is exactly when this matters: the error is returned
+        // either way, but a caller that logs and carries on would otherwise be
+        // holding a record that still looks sealed and whose digest now
+        // describes a value it no longer holds. An absent digest is a visible
+        // problem; a stale one is indistinguishable from a valid seal.
+        //
+        // Safe by construction: `digest` is not part of `ResultDigestInput`, so
+        // clearing it cannot change the digest being computed.
+        self.digest = String::new();
         self.digest = canonical::digest(&self.digest_input(ctx))?;
         Ok(())
     }

@@ -52,6 +52,31 @@ fn a_ratio_that_cannot_be_carried_never_reaches_a_digest() {
     }
 }
 
+/// A failed re-seal leaves no digest, rather than the previous one.
+///
+/// PROBE14. The test above starts from an unsealed result, so it never covered
+/// the case where a *valid* digest is already in place: seal, mutate the value
+/// to something unserializable, re-seal. The error was returned correctly, but
+/// the old digest survived — a record that still looked sealed while its digest
+/// described a value it no longer held. An absent digest is a visible problem; a
+/// stale one is indistinguishable from a good seal.
+#[test]
+fn a_failed_reseal_leaves_no_stale_digest() {
+    let ctx = sample_compare_context();
+    let mut result = sample_result();
+    let original = result.digest.clone();
+    assert!(!original.is_empty(), "the fixture arrives sealed");
+
+    result.value = MetricValue::Ratio(f64::NAN);
+    assert!(result.seal(&ctx).is_err(), "NaN must not seal");
+    assert!(
+        result.digest.is_empty(),
+        "a failed re-seal left the previous digest in place: {}",
+        result.digest
+    );
+    assert_ne!(result.digest, original);
+}
+
 /// The rejection holds on the way in as well.
 ///
 /// NaN cannot be spelled in JSON, but `1e308` can, so a stored or hostile record
