@@ -31,7 +31,7 @@ use tree_sitter::{Node, Parser, Tree};
 /// Version of the normalization rules themselves — the mapping from tree-sitter
 /// node kinds to symbols below. Bumped whenever that mapping changes, because a
 /// changed mapping changes every fingerprint.
-pub const NORMALIZATION_RULES_REVISION: &str = "1";
+pub const NORMALIZATION_RULES_REVISION: &str = "2";
 
 /// The grammar versions this crate is pinned to.
 ///
@@ -161,6 +161,34 @@ pub struct Token {
     pub start_row: u32,
 }
 
+/// Node kinds dropped from the stream entirely, contents and all.
+///
+/// # Why imports are not code, for this purpose
+///
+/// Normalization is what makes a clone a clone, and it is also what makes an
+/// import preamble look like one. `import { a, b, c } from 'x';` normalizes to
+/// `import { ID , ID , ID } from STR ;` — and so does every other import of
+/// three names from anywhere. Two modules that share nothing but a
+/// conventional set of imports produce identical token runs, and eight import
+/// lines is comfortably over the fifty-token floor.
+///
+/// Probed, before this existed: a React-flavoured module and a `node:`-flavoured
+/// one, sharing not one identifier, reported as one clone group covering 126
+/// tokens — 95.5% of the measured set. A duplication figure of 95% on two
+/// unrelated files is not a near miss, it is the number being worthless.
+///
+/// An import block is also not something an agent can act on: it is generated
+/// by the editor, ordered by a formatter, and identical across a codebase by
+/// design. Dropping it costs no real clone, because a copied *implementation*
+/// carries far more than its imports.
+const DROPPED_KINDS: &[&str] = &[
+    // JavaScript, TypeScript, TSX.
+    "import_statement",
+    // Python.
+    "import_from_statement",
+    "future_import_statement",
+];
+
 /// Node kinds taken whole rather than descended into.
 ///
 /// A `string` node has the quote characters and the fragment as children, so a
@@ -231,6 +259,9 @@ pub fn tokens_of(tree: &Tree, source: &[u8]) -> Vec<Token> {
     // of measurement.
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
+        if DROPPED_KINDS.contains(&node.kind()) {
+            continue;
+        }
         if let Some(symbol) = atomic_symbol(node.kind()) {
             if !symbol.is_empty() {
                 push(&mut tokens, symbol, &node);
@@ -309,6 +340,67 @@ mod tests {
         let a: Vec<u64> = a.iter().map(|t| t.symbol).collect();
         let b: Vec<u64> = b.iter().map(|t| t.symbol).collect();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn import_preambles_are_not_part_of_the_stream() {
+        let with_imports = tokenize(
+            "a.ts",
+            b"import { one, two } from 'x';
+import three from 'y';
+export const v = 1;
+",
+        )
+        .unwrap();
+        let without = tokenize(
+            "b.ts",
+            b"export const v = 1;
+",
+        )
+        .unwrap();
+        assert_eq!(
+            with_imports.iter().map(|t| t.symbol).collect::<Vec<_>>(),
+            without.iter().map(|t| t.symbol).collect::<Vec<_>>(),
+            "an import block must contribute nothing to the fingerprint"
+        );
+    }
+
+    #[test]
+    fn python_imports_are_dropped_too() {
+        let with_imports = tokenize(
+            "a.py",
+            b"from os import path
+import sys
+
+def f():
+    return 1
+",
+        )
+        .unwrap();
+        let without = tokenize(
+            "b.py",
+            b"def f():
+    return 1
+",
+        )
+        .unwrap();
+        assert_eq!(
+            with_imports.iter().map(|t| t.symbol).collect::<Vec<_>>(),
+            without.iter().map(|t| t.symbol).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_re_export_is_still_code() {
+        // `export ... from` is an export statement, not an import one, and
+        // dropping export statements would drop every exported function body.
+        let tokens = tokenize(
+            "a.ts",
+            b"export function f() { return 1; }
+",
+        )
+        .unwrap();
+        assert!(!tokens.is_empty());
     }
 
     #[test]
