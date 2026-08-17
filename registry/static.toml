@@ -28,9 +28,29 @@
 # and venue checked against the record. One candidate DOI was rejected in the
 # process for resolving to an unrelated paper.
 #
-# Expiries are staggered two per month from 2027-03, under the limit of three
-# (policy `registry.max_claims_expiring_per_month`). Re-review is a pull request
-# against this file; see `registry/README.md`.
+# EXPIRY STAGGER IS A CROSS-PHASE CONSTRAINT
+# ------------------------------------------
+# The lint's limit of three claims per calendar month
+# (policy `registry.max_claims_expiring_per_month`) applies to the **merged**
+# registry, not to this file — so staggering has to be done against what the
+# other engine files claim, which no single phase's lint run can see.
+#
+# P4 has taken 2027-01, -02, -04, -06, -09 and -10. This file therefore uses
+# 2027-03, -05, -07 and -08, two per month:
+#
+#   2027-03   sloc, parse-health
+#   2027-05   cyclomatic: typescript, javascript
+#   2027-07   cyclomatic: python, cognitive: typescript
+#   2027-08   cognitive: javascript, python
+#
+# Two per month rather than the permitted three, and in months nobody else has
+# touched, so that P3's seven claims and the two held back for P5b/P9 still have
+# a free slot in every month of the year. A phase that fills its months to the
+# cap has not staggered, it has just not overflowed yet — and the phase that
+# discovers the overflow is the one that has to renegotiate somebody else's
+# dates.
+#
+# Re-review is a pull request against this file; see `registry/README.md`.
 
 schema_version = 1
 engine = "static-metrics"
@@ -171,7 +191,7 @@ does_not_predict = [
     "behaviour in TypeScript specifically: the studied corpora were Java and C, and this claim extrapolates the definition to a language nobody measured it in",
 ]
 owner = "gtm-k"
-expiry = "2027-04-06"
+expiry = "2027-05-04"
 
 [[claim]]
 claim_id = "andon.static.cyclomatic@1|javascript|minimum-test-paths"
@@ -192,7 +212,7 @@ does_not_predict = [
     "behaviour in JavaScript specifically: the studied corpora were Java and C, and this claim extrapolates the definition to a language nobody measured it in",
 ]
 owner = "gtm-k"
-expiry = "2027-04-20"
+expiry = "2027-05-18"
 
 [[claim]]
 claim_id = "andon.static.cyclomatic@1|python|minimum-test-paths"
@@ -213,7 +233,7 @@ does_not_predict = [
     "behaviour in Python specifically: the studied corpora were Java and C, and this claim extrapolates the definition to a language nobody measured it in",
 ]
 owner = "gtm-k"
-expiry = "2027-05-04"
+expiry = "2027-07-06"
 
 [[claim]]
 claim_id = "andon.static.cognitive@1|typescript|comprehension-time"
@@ -234,7 +254,7 @@ does_not_predict = [
     "comprehension time under this crate's clean-room implementation unless it agrees with the published model — the claim is scoped to andon.static.cognitive@1 and is wrong if it does not",
 ]
 owner = "gtm-k"
-expiry = "2027-05-18"
+expiry = "2027-07-20"
 
 [[claim]]
 claim_id = "andon.static.cognitive@1|javascript|comprehension-time"
@@ -255,7 +275,7 @@ does_not_predict = [
     "comprehension time under this crate's clean-room implementation unless it agrees with the published model",
 ]
 owner = "gtm-k"
-expiry = "2027-06-01"
+expiry = "2027-08-03"
 
 [[claim]]
 claim_id = "andon.static.cognitive@1|python|comprehension-time"
@@ -276,4 +296,4 @@ does_not_predict = [
     "comprehension time under this crate's clean-room implementation unless it agrees with the published model",
 ]
 owner = "gtm-k"
-expiry = "2027-06-15"
+expiry = "2027-08-17"
