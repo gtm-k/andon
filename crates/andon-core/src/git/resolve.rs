@@ -331,6 +331,13 @@ fn resolve_endpoint(
                     },
                 });
             }
+            // `side` is unused, and deliberately: a dirty snapshot is anchored
+            // at `HEAD` whichever side it is on, because `status` compares
+            // against `HEAD` and nothing else. Anchoring a *base* snapshot
+            // somewhere else would not help — [`super::ChangedSet::enumerate`]
+            // refuses a dirty base outright — and for a dirty *head* the gap
+            // between the base and `HEAD` is closed there too, by the union with
+            // a `diff-tree` over the committed segment.
             let _ = side;
             let head_oid = rev_parse_commit(git, "HEAD")?;
             let staged_only = matches!(revision, Revision::Index);

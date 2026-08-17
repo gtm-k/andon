@@ -894,6 +894,212 @@ fn staged_content_does_have_a_readable_blob() {
     );
 }
 
+/// A feature branch with commits behind it and edits in front of it: the
+/// default `andon measure` shape, and what an agent measuring its own change
+/// mid-loop always looks like.
+///
+/// Returns the repo and the base (merge-base) commit.
+fn branch_with_commits_and_edits(root: &Path) -> (TestRepo, String) {
+    let repo = TestRepo::init(root);
+    repo.write("src/base.ts", b"export const base = 1;\n");
+    repo.write("src/both.ts", b"export const both = 'at base';\n");
+    // Long enough for rename detection to score it.
+    let body: Vec<u8> = (0..80)
+        .map(|i| format!("export const value{i} = {i};\n"))
+        .collect::<String>()
+        .into_bytes();
+    repo.write("src/renamed-from.ts", &body);
+    repo.add_all();
+    let base = repo.commit("base");
+
+    repo.run(&["checkout", "--quiet", "-b", "feature"]);
+    repo.write("src/committed.ts", b"export const committed = true;\n");
+    repo.write("src/both.ts", b"export const both = 'at head';\n");
+    repo.run(&["mv", "src/renamed-from.ts", "src/renamed-to.ts"]);
+    repo.add_all();
+    repo.commit("work already committed on the branch");
+
+    // And then the uncommitted work on top.
+    repo.write("src/dirty.ts", b"export const dirty = true;\n");
+    repo.write("src/both.ts", b"export const both = 'in the worktree';\n");
+    (repo, base)
+}
+
+#[test]
+fn a_branch_with_commits_and_a_dirty_tree_reports_both_segments() {
+    // The flagship flow, and the one that silently under-reported. A dirty
+    // snapshot is anchored at HEAD because `status` has one thing to compare
+    // against; on a branch with commits, HEAD is not the merge base, so
+    // enumerating the snapshot alone omitted every file the branch had already
+    // committed. `andon measure` with its own defaults returned the edits and
+    // nothing else.
+    let dir = scratch("union");
+    let (repo, base) = branch_with_commits_and_edits(dir.path());
+
+    let range = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::merge_base("main"),
+        &Revision::Worktree,
+    )
+    .expect("resolves");
+    assert_eq!(
+        range.base.anchor_oid(),
+        base,
+        "the base is the fork point, not HEAD"
+    );
+
+    let changed = ChangedSet::enumerate(repo.git(), &range).expect("enumerates");
+    let paths: Vec<&str> = changed.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec![
+            "src/both.ts",
+            "src/committed.ts",
+            "src/dirty.ts",
+            "src/renamed-to.ts",
+        ],
+        "both segments, deduped and sorted"
+    );
+
+    let entry = |path: &str| {
+        changed
+            .entries
+            .iter()
+            .find(|e| e.path == path)
+            .unwrap_or_else(|| panic!("{path} is missing"))
+    };
+
+    // The committed segment carries real blobs, and they read.
+    assert_eq!(entry("src/committed.ts").status, ChangeStatus::Added);
+    let blobs = changed.read_head_blobs(repo.git()).expect("reads blobs");
+    let committed_bytes = blobs
+        .iter()
+        .find(|(p, _)| p == "src/committed.ts")
+        .map(|(_, c)| c.bytes().to_vec())
+        .expect("the committed file has a readable blob");
+    assert_eq!(committed_bytes, b"export const committed = true;\n");
+
+    // The dirty segment does not, and must not.
+    assert_eq!(entry("src/dirty.ts").status, ChangeStatus::Added);
+    assert_eq!(
+        entry("src/dirty.ts").readable_blob(),
+        None,
+        "an untracked file has no blob anyone can read"
+    );
+
+    // A rename in the committed segment survives with its score.
+    let renamed = entry("src/renamed-to.ts");
+    assert_eq!(renamed.status, ChangeStatus::Renamed);
+    assert_eq!(renamed.old_path.as_deref(), Some("src/renamed-from.ts"));
+    assert!(renamed.similarity.is_some(), "git scored this pair");
+}
+
+#[test]
+fn a_path_in_both_segments_takes_its_base_side_from_the_base() {
+    // The assertion that separates a composed union from a lazy one. `both.ts`
+    // is modified in a branch commit and then edited again in the working tree.
+    // A union that took whole snapshot entries would pass every membership check
+    // above while reporting `src_oid` as HEAD's blob — describing the change as
+    // "since the last commit" when the caller asked "since the base".
+    let dir = scratch("compose");
+    let (repo, base) = branch_with_commits_and_edits(dir.path());
+
+    let blob_at = |rev: &str| {
+        repo.git()
+            .cmd(["rev-parse", &format!("{rev}:src/both.ts")])
+            .text()
+            .expect("rev-parse")
+            .trim()
+            .to_string()
+    };
+    let at_base = blob_at(&base);
+    let at_head = blob_at("HEAD");
+    assert_ne!(
+        at_base, at_head,
+        "the fixture must move the file in a commit"
+    );
+
+    let range = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::merge_base("main"),
+        &Revision::Worktree,
+    )
+    .expect("resolves");
+    let changed = ChangedSet::enumerate(repo.git(), &range).expect("enumerates");
+    let entry = changed
+        .entries
+        .iter()
+        .find(|e| e.path == "src/both.ts")
+        .expect("present");
+
+    assert_eq!(
+        entry.src_oid.as_deref(),
+        Some(at_base.as_str()),
+        "the base side is the base's blob, not HEAD's"
+    );
+    assert_eq!(entry.status, ChangeStatus::Modified);
+    assert_eq!(
+        entry.readable_blob(),
+        None,
+        "the working-tree side is unstaged, so it has no blob to offer"
+    );
+}
+
+#[test]
+fn the_index_sentinel_unions_the_committed_segment_too() {
+    // Same code path, same requirement: staged work on a branch that already has
+    // commits is still measured against the base.
+    let dir = scratch("union-index");
+    let (repo, _base) = branch_with_commits_and_edits(dir.path());
+    repo.add_all();
+
+    let range = ResolvedRange::resolve(repo.git(), &Revision::merge_base("main"), &Revision::Index)
+        .expect("resolves");
+    let changed = ChangedSet::enumerate(repo.git(), &range).expect("enumerates");
+    let paths: Vec<&str> = changed.entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(
+        paths.contains(&"src/committed.ts"),
+        "the committed segment must be there: {paths:?}"
+    );
+    assert!(
+        paths.contains(&"src/dirty.ts"),
+        "and so must the staged work: {paths:?}"
+    );
+
+    // Staged, worktree-clean, so the index blob is the measured state and reads.
+    let blobs = changed.read_head_blobs(repo.git()).expect("reads blobs");
+    assert!(
+        blobs
+            .iter()
+            .any(|(p, c)| p == "src/dirty.ts" && c.bytes() == b"export const dirty = true;\n"),
+        "a staged addition has a readable blob"
+    );
+}
+
+#[test]
+fn a_base_that_is_already_head_costs_no_extra_spawn() {
+    // The union is skipped when there is nothing between the base and the
+    // snapshot's anchor. Asserted as a count, because the alternative — a
+    // `diff-tree` on every dirty measurement — is the kind of regression that
+    // reads as a few milliseconds on a laptop and as PREMORTEM T6 on a monorepo.
+    let dir = scratch("union-noop");
+    let repo = TestRepo::init(dir.path());
+    repo.commit_file("src/a.ts", b"one\n", "base");
+    repo.write("src/a.ts", b"edited\n");
+
+    let git = Git::open(repo.path()).expect("opens");
+    let range = ResolvedRange::resolve(&git, &Revision::Rev("HEAD".into()), &Revision::Worktree)
+        .expect("resolves");
+    let before = git.spawn_count();
+    let changed = ChangedSet::enumerate(&git, &range).expect("enumerates");
+    assert_eq!(
+        git.spawn_count(),
+        before,
+        "a HEAD-anchored dirty range needs no diff-tree at all"
+    );
+    assert_eq!(changed.len(), 1);
+}
+
 #[test]
 fn a_dirty_base_is_refused_rather_than_quietly_enumerated() {
     // Enumeration picks its plumbing from the head, which is right for every

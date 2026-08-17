@@ -55,6 +55,20 @@ The dirty-tree scenario is the one T6 is really about. Twenty-five uncommitted
 files in a hundred thousand: if finding that handful costs a walk of the other
 99,975, the fast lane is not fast on the repositories that needed it.
 
+It runs in two shapes. `warm-dirty` sits on the base commit, so the whole change
+is uncommitted. `warm-branch` sits on the `large` series branch with the same
+twenty-five files dirty on top — a branch with a thousand committed files behind
+it and edits in front of it, which is the default `andon measure` shape and what
+an agent measuring its own change mid-loop always looks like. The second costs
+two processes more than the first: a `diff-tree` over the committed segment and
+the `cat-file` batch that reads the blobs it turns up.
+
+The spawn counts are asserted differently on purpose. The committed series
+asserts *flatness* across 1, 50, and 1000 files, which is T6's shape claim. The
+dirty legs assert an *exact number per scenario*, because they legitimately
+differ from each other and demanding flatness across them would be demanding the
+wrong property.
+
 ## Budgets
 
 From `.andon.toml` `[perf]`, read at run time and never written in the harness.
@@ -84,7 +98,8 @@ fsmonitor exists on Windows and macOS from git 2.37 and not on Linux, so the
 harness measures the dirty path both ways and holds each to its own budget:
 `fast_lane_warm_p95_ms` for the accelerated arrangement,
 `fast_lane_warm_fallback_p95_ms` for the one without a watching daemon. On a
-reference Windows run those are 145 ms and 886 ms against 1000 ms and 2000 ms.
+reference Windows run the four legs are 146 ms and 887 ms for `warm-dirty`, and
+257 ms and 983 ms for `warm-branch`, against 1000 ms and 2000 ms.
 
 The harness used to gate one leg and merely print the other, picking which from
 what the daemon reported. That is a ratchet with no constant to nudge, and it

@@ -46,11 +46,29 @@
 //! printed and nothing asserted it. A leg that genuinely cannot run on a
 //! platform reports why; it never disappears.
 //!
+//! # Two dirty scenarios
+//!
+//! A tree dirty on top of the base commit is the simple shape. A branch that
+//! already carries commits *and* is dirty on top is the default `andon measure`
+//! shape — merge base against the trusted branch, working tree as head — and it
+//! is what an agent measuring its own change mid-loop always looks like. It
+//! costs a `diff-tree` over the committed segment and a `cat-file` batch to read
+//! the blobs that turns up, so it is measured rather than assumed to cost what
+//! the simple one costs.
+//!
 //! # Spawn count
 //!
 //! Asserted, not observed. A regression that turns one batched `cat-file` into
 //! one spawn per file reads as a modest slowdown on a laptop and as a timeout on
 //! a monorepo; the count catches it on the laptop.
+//!
+//! Two kinds of assertion, because there are two claims. The committed series
+//! asserts *flatness* — one, fifty, and a thousand changed files must cost the
+//! same number of processes, which is PREMORTEM T6's shape claim. The dirty legs
+//! assert an *exact figure per scenario*, derived in
+//! [`DirtyScenario::expected_spawns`], because they legitimately differ from each
+//! other and "flat" would be the wrong property to demand. A number that moves
+//! fails here and has to be argued for.
 
 mod common;
 
@@ -135,10 +153,67 @@ fn policy() -> Policy {
 
 /// One dirty-tree arrangement, its own budget, and whether it could run here.
 struct DirtyLeg {
-    label: &'static str,
+    label: String,
     budget: f64,
     runnable: bool,
+    /// Git subprocesses one pass of this scenario must cost. Asserted, not
+    /// reported — see [`DirtyScenario::expected_spawns`].
+    expected_spawns: u64,
     summary: Pass,
+}
+
+/// What the working tree looks like when the dirty legs run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirtyScenario {
+    /// `HEAD` is the base commit: the whole change is uncommitted.
+    HeadAtBase,
+    /// `HEAD` is a branch with a thousand committed files on it, *and* the tree
+    /// is dirty on top. The default `andon measure` shape — merge base against
+    /// the trusted branch, working tree as head — from a branch that has been
+    /// worked on, which is what an agent measuring its own change mid-loop
+    /// always looks like.
+    BranchWithCommits,
+}
+
+impl DirtyScenario {
+    fn label(self) -> &'static str {
+        match self {
+            DirtyScenario::HeadAtBase => "warm-dirty",
+            DirtyScenario::BranchWithCommits => "warm-branch",
+        }
+    }
+
+    /// The branch to sit on. Both are pinned by `expected.toml`.
+    fn branch(self) -> &'static str {
+        match self {
+            DirtyScenario::HeadAtBase => "base",
+            DirtyScenario::BranchWithCommits => "large",
+        }
+    }
+
+    /// Git subprocesses one pass costs, derived rather than observed.
+    ///
+    /// Seven for both scenarios' shared work: two to open the repository, one
+    /// `rev-parse` for the base revision, one more for the snapshot's `HEAD`
+    /// anchor, one `status`, one `hash-object` re-checking the conversion
+    /// suspects, and one `hash-object` recording their pinned OIDs.
+    ///
+    /// The branch scenario pays two more, and both are the union's: a
+    /// `diff-tree` over the segment already committed on the branch, and the
+    /// `cat-file --batch` that reads the blobs it turns up. The head-at-base
+    /// scenario skips the first because there is nothing between the base and
+    /// the anchor, and the second because a purely dirty change has no readable
+    /// blob at all.
+    ///
+    /// Written down as an expectation rather than a floor: the number moving is
+    /// a design change, and it should fail here and be argued for, not appear in
+    /// a graph three phases later.
+    fn expected_spawns(self) -> u64 {
+        match self {
+            DirtyScenario::HeadAtBase => 7,
+            DirtyScenario::BranchWithCommits => 9,
+        }
+    }
 }
 
 /// What one fast-lane git pass cost.
@@ -362,66 +437,122 @@ spawn count is flat at {flat} across 1, 50, and 1000 changed files"
     // fsmonitor does not exist on Linux and can decline anywhere — so each is
     // held to the budget that describes it, and a leg that genuinely cannot run
     // here says why rather than disappearing.
+    // Two scenarios, because the dirty path has two shapes that ship. A tree
+    // dirty on top of the base commit is the simple one. A branch that already
+    // carries commits *and* is dirty on top is the default `andon measure`
+    // shape, and it costs a `diff-tree` and a blob read the simple one does not
+    // — so it is measured rather than assumed to be the same.
     let git = Git::open(&repo).expect("repo opens");
-    dirty_the_worktree(&repo, &manifest.dirty_paths);
 
     let mut legs: Vec<DirtyLeg> = Vec::new();
-    for (label, fsmonitor, budget) in [
-        ("warm-dirty-nofsm", "false", fallback_budget),
-        ("warm-dirty-fsm", "true", warm_budget),
-    ] {
-        git.cmd(["config", "core.fsmonitor", fsmonitor])
+    for scenario in [DirtyScenario::HeadAtBase, DirtyScenario::BranchWithCommits] {
+        // `--force`: the previous scenario left the tree dirty on purpose, and
+        // those edits are what this checkout is meant to discard.
+        git.cmd(["checkout", "--force", "--quiet", scenario.branch()])
             .output()
-            .expect("set fsmonitor");
+            .expect("check out the scenario's branch");
+        dirty_the_worktree(&repo, &manifest.dirty_paths);
 
-        let (store, _keep) = cold_store(label);
-        let head = Revision::Worktree;
-        // Warm-up passes, untimed. With fsmonitor on, the first invocation
-        // *starts* the daemon and the next few race its initial scan — timing
-        // those measures the daemon booting rather than the steady state, and
-        // reports fsmonitor as a pessimization when it is the opposite.
-        let mut last = pass(&repo, &base, &head, &store, &policy);
-        for _ in 0..3 {
-            last = pass(&repo, &base, &head, &store, &policy);
+        for (suffix, fsmonitor, budget) in [
+            ("nofsm", "false", fallback_budget),
+            ("fsm", "true", warm_budget),
+        ] {
+            let label = format!("{}-{suffix}", scenario.label());
+            git.cmd(["config", "core.fsmonitor", fsmonitor])
+                .output()
+                .expect("set fsmonitor");
+
+            let (store, _keep) = cold_store(&label);
+            let head = Revision::Worktree;
+            // Warm-up passes, untimed. With fsmonitor on, the first invocation
+            // *starts* the daemon and the next few race its initial scan —
+            // timing those measures the daemon booting rather than the steady
+            // state, and reports fsmonitor as a pessimization when it is the
+            // opposite.
+            let mut last = pass(&repo, &base, &head, &store, &policy);
+            for _ in 0..3 {
+                last = pass(&repo, &base, &head, &store, &policy);
+            }
+            let mut samples = Vec::with_capacity(WARM_PASSES);
+            for _ in 0..WARM_PASSES {
+                last = pass(&repo, &base, &head, &store, &policy);
+                samples.push(last.elapsed);
+            }
+            // The committed series asserts this and the dirty legs did not,
+            // which left the warm dirty numbers proving less than they looked
+            // like they did: a leg that missed its cache on every pass would be
+            // timing a cold path under a warm label.
+            assert!(
+                last.cache_hit,
+                "{label}: a warm run must hit the cache it populated, or the \
+                 incremental keying path is not what is being measured"
+            );
+            if scenario == DirtyScenario::BranchWithCommits {
+                // Both segments are there, asserted from the shape rather than
+                // from constants. The committed segment is 1000 files and every
+                // one of them has a readable blob; the dirty segment is
+                // `dirty_paths` and none of them does, because an unstaged edit
+                // has no object anyone can read. Composition takes the base side
+                // from the first and the worktree side from the second, so every
+                // path in both loses its blob and keeps its entry — which makes
+                // `blobs == files - dirty` true whatever the overlap happens to
+                // be, and false for either segment alone.
+                let dirty = manifest.dirty_paths.len();
+                assert!(
+                    last.files >= 1000,
+                    "{label}: the committed segment is missing; got {} files",
+                    last.files
+                );
+                assert_eq!(
+                    last.blobs,
+                    last.files - dirty,
+                    "{label}: expected every one of the {dirty} dirty paths to \
+                     carry no readable blob, over {} entries",
+                    last.files
+                );
+                println!(
+                    "  {label}: 1000 committed + {dirty} dirty = {} paths, {} shared",
+                    last.files,
+                    1000 + dirty - last.files
+                );
+            }
+            let watching = fsmonitor == "true" && fsmonitor_is_watching(&git);
+            legs.push(DirtyLeg {
+                label,
+                budget,
+                // The fsmonitor leg is only runnable where a daemon actually
+                // watches. Asked while it is still configured and warm, which is
+                // the only moment the answer means anything.
+                runnable: fsmonitor == "false" || watching,
+                expected_spawns: scenario.expected_spawns(),
+                summary: Pass {
+                    elapsed: p95(samples),
+                    ..last
+                },
+            });
         }
-        let mut samples = Vec::with_capacity(WARM_PASSES);
-        for _ in 0..WARM_PASSES {
-            last = pass(&repo, &base, &head, &store, &policy);
-            samples.push(last.elapsed);
-        }
-        // The committed series asserts this and the dirty legs did not, which
-        // left the warm dirty numbers proving less than they looked like they
-        // did: a leg that missed its cache on every pass would be timing a cold
-        // path under a warm label.
-        assert!(
-            last.cache_hit,
-            "{label}: a warm run must hit the cache it populated, or the \
-             incremental keying path is not what is being measured"
-        );
-        let watching = fsmonitor == "true" && fsmonitor_is_watching(&git);
-        legs.push(DirtyLeg {
-            label,
-            budget,
-            // The fsmonitor leg is only runnable where a daemon actually
-            // watches. Asked while it is still configured and warm, which is the
-            // only moment the answer means anything.
-            runnable: fsmonitor == "false" || watching,
-            summary: Pass {
-                elapsed: p95(samples),
-                ..last
-            },
-        });
     }
 
     println!();
     for leg in &legs {
         if leg.runnable {
             report(
-                leg.label,
+                &leg.label,
                 &leg.summary,
                 leg.budget,
                 &mut failures,
                 spawn_budget,
+            );
+            // The structural assertion, per scenario rather than "flat across
+            // all of them": the union genuinely costs two more processes, and
+            // saying so explicitly is what keeps the next one from arriving
+            // unannounced.
+            assert_eq!(
+                leg.summary.spawns, leg.expected_spawns,
+                "{}: expected {} git spawns and saw {}. If that is a deliberate \
+                 change, move the number in DirtyScenario::expected_spawns and \
+                 say why in the commit; if it is not, something stopped batching.",
+                leg.label, leg.expected_spawns, leg.summary.spawns
             );
         } else {
             // Not silently skipped. A leg that vanishes from a gate's output is
@@ -454,6 +585,12 @@ spawn count is flat at {flat} across 1, 50, and 1000 changed files"
     // flake waiting for the next job.
     git.cmd(["config", "core.fsmonitor", "false"]).output().ok();
     git.cmd(["fsmonitor--daemon", "stop"]).succeeds().ok();
+    // And leave the fixture on the branch the manifest describes. CI regenerates
+    // it per run; a developer's does not, and a second run that started on
+    // `large` would measure a different repository under the same labels.
+    git.cmd(["checkout", "--force", "--quiet", "base"])
+        .output()
+        .ok();
 
     println!();
     assert!(

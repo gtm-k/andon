@@ -15,6 +15,8 @@
 //! list, but an engine that iterates in a config-dependent order will eventually
 //! find a way to let that leak into one.
 
+use std::collections::BTreeMap;
+
 use super::blob::{BlobBatch, BlobError, Content};
 use super::command::{decode_record, Git, GitError};
 use super::resolve::{Endpoint, ResolveError, ResolvedRange};
@@ -124,27 +126,47 @@ pub struct ChangedSet {
 impl ChangedSet {
     /// Enumerate the change described by a resolved range. One spawn.
     ///
-    /// Which plumbing command runs depends on what the head is, and the choice
-    /// is the lane boundary in miniature: a commit head is diffed tree-to-tree
-    /// and every OID is real; a working-tree head is diffed index-to-worktree
-    /// and the head-side OIDs are absent by construction, which is what stops
-    /// dirty bytes from acquiring compared-lane identities.
+    /// Which plumbing runs depends on what the head is, and the split is the
+    /// lane boundary in miniature. Committed endpoints are diffed tree-to-tree
+    /// and every OID is real. The dirty segment carries no head-side OID for
+    /// anything the working tree has moved off, by construction, which is what
+    /// stops uncommitted bytes from acquiring compared-lane identities — see
+    /// [`from_snapshot`] for the three conditions.
+    ///
+    /// A range can contain both, and then it contains both kinds of entry: the
+    /// committed ones are readable blobs and the dirty ones are not. That is not
+    /// a leak, it is the boundary drawn per path rather than per range.
+    ///
+    /// # A dirty head against a base that is not `HEAD`
+    ///
+    /// A dirty snapshot is anchored at `HEAD` — it is what `status` reports, and
+    /// `status` has one thing to compare against. That is the whole change only
+    /// when the base *is* `HEAD`. Ask for the default `andon measure` — merge
+    /// base against the trusted branch, working tree as head — from a feature
+    /// branch that has commits on it, and `HEAD` is not the merge base: the
+    /// committed work sits between them, and enumerating the snapshot alone
+    /// silently omits every file the branch has already committed.
+    ///
+    /// That is the flagship flow, not an edge: an agent measuring its own change
+    /// mid-loop has commits behind it and edits in front of it. So the changed
+    /// set is the **union** of the two segments — `diff-tree` from the base to
+    /// the snapshot's anchor, and the snapshot itself — keyed by path. See
+    /// [`compose`] for what happens to a path that appears in both.
+    ///
+    /// The `diff-tree` is skipped entirely when the base already *is* the
+    /// snapshot's anchor, so the common `HEAD`-to-worktree case costs exactly
+    /// what it did before.
     ///
     /// # Why a dirty base is refused
     ///
-    /// The selection above reads `range.head` and nothing else, which is correct
-    /// for every base that is a commit and silently wrong for one that is not. A
-    /// `WORKTREE` base against a commit head takes the commit branch and diffs
-    /// against `Endpoint::anchor_oid` — the commit the dirty base *sits on top
-    /// of*, not what it holds. The result is a changed set that describes a
-    /// different comparison from the one asked for, with nothing in it to say
-    /// so.
-    ///
-    /// There is no honest enumeration to give instead: the caller asked for a
-    /// diff against uncommitted content, and git has no tree to diff. So this
-    /// mirrors [`ResolvedRange::compare_context`], down to the error, which
-    /// refuses a dirty endpoint on either side for the same underlying reason —
-    /// an endpoint with no commit id cannot stand where one is required.
+    /// A `WORKTREE` base against a commit head has no tree for git to diff, and
+    /// the selection below would take the commit branch and diff against
+    /// `Endpoint::anchor_oid` — the commit the dirty base *sits on top of*,
+    /// rather than what it holds. Unlike the case above there is no honest
+    /// enumeration to substitute: the caller asked for a comparison against
+    /// uncommitted content, and nothing can stand in for it. So this mirrors
+    /// [`ResolvedRange::compare_context`], down to the error — an endpoint with
+    /// no commit id cannot stand where one is required.
     pub fn enumerate(git: &Git, range: &ResolvedRange) -> Result<Self, ResolveError> {
         if !range.base.is_commit() {
             return Err(ResolveError::NotComparable {
@@ -152,15 +174,9 @@ impl ChangedSet {
                 kind: range.base.kind(),
             });
         }
+        let base_oid = range.base.anchor_oid();
         let mut entries = match &range.head {
-            Endpoint::Commit { oid: head, .. } => {
-                let raw = git
-                    .cmd(["diff-tree"])
-                    .args(RAW_FLAGS)
-                    .args(["-M", range.base.anchor_oid(), head])
-                    .output()?;
-                parse_raw(&raw)?
-            }
+            Endpoint::Commit { oid: head, .. } => committed_segment(git, base_oid, head)?,
             // A dirty head already scanned the working tree once, and the
             // snapshot it produced holds every path with its HEAD, index, and
             // working-tree blob OIDs. Running `diff-index` here would pay a
@@ -169,7 +185,12 @@ impl ChangedSet {
             // the two scans appears in one and not the other, leaving a changed
             // set that contradicts the cache key naming it.
             Endpoint::Index { snapshot, .. } | Endpoint::Worktree { snapshot, .. } => {
-                from_snapshot(snapshot)
+                let dirty = from_snapshot(snapshot);
+                if base_oid == snapshot.head_oid {
+                    dirty
+                } else {
+                    union(committed_segment(git, base_oid, &snapshot.head_oid)?, dirty)
+                }
             }
         };
         entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -233,6 +254,104 @@ const RAW_FLAGS: &[&str] = &[
 
 fn is_null_oid(oid: &str) -> bool {
     oid.bytes().all(|b| b == b'0')
+}
+
+/// One `diff-tree` between two commits. The committed half of a union, and the
+/// whole of a commit-to-commit enumeration.
+fn committed_segment(git: &Git, base: &str, head: &str) -> Result<Vec<ChangedEntry>, ResolveError> {
+    let raw = git
+        .cmd(["diff-tree"])
+        .args(RAW_FLAGS)
+        .args(["-M", base, head])
+        .output()?;
+    Ok(parse_raw(&raw)?)
+}
+
+/// Merge the committed segment with the dirty one, keyed by path.
+///
+/// # The approximation, stated
+///
+/// The key is the destination path, which is the identity every consumer uses.
+/// One case it gets wrong: a file renamed `old` → `new` in the committed segment
+/// whose `old` name is then recreated in the working tree. `old` appears only in
+/// the dirty segment, so it is reported `Added` although the base has it. Fixing
+/// it would mean a second index keyed on source paths and a rule for which
+/// entry wins when both match — machinery for a case nobody has hit, in a
+/// function whose value is that it is obvious. Written down rather than built.
+fn union(committed: Vec<ChangedEntry>, dirty: Vec<ChangedEntry>) -> Vec<ChangedEntry> {
+    let mut by_path: BTreeMap<String, ChangedEntry> = committed
+        .into_iter()
+        .map(|entry| (entry.path.clone(), entry))
+        .collect();
+    for entry in dirty {
+        match by_path.remove(&entry.path) {
+            // Touched only since the last commit: the snapshot describes it
+            // whole.
+            None => {
+                by_path.insert(entry.path.clone(), entry);
+            }
+            Some(committed) => {
+                if let Some(composed) = compose(committed, entry) {
+                    by_path.insert(composed.path.clone(), composed);
+                }
+            }
+        }
+    }
+    by_path.into_values().collect()
+}
+
+/// One path that both segments describe.
+///
+/// Neither entry is right on its own, and taking either whole is a specific
+/// wrong answer. The committed entry's destination side is the state at `HEAD`,
+/// which the working tree has since moved off. The dirty entry's *source* side
+/// is `HEAD` too — that is what `status` compares against — so taking it whole
+/// would report the file as having changed from its `HEAD` content when the
+/// caller asked what changed since the base.
+///
+/// So each side comes from the segment that knows it: the base side from the
+/// committed entry, the working-tree side from the snapshot.
+///
+/// `similarity` is dropped. Git scored a rename between two commits; nothing has
+/// scored base against working tree, and carrying the old number would attach a
+/// measurement to a comparison it was not taken on. `old_path` survives, because
+/// it is a fact about where the file came from rather than a score.
+///
+/// Returns `None` when neither side has the file: added on the branch and then
+/// deleted from the working tree is, against the base, no change at all.
+fn compose(committed: ChangedEntry, dirty: ChangedEntry) -> Option<ChangedEntry> {
+    let ChangedEntry {
+        old_path,
+        src_mode,
+        src_oid,
+        ..
+    } = committed;
+    let ChangedEntry {
+        path,
+        dst_mode,
+        dst_oid,
+        ..
+    } = dirty;
+
+    if src_mode.is_none() && dst_mode.is_none() {
+        return None;
+    }
+    let status = match (src_mode.is_some(), dst_mode.is_some()) {
+        (false, _) => ChangeStatus::Added,
+        (true, false) => ChangeStatus::Deleted,
+        (true, true) if old_path.is_some() => ChangeStatus::Renamed,
+        (true, true) => ChangeStatus::Modified,
+    };
+    Some(ChangedEntry {
+        path,
+        old_path,
+        status,
+        similarity: None,
+        src_mode,
+        dst_mode,
+        src_oid,
+        dst_oid,
+    })
 }
 
 /// Turn a dirty-tree snapshot into changed entries.

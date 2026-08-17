@@ -12,10 +12,16 @@
 //!    swept environment to all of them. A guard test fails the build if a second
 //!    spawn path appears.
 //! 3. **Cost scales with the diff, not the repository.** Enumeration is one
-//!    spawn, content is one more however many files, and dirty state is keyed
-//!    from `status` rather than a full walk (PREMORTEM T6). [`Git::spawn_count`]
-//!    is asserted by the perf gate so a regression is caught as a count before
-//!    it is felt as a timeout.
+//!    spawn — two when the range spans committed work *and* uncommitted work,
+//!    which needs both a `diff-tree` and a `status` — content is one more
+//!    however many files, and dirty state is keyed from `status` rather than a
+//!    full walk (PREMORTEM T6). [`Git::spawn_count`] is asserted by the perf
+//!    gate so a regression is caught as a count before it is felt as a timeout.
+//!
+//! The lane boundary in (1) is drawn per path, not per range. A branch with
+//! commits behind it and edits in front of it produces a changed set holding
+//! both kinds of entry: the committed paths carry readable blob OIDs, the dirty
+//! ones carry none.
 //!
 //! # A measurement's git work, end to end
 //!
