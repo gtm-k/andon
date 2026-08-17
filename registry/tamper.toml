@@ -96,6 +96,7 @@ does_not_predict = [
     "that an assertion-free case is worthless — a smoke test that checks a call does not throw is a real test",
     "defect density, or the quality of the tests that remain",
     "anything about tests in languages this engine has no grammar for, which are not counted at all",
+    "anything about test cases the parser could not read — a case inside an ERROR region is not counted on either side, so a removal there is reported as no removal at all. Results over a file the parser did not finish are marked `parse-degraded` and the count is a lower bound (PREMORTEM T3)",
 ]
 owner = "gtm-k"
 expiry = "2027-05-17"
@@ -104,6 +105,18 @@ expiry = "2027-05-17"
 # Two detectors, one outcome: after this change there is code the static engines
 # cannot read. One counts explicit directives that silence them, the other
 # counts regions the parser could not read at all — deliberate or not.
+#
+# NO INCOMPLETE-PARSE CAVEAT HERE, AND THAT IS NOT AN OVERSIGHT
+# ------------------------------------------------------------
+# The other two claims in this file disclose that a region the parser could not
+# read is a region their detectors never examined. Neither detector under this
+# claim has that limitation, for opposite reasons. `suppression-density` scans
+# bytes for recognised directives, and an ERROR node hides a comment from
+# nobody. `parse-error-delta` *is* the report of the unreadable region: counting
+# ERROR nodes over a tree full of them is exact, and qualifying it would qualify
+# the one signal PREMORTEM T3 wants loud with the very thing it is reporting.
+# Adding the caveat here anyway would be claiming a limitation this claim does
+# not have, which is the same failure as hiding one.
 
 [[metric]]
 metric_id = "tamper.suppression-density"
@@ -155,6 +168,10 @@ expiry = "2027-07-19"
 # Both are advisory by PLAN.md round-1 B6 — a tool that blocks on policy edits
 # has made policy evolution impossible, which is a worse failure than the one it
 # prevents.
+#
+# No incomplete-parse caveat here either: both detectors read configuration
+# files as text, and a tree-sitter ERROR node in a source file is not something
+# a coverage config or a threshold setting can hide behind.
 
 [[metric]]
 metric_id = "tamper.coverage-exclusion-drift"
@@ -232,6 +249,7 @@ does_not_predict = [
     "algorithmic correctness or generality",
     "defect density",
     "tables assembled at run time rather than written as literals, which this detector cannot see",
+    "tables inside a region the parser could not read, which are not seen at all — results over a file the parser did not finish are marked `parse-degraded` and the count is a lower bound (PREMORTEM T3)",
 ]
 owner = "gtm-k"
 expiry = "2027-11-15"

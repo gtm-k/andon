@@ -92,6 +92,7 @@ does_not_predict = [
     "which of two copies is the original, or which should change",
     "defect density, maintainability, or review effort",
     "duplication outside the measured file set, which the number never looked at",
+    "duplication inside a region the parser could not read — the token stream stops where the grammar does, so a copied block hidden behind a parse error is not counted. Results over a file the parser did not finish, and every change-scoped number computed over a set containing one, are marked `parse-degraded` and are lower bounds (PREMORTEM T3)",
 ]
 owner = "gtm-k"
 expiry = "2027-03-15"
