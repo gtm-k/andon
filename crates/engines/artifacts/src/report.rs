@@ -188,6 +188,7 @@ impl CoverageReport {
         let text = std::str::from_utf8(bytes).map_err(|_| ReportError::NotUtf8 {
             path: source_path.to_string(),
         })?;
+        let text = strip_bom(text);
         let first = text.trim_start().as_bytes().first().copied();
         if first == Some(b'<') {
             crate::cobertura::parse(source_path, text)
@@ -233,6 +234,22 @@ pub fn normalize_path(path: &str) -> String {
     let slashed = path.replace('\\', "/");
     let trimmed = slashed.trim_start_matches("./");
     trimmed.to_string()
+}
+
+/// Drop a leading byte-order mark.
+///
+/// `str::trim_start` does not remove U+FEFF — it is not whitespace — so a BOM
+/// survives into every prefix test a format sniff makes. That is not an exotic
+/// input: .NET's `XmlWriter` and PowerShell's redirection both write UTF-8 with
+/// a BOM by default, so a `coverage.xml` produced by a Windows toolchain
+/// routinely has one. Before this, such a report was `Unrecognized`, which the
+/// engine reported as "a coverage report was found but could not be read" — a
+/// perfectly good report, and every gap in it dropped.
+///
+/// Only a *leading* mark is removed, and only one. A U+FEFF anywhere else is
+/// content, and this function is not in the business of laundering it.
+pub fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
 /// The deepest element nesting in an XML document, counted without recursing.
@@ -492,5 +509,66 @@ mod depth_tests {
         assert_eq!(max_element_depth("<a><b"), 2);
         assert_eq!(max_element_depth("<!-- unterminated"), 0);
         assert_eq!(max_element_depth(""), 0);
+    }
+}
+
+#[cfg(test)]
+mod bom_tests {
+    use super::*;
+
+    /// U+FEFF, which is what a Windows toolchain puts at the head of a UTF-8
+    /// file and what `trim_start` does not remove.
+    const BOM: &str = "\u{feff}";
+
+    const COBERTURA: &str = r#"<coverage><packages><package><classes>
+        <class filename="src/a.ts"><lines><line number="4" hits="0"/></lines></class>
+      </classes></package></packages></coverage>"#;
+    const LCOV: &str = "SF:src/a.ts\nDA:4,0\nend_of_record\n";
+
+    #[test]
+    fn a_bom_does_not_make_a_cobertura_report_unreadable() {
+        // Before the fix this was `Unrecognized`, which the engine reported as
+        // "a coverage report was found but could not be read" — for a valid
+        // report, with every gap in it dropped.
+        let report = CoverageReport::parse("coverage.xml", format!("{BOM}{COBERTURA}").as_bytes())
+            .expect("a BOM'd cobertura report is still a cobertura report");
+        assert_eq!(report.format, ReportFormat::Cobertura);
+        assert_eq!(report.files["src/a.ts"][&4], 0);
+    }
+
+    #[test]
+    fn a_bom_does_not_make_an_lcov_tracefile_unreadable() {
+        let report = CoverageReport::parse("lcov.info", format!("{BOM}{LCOV}").as_bytes())
+            .expect("a BOM'd tracefile is still a tracefile");
+        assert_eq!(report.format, ReportFormat::Lcov);
+        assert_eq!(report.files["src/a.ts"][&4], 0);
+    }
+
+    #[test]
+    fn a_bom_changes_nothing_about_what_is_read() {
+        // The stronger statement: not merely that both parse, but that they
+        // produce the same report. A fix that stripped the BOM into the first
+        // path or the first record would pass the two tests above.
+        for text in [COBERTURA, LCOV] {
+            let plain = CoverageReport::parse("r", text.as_bytes()).expect("parses");
+            let marked =
+                CoverageReport::parse("r", format!("{BOM}{text}").as_bytes()).expect("parses");
+            assert_eq!(plain, marked);
+        }
+    }
+
+    #[test]
+    fn the_paths_without_a_bom_are_untouched() {
+        assert_eq!(strip_bom("SF:src/a.ts"), "SF:src/a.ts");
+        assert_eq!(strip_bom(""), "");
+    }
+
+    #[test]
+    fn only_a_leading_mark_is_removed_and_only_one() {
+        // A U+FEFF anywhere else is content. Two of them means the file has one
+        // and then some content that starts with one, and laundering the second
+        // would be this function deciding what a document meant.
+        assert_eq!(strip_bom("\u{feff}\u{feff}x"), "\u{feff}x");
+        assert_eq!(strip_bom("x\u{feff}y"), "x\u{feff}y");
     }
 }

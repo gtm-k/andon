@@ -38,8 +38,8 @@
 use std::collections::BTreeMap;
 
 use crate::report::{
-    join_source, max_element_depth, normalize_path, CoverageReport, ReportError, ReportFormat,
-    MAX_ELEMENT_DEPTH,
+    join_source, max_element_depth, normalize_path, strip_bom, CoverageReport, ReportError,
+    ReportFormat, MAX_ELEMENT_DEPTH,
 };
 
 /// Parser version, stamped into `MeasurementRegime::Artifacts`.
@@ -47,6 +47,12 @@ pub const PARSER_VERSION: &str = "1";
 
 /// Parse a Cobertura-shaped XML document.
 pub fn parse(source_path: &str, text: &str) -> Result<CoverageReport, ReportError> {
+    // `roxmltree` tolerates a leading BOM — verified, not assumed — so this is
+    // belt rather than braces. It is here anyway because a reader of this
+    // function should not have to know that, and because the tolerance is a
+    // property of a dependency rather than of the format.
+    let text = strip_bom(text);
+
     // Before the parser sees a byte. `roxmltree`'s tokenizer recurses per
     // nesting level, and a deep document overflows the stack — which aborts the
     // process rather than returning an error, so there is no version of this

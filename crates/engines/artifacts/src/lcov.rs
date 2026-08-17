@@ -27,13 +27,17 @@
 
 use std::collections::BTreeMap;
 
-use crate::report::{normalize_path, CoverageReport, ReportError, ReportFormat};
+use crate::report::{normalize_path, strip_bom, CoverageReport, ReportError, ReportFormat};
 
 /// Parser version, stamped into `MeasurementRegime::Artifacts`.
 pub const PARSER_VERSION: &str = "1";
 
 /// Parse an LCOV tracefile.
 pub fn parse(source_path: &str, text: &str) -> Result<CoverageReport, ReportError> {
+    // A BOM would ride into the first `SF:` test and make the whole tracefile
+    // one unrecognised line. Stripped here as well as at the sniff, so a caller
+    // who reached this function directly is as safe as one who did not.
+    let text = strip_bom(text);
     let mut files: BTreeMap<String, BTreeMap<u32, u64>> = BTreeMap::new();
     let mut current: Option<String> = None;
     let mut degraded = false;
