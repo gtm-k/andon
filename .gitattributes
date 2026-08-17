@@ -1,0 +1,25 @@
+# Line endings are a correctness concern here, not a style one.
+#
+# PREMORTEM Story 1 names CRLF worktree reads against LF CI checkouts as one of
+# three independent causes of the false-divergence epidemic. The compared lane
+# reads git blob OIDs rather than worktree bytes, which is the real defence — but
+# normalizing in the repository removes the whole class from fixtures, test data,
+# and the golden set, where a checkout-dependent byte would be a trap rather than
+# a bug.
+*               text=auto eol=lf
+
+# Shell scripts must keep LF regardless of platform: a CRLF shebang line is not
+# executable.
+*.sh            text eol=lf
+
+# Fixtures are byte-exact inputs. Never touch them.
+crates/andon-registry-lint/tests/fixtures/**  -text
+fixtures/**     -text
+
+# Generated contract artifacts, so a diff is a real schema change.
+schemas/*.json  text eol=lf linguist-generated=true
+
+*.png binary
+*.jpg binary
+*.gz  binary
+*.zip binary
