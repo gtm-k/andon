@@ -23,6 +23,12 @@ fixtures/**     -text
 # line existed.
 fixtures/**/*.sh  text eol=lf
 
+# Nor is prose *about* a fixture. Left byte-exact, a doc edited on Windows
+# commits CRLF into a repository that is LF everywhere else — noise in every
+# later diff, and in a repository whose product is byte-level determinism, noise
+# that has to be explained each time it appears.
+fixtures/**/*.md  text eol=lf
+
 # Generated contract artifacts, so a diff is a real schema change.
 schemas/*.json  text eol=lf linguist-generated=true
 
