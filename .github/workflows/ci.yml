@@ -9,6 +9,13 @@
 #
 # The matrix legs themselves arrive with P1.5 (spike-matrix.yml) and the perf
 # gate with P1 (perf.yml). This file carries the checks that exist from P0.
+#
+# Every third-party action in this file — including GitHub's own — is pinned by
+# commit SHA with the tag in a trailing comment, never by the tag itself. A tag
+# is a mutable pointer that whoever controls the repository can move to new
+# code, and these actions run with a token in a project whose product is trust.
+# The comment says which release the SHA was, so an upgrade is still legible in
+# a diff.
 
 name: ci
 
@@ -32,7 +39,7 @@ jobs:
     name: fmt, clippy, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # rust-toolchain.toml pins the version; this only adds the components.
       - name: Install toolchain
@@ -45,10 +52,6 @@ jobs:
           cargo fmt --version
           cargo clippy --version
 
-      # Third-party actions are pinned by commit SHA, never by a mutable tag.
-      # A tag can be repointed at new code by anyone who controls the
-      # repository, which in a project whose product is trust is not a risk
-      # worth taking for a caching optimization.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Format
@@ -64,7 +67,7 @@ jobs:
     name: evidence registry
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # Required green from P2 onward, and runnable from P0. It passes over an
@@ -77,7 +80,7 @@ jobs:
     name: licence and source gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Installed from a release binary rather than `cargo install` (which
       # compiles for minutes) and rather than a third-party action (an
@@ -124,7 +127,7 @@ jobs:
     name: self-measure (bootstrap)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Placeholder until dogfood switch-on at P5b. It announces that no
       # measurement was performed, and fails if the measurement CLI has appeared
@@ -136,7 +139,7 @@ jobs:
     name: engines change gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Two commits is enough to diff a push against its parent.
           fetch-depth: 2
@@ -149,12 +152,21 @@ jobs:
       # the gate rather than skipping it. Skipping is the expensive mistake: an
       # engine change would slip past the check silently, whereas a needless run
       # only costs minutes.
+      #
+      # `github.event.before` reaches the script through `env:` rather than
+      # `${{ }}` interpolation. Direct interpolation pastes the value into the
+      # shell source before bash parses it, so anything shell-significant in it
+      # is executed rather than read; going through the environment means the
+      # script only ever sees it as data. It is a SHA today, but the safety of
+      # this step should not rest on a payload field's format.
       - name: Detect engine changes
         id: detect
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           base=""
-          before="${{ github.event.before }}"
+          before="${PUSH_BEFORE:-}"
           if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] \
              && git cat-file -e "${before}^{commit}" 2>/dev/null; then
             base="$before"

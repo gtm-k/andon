@@ -30,6 +30,14 @@ pub struct Date {
 #[error("'{0}' is not an ISO date (expected YYYY-MM-DD)")]
 pub struct DateParseError(String);
 
+/// The system clock reads before the Unix epoch.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the system clock reads before 1970-01-01; \
+     expiry dates cannot be evaluated against it (pass --as-of to supply a date)"
+)]
+pub struct ClockError;
+
 impl Date {
     /// Construct, validating the day against the month and leap year.
     pub fn new(year: i32, month: u32, day: u32) -> Option<Self> {
@@ -44,12 +52,19 @@ impl Date {
     /// Callers that need determinism pass an explicit date instead — which is
     /// why the lint takes `--as-of`. A lint whose result depends on when it runs
     /// makes a green build decay silently.
-    pub fn today_utc() -> Self {
+    ///
+    /// Fails on a pre-epoch clock rather than substituting a date. Every use of
+    /// this is a staleness comparison, and silently answering `1970-01-01`
+    /// would make every claim in the registry look fresh for the next half
+    /// century — the expiry mechanism switched off, reported as a pass. A
+    /// machine whose clock is that wrong cannot support the question being
+    /// asked, and saying so is the only useful answer.
+    pub fn today_utc() -> Result<Self, ClockError> {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        Self::from_days_since_epoch(secs.div_euclid(86_400))
+            .map_err(|_| ClockError)?
+            .as_secs() as i64;
+        Ok(Self::from_days_since_epoch(secs.div_euclid(86_400)))
     }
 
     /// Convert a day count since 1970-01-01 into a civil date.
@@ -166,6 +181,20 @@ mod tests {
         let b: Date = "2027-02-01".parse().unwrap();
         assert!(a < b);
         assert!("2026-12-31".parse::<Date>().unwrap() < a);
+    }
+
+    /// A working clock still produces a usable date.
+    ///
+    /// The failure path needs a pre-epoch clock and so cannot be exercised
+    /// here; this pins the half that can be, and the lower bound holds for as
+    /// long as the code exists.
+    #[test]
+    fn a_working_clock_yields_a_plausible_date() {
+        let today = Date::today_utc().expect("the test machine's clock is sane");
+        assert!(
+            today.year >= 2026,
+            "today_utc returned {today}, which is before this code was written"
+        );
     }
 
     #[test]

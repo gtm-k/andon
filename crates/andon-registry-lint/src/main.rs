@@ -78,13 +78,19 @@ fn parse_args() -> Result<Args, String> {
         }
     }
 
+    // Tests always pass --as-of: a lint whose verdict depends on the day it runs
+    // cannot be asserted on. CI deliberately does not — staleness notices should
+    // appear as claims age, and since they never fail the build, letting the
+    // real date reach CI is how expiry becomes visible. A clock we cannot read
+    // is a usage error, not a date to guess at.
+    let as_of = match as_of {
+        Some(date) => date,
+        None => Date::today_utc().map_err(|e| e.to_string())?,
+    };
+
     Ok(Args {
         registry_dir: registry_dir.ok_or_else(|| format!("missing registry directory\n{USAGE}"))?,
-        // Tests always pass --as-of: a lint whose verdict depends on the day it
-        // runs cannot be asserted on. CI deliberately does not — staleness
-        // notices should appear as claims age, and since they never fail the
-        // build, letting the real date reach CI is how expiry becomes visible.
-        as_of: as_of.unwrap_or_else(Date::today_utc),
+        as_of,
         policy_path,
         quiet,
     })
@@ -155,11 +161,21 @@ fn load_registry_files(dir: &Path) -> Result<Vec<(String, EngineRegistryFile)>, 
         return Err(format!("{} is not a directory", dir.display()));
     }
 
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "toml"))
-        .collect();
+    // Entry errors are propagated, not skipped. A permission error or an
+    // unreadable name on one file would otherwise drop a registry file from the
+    // lint silently: the claims in it go unchecked, the budget is undercounted,
+    // and the build goes green over a registry nobody fully read.
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("cannot read an entry in {}: {e}", dir.display()))?
+            .path();
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "toml") {
+            paths.push(path);
+        }
+    }
     // Sorted so diagnostics come out in the same order everywhere, which matters
     // when CI output is the only thing a contributor can see.
     paths.sort();
