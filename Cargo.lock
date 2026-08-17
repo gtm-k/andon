@@ -52,6 +52,10 @@ dependencies = [
  "sha2",
  "thiserror",
  "toml",
+ "tree-sitter",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-typescript",
 ]
 
 [[package]]

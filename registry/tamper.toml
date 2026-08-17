@@ -1,0 +1,266 @@
+# Evidence registry for the tamper-detector suite (P3).
+#
+# WHY EVERY CLAIM HERE IS TIER N
+# ------------------------------
+# These seven detectors are novel. There is no literature that says "a change
+# whose suppression density rose is more likely to be defective", because nobody
+# has studied it — the failure mode they address (an optimizer with visibility
+# into the metric) is younger than the evidence base. Tier N is the registry's
+# word for exactly this standing: motivated by evidence, not yet supported by
+# it. Claiming otherwise would be the overstatement the whole registry exists to
+# make impossible, and it would be the *product's own* failure: a tool whose
+# headline is "measurement that carries its evidence" cannot ship a detector
+# with a borrowed citation.
+#
+# What each claim therefore predicts is narrow and mechanical: that the thing
+# named was observed in the change. Whether the change was gamed is a judgement
+# a human makes with the finding in front of them, and every `does_not_predict`
+# says so.
+#
+# `citation_ref` is omitted throughout. An unverified DOI written from memory
+# reads as checked and is not; the P10a registry gate resolves identifiers
+# automatically, and citations that name their source in full are what a
+# re-reviewer can actually act on before then.
+#
+# CALIBRATION
+# -----------
+# The precision and recall of each detector against the frozen corpus v1 are in
+# `fixtures/adversarial/README.md`, measured by `andon-corpus-report` and gated
+# at >= 0.80 precision / >= 0.70 recall by `tests/corpus_floors.rs`. Those are
+# properties of the implementation, not of the claim, which is why they live
+# with the corpus rather than in this file.
+
+schema_version = 1
+engine = "tamper"
+family = "tamper"
+
+# ---------------------------------------------------------------- test removal
+
+[[metric]]
+metric_id = "tamper.test-removal"
+claim_id = "andon.tamper.test-removal@1|any|test-coverage-withdrawal"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "tamper.test-removal.magnitude"
+claim_id = "andon.tamper.test-removal@1|any|test-coverage-withdrawal"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.tamper.test-removal@1|any|test-coverage-withdrawal"
+implementation = "andon.tamper.test-removal"
+implementation_version = "1"
+language = "any"
+outcome = "test-coverage-withdrawal"
+tier = "N"
+citation = "Novel. No study underlies it. Motivated by PREMORTEM S1: a measured system whose tests are also the measurement's subject can be improved by removing the subject."
+population = "none — calibrated against Andon's own corpus v1, which is a test set and not a study population"
+effect = "none claimed; the net count of test cases the change removes, plus the count it newly marks skipped, across the whole changed set"
+does_not_predict = [
+    "that the removal was illegitimate — deleting the tests for a deleted feature is correct",
+    "defect density",
+    "the quality of the tests that remain",
+    "removals in languages this engine has no grammar for",
+]
+owner = "gtm-k"
+expiry = "2027-03-15"
+
+# --------------------------------------------------------- suppression density
+
+[[metric]]
+metric_id = "tamper.suppression-density"
+claim_id = "andon.tamper.suppression-density@1|any|analysis-suppression"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "tamper.suppression-density.magnitude"
+claim_id = "andon.tamper.suppression-density@1|any|analysis-suppression"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.tamper.suppression-density@1|any|analysis-suppression"
+implementation = "andon.tamper.suppression-density"
+implementation_version = "1"
+language = "any"
+outcome = "analysis-suppression"
+tier = "N"
+citation = "Novel. No study underlies it. Motivated by the observation that a suppression comment is the cheapest way to make a static finding disappear without changing the code it is about."
+population = "none — calibrated against Andon's own corpus v1"
+effect = "none claimed; the net count of linter and type-checker suppression directives added, fired only when the count rises by at least two and the per-line density rises with it"
+does_not_predict = [
+    "that the suppressions were unjustified — a documented suppression is normal practice",
+    "defect density",
+    "whether the suppressed findings were true positives",
+    "suppressions added in files the change did not touch",
+]
+owner = "gtm-k"
+expiry = "2027-04-19"
+
+# ------------------------------------------------------------ assertion-free test
+
+[[metric]]
+metric_id = "tamper.assertion-free-test"
+claim_id = "andon.tamper.assertion-free-test@1|any|unverified-test"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "tamper.assertion-free-test.magnitude"
+claim_id = "andon.tamper.assertion-free-test@1|any|unverified-test"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.tamper.assertion-free-test@1|any|unverified-test"
+implementation = "andon.tamper.assertion-free-test"
+implementation_version = "1"
+language = "any"
+outcome = "unverified-test"
+tier = "N"
+citation = "Novel. Motivated by the test-smell literature — van Deursen, Moonen, van den Bergh and Kok, 'Refactoring Test Code', XP 2001, which named assertion problems as a test smell — but that work describes smells qualitatively and validates nothing about this detector."
+population = "none — calibrated against Andon's own corpus v1"
+effect = "none claimed; the count of test cases the change adds, or edits into existence, whose bodies contain no assertion-shaped call"
+does_not_predict = [
+    "that the test is worthless — a smoke test that only checks a call does not throw is a real test",
+    "coverage adequacy",
+    "defect-detection ability of the suite",
+    "tests whose assertions are hidden behind a helper this detector cannot recognise",
+]
+owner = "gtm-k"
+expiry = "2027-05-17"
+
+# ----------------------------------------------------- coverage exclusion drift
+
+[[metric]]
+metric_id = "tamper.coverage-exclusion-drift"
+claim_id = "andon.tamper.coverage-exclusion@1|any|coverage-scope-narrowing"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "tamper.coverage-exclusion-drift.magnitude"
+claim_id = "andon.tamper.coverage-exclusion@1|any|coverage-scope-narrowing"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.tamper.coverage-exclusion@1|any|coverage-scope-narrowing"
+implementation = "andon.tamper.coverage-exclusion"
+implementation_version = "1"
+language = "any"
+outcome = "coverage-scope-narrowing"
+tier = "N"
+citation = "Novel. No study underlies it. Motivated by the arithmetic: excluding a path raises a coverage percentage without testing anything, and the edit is one line in a file review rarely reaches."
+population = "none — calibrated against Andon's own corpus v1"
+effect = "none claimed; the net count of exclusion entries added to recognised coverage configuration files in the change"
+does_not_predict = [
+    "that the exclusion was illegitimate — generated code and vendored trees are excluded for good reasons",
+    "the resulting coverage number",
+    "defect density",
+    "exclusions expressed in configuration formats this detector does not recognise",
+]
+owner = "gtm-k"
+expiry = "2027-06-14"
+
+# ------------------------------------------------------- threshold config edit
+
+[[metric]]
+metric_id = "tamper.threshold-config-edit"
+claim_id = "andon.tamper.threshold-edit@1|any|quality-gate-loosening"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "tamper.threshold-config-edit.magnitude"
+claim_id = "andon.tamper.threshold-edit@1|any|quality-gate-loosening"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.tamper.threshold-edit@1|any|quality-gate-loosening"
+implementation = "andon.tamper.threshold-edit"
+implementation_version = "1"
+language = "any"
+outcome = "quality-gate-loosening"
+tier = "N"
+citation = "Novel. No study underlies it. Reported advisory rather than blocking per PLAN.md round-1 B6: a tool that blocks on policy edits has made policy evolution impossible, and that is a worse failure than the one it prevents."
+population = "none — calibrated against Andon's own corpus v1"
+effect = "none claimed; the count of recognised quality settings in the change whose value moved in the loosening direction — a severity lowered, a strictness flag turned off, a floor reduced, or an allowance raised"
+does_not_predict = [
+    "that the loosening was unjustified — this signal is advisory precisely because most loosenings are deliberate",
+    "the effect of the edit on any downstream number",
+    "defect density",
+    "settings in formats or keys this detector does not recognise",
+]
+owner = "gtm-k"
+expiry = "2027-07-19"
+
+# -------------------------------------------------------- lookup table blowup
+
+[[metric]]
+metric_id = "tamper.lookup-table-blowup"
+claim_id = "andon.tamper.lookup-table@1|any|hard-coded-answers"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "tamper.lookup-table-blowup.magnitude"
+claim_id = "andon.tamper.lookup-table@1|any|hard-coded-answers"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.tamper.lookup-table@1|any|hard-coded-answers"
+implementation = "andon.tamper.lookup-table"
+implementation_version = "1"
+language = "any"
+outcome = "hard-coded-answers"
+tier = "N"
+citation = "Novel. No study underlies it. Motivated by the shape a test-satisfying non-implementation takes: a table of the exact inputs the suite uses, consulted where a computation was expected."
+population = "none — calibrated against Andon's own corpus v1"
+effect = "none claimed; the size of the largest literal collection of at least 24 entries the change adds inside a function body, in a file that is not recognised data"
+does_not_predict = [
+    "that the table is wrong — precomputed tables are a legitimate optimisation",
+    "algorithmic correctness or generality",
+    "defect density",
+    "tables built at run time rather than written as literals",
+]
+owner = "gtm-k"
+expiry = "2027-08-16"
+
+# ------------------------------------------------------------ parse-error delta
+
+[[metric]]
+metric_id = "tamper.parse-error-delta"
+claim_id = "andon.tamper.parse-error-delta@1|any|analysis-blind-spot"
+class = "diff-actionable"
+deterministic = true
+
+[[metric]]
+metric_id = "tamper.parse-error-delta.magnitude"
+claim_id = "andon.tamper.parse-error-delta@1|any|analysis-blind-spot"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.tamper.parse-error-delta@1|any|analysis-blind-spot"
+implementation = "andon.tamper.parse-error-delta"
+implementation_version = "1"
+language = "any"
+outcome = "analysis-blind-spot"
+tier = "N"
+citation = "Novel. No study underlies it. Named in Andon's own pre-mortem (PREMORTEM T3): tree-sitter ERROR nodes hide code from every static engine, so a rising count is a rising blind spot whether or not anyone put it there on purpose."
+population = "none — calibrated against Andon's own corpus v1"
+effect = "none claimed; the net change in tree-sitter ERROR and MISSING node counts across the files in the change that a vendored grammar reads"
+does_not_predict = [
+    "that the parse failure was deliberate — a grammar older than a language feature produces the same signal",
+    "the correctness of the code that failed to parse",
+    "anything about files no vendored grammar reads, which are not counted at all",
+    "defect density",
+]
+owner = "gtm-k"
+expiry = "2027-09-13"
