@@ -80,8 +80,10 @@ fn parse_args() -> Result<Args, String> {
 
     Ok(Args {
         registry_dir: registry_dir.ok_or_else(|| format!("missing registry directory\n{USAGE}"))?,
-        // Defaulting to today is a convenience for humans; CI and tests pass
-        // --as-of so that a green run stays green for reasons that are visible.
+        // Tests always pass --as-of: a lint whose verdict depends on the day it
+        // runs cannot be asserted on. CI deliberately does not — staleness
+        // notices should appear as claims age, and since they never fail the
+        // build, letting the real date reach CI is how expiry becomes visible.
         as_of: as_of.unwrap_or_else(Date::today_utc),
         policy_path,
         quiet,

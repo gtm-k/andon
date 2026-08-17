@@ -21,9 +21,15 @@ because the binary doing the judging predates the change.
 ## The bootstrap exception
 
 No attested release exists yet, so there is nothing to measure with. Until the
-first one ships, `[self_measure] binary` reads `current-build` and every
-self-measurement carries the override reason
+first one ships, every self-measurement carries the override reason
 `bootstrap-no-attested-release`.
+
+`.andon.toml` states the **rule** — `[self_measure] binary =
+"last-attested-release"` — and not the exception. That is deliberate: a policy
+file that already reads `current-build` makes the weaker posture the default and
+leaves nothing to switch off later. The exception is taken per run, as a recorded
+override, so it stays visible in the ledger rather than sitting silently in
+configuration.
 
 The exception is self-expiring: it stops being available the moment the first
 attested release exists, because the condition it names stops being true. It is

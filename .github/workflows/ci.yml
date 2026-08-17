@@ -45,7 +45,11 @@ jobs:
           cargo fmt --version
           cargo clippy --version
 
-      - uses: Swatinem/rust-cache@v2
+      # Third-party actions are pinned by commit SHA, never by a mutable tag.
+      # A tag can be repointed at new code by anyone who controls the
+      # repository, which in a project whose product is trust is not a risk
+      # worth taking for a caching optimization.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Format
         run: cargo fmt --all --check
@@ -61,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # Required green from P2 onward, and runnable from P0. It passes over an
       # empty registry and says so, so this job is meaningful from the first
@@ -121,26 +125,41 @@ jobs:
 
       # Changed paths are computed with plain git rather than a third-party
       # path-filter action, for the same reason cargo-deny is not one.
+      #
+      # Fail-closed: when the base is unknown or unreachable — a first push, a
+      # force push, a multi-commit push whose parent was not fetched — this runs
+      # the gate rather than skipping it. Skipping is the expensive mistake: an
+      # engine change would slip past the check silently, whereas a needless run
+      # only costs minutes.
       - name: Detect engine changes
         id: detect
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ] \
-             && git cat-file -e "${{ github.event.before }}^{commit}" 2>/dev/null; then
-            base="${{ github.event.before }}"
-          else
-            base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
-          fi
-          changed="$(git diff --name-only "$base" HEAD -- 'crates/engines/**' || true)"
-          if [ -n "$changed" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Engine files changed:"; echo "$changed"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No engine files changed."
+          base=""
+          before="${{ github.event.before }}"
+          if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            base="$before"
+          elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+            base="$(git rev-parse HEAD~1)"
           fi
 
-      - uses: Swatinem/rust-cache@v2
+          if [ -z "$base" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Base commit unknown; running the gate rather than skipping it."
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "$base" HEAD -- 'crates/engines/**')"
+          if [ -n "$changed" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Engine files changed since ${base}:"; echo "$changed"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No engine files changed since ${base}."
+          fi
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: steps.detect.outputs.changed == 'true'
 
       # The two-binary comparison needs a golden set, which P5b creates. Wiring
