@@ -27,6 +27,7 @@ use crate::date::Date;
 use crate::engine::MeasureEngine;
 use crate::policy::RegistryPolicy;
 use crate::schema::enums::{EngineFamily, EvidenceTier, MetricClass};
+use crate::schema::payload::EvidenceRef;
 
 /// One engine's registry file, e.g. `registry/static.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -120,6 +121,24 @@ pub struct ResolvedClaim {
     /// True once `as_of` is past `expiry`. Surfaced as `evidence: stale`
     /// everywhere the claim is cited, never suppressed.
     pub stale: bool,
+}
+
+impl ResolvedClaim {
+    /// Project into the [`EvidenceRef`] a measurement result carries.
+    ///
+    /// This is the demotion in PREMORTEM S2, made mechanical. Every path from a
+    /// claim to a reported number goes through here, so an expired claim cannot
+    /// reach a payload without its `stale` flag: there is no second way to build
+    /// an `EvidenceRef` from a claim, and therefore no way to forget.
+    pub fn to_evidence_ref(&self) -> EvidenceRef {
+        EvidenceRef {
+            claim_id: self.claim.claim_id.clone(),
+            tier: self.claim.tier,
+            citation: self.claim.citation.clone(),
+            does_not_predict: self.claim.does_not_predict.clone(),
+            stale: self.stale,
+        }
+    }
 }
 
 /// Every engine registry file, merged.
