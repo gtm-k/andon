@@ -213,10 +213,13 @@ pub struct ArtifactsEngine {
     findings: Vec<FileFinding>,
     /// True when no report was available at all.
     no_report: bool,
-    /// True when a report file existed and could not be read. Only meaningful
-    /// alongside `no_report`: a readable report elsewhere answers the question,
-    /// and one unreadable file beside it is not the headline.
-    unreadable: bool,
+    /// Report files that were found and could not be read, by path.
+    ///
+    /// Surfaced whether or not another report answered. A repository with a
+    /// working `lcov.info` and a broken `coverage.xml` is one where somebody's
+    /// coverage step is failing, and the readable file next to it is exactly
+    /// what would keep that invisible.
+    unreadable: Vec<String>,
 }
 
 impl ArtifactsEngine {
@@ -250,7 +253,11 @@ impl ArtifactsEngine {
     ) -> Result<Self, ArtifactsError> {
         let lines = ChangedLines::for_range(git, range)?;
         let mut engine = Self::from_lines(&lines, changed, &discovery.reports);
-        engine.unreadable = !discovery.problems.is_empty();
+        engine.unreadable = discovery
+            .problems
+            .iter()
+            .map(|problem| problem.path().to_string())
+            .collect();
         Ok(engine)
     }
 
@@ -318,7 +325,7 @@ impl ArtifactsEngine {
             version: engine_version(),
             findings,
             no_report: reports.is_empty(),
-            unreadable: false,
+            unreadable: Vec::new(),
         }
     }
 
@@ -397,55 +404,84 @@ impl MeasureEngine for ArtifactsEngine {
             .to_evidence_ref();
         let _ = ctx;
 
+        // One change-scoped note per unreadable report, emitted whether or not
+        // another report answered. A repository with a working `lcov.info` and a
+        // broken `coverage.xml` is one where somebody's coverage step is
+        // failing, and the readable file beside it is exactly what would keep
+        // that invisible.
+        //
+        // The path travels in the scope rather than in the value. An operator
+        // needs to know *which* file is broken, and a value built by
+        // interpolation is a value two sides could disagree on — a rule this
+        // family could bend, since none of its results are digest-compared, and
+        // one not worth bending for a field the payload already has.
+        let mut results: Vec<MeasurementResult> = self
+            .unreadable
+            .iter()
+            .map(|path| {
+                self.result(
+                    ResultScope {
+                        kind: ScopeKind::Change,
+                        path: Some(path.clone()),
+                        blob_oid: None,
+                        symbol: None,
+                        line_span: None,
+                    },
+                    MetricValue::Text(REASON_REPORT_UNREADABLE.to_string()),
+                    Completeness::Unwitnessed,
+                    evidence.clone(),
+                )
+            })
+            .collect();
+
         if self.no_report {
             // One change-scoped marker rather than a per-file one. "There is no
             // coverage report" is a fact about the run, not about each file, and
             // repeating it once per changed file would bury the finding that
             // matters under noise the reader cannot act on.
-            let reason = if self.unreadable {
-                REASON_REPORT_UNREADABLE
-            } else {
-                REASON_NO_REPORT
-            };
-            return Ok(vec![self.result(
-                change_scope(),
-                MetricValue::Text(reason.to_string()),
-                Completeness::Unwitnessed,
-                evidence,
-            )]);
+            //
+            // And it is only the right thing to say when nothing was found at
+            // all: where something was found and refused, the notes above have
+            // already said so, and this would contradict them.
+            if results.is_empty() {
+                results.push(self.result(
+                    change_scope(),
+                    MetricValue::Text(REASON_NO_REPORT.to_string()),
+                    Completeness::Unwitnessed,
+                    evidence,
+                ));
+            }
+            return Ok(results);
         }
 
-        Ok(self
-            .findings
-            .iter()
-            .map(|finding| {
-                let scope = ResultScope {
-                    kind: ScopeKind::File,
-                    path: Some(finding.path.clone()),
-                    blob_oid: None,
-                    symbol: None,
-                    line_span: None,
-                };
-                match finding.uncovered {
-                    Some(count) => self.result(
-                        scope,
-                        MetricValue::Count(count),
-                        if finding.degraded {
-                            Completeness::ParseDegraded
-                        } else {
-                            Completeness::Complete
-                        },
-                        evidence.clone(),
-                    ),
-                    None => self.result(
-                        scope,
-                        MetricValue::Text(REASON_NOT_IN_REPORT.to_string()),
-                        Completeness::Unwitnessed,
-                        evidence.clone(),
-                    ),
-                }
-            })
-            .collect())
+        results.extend(self.findings.iter().map(|finding| {
+            let scope = ResultScope {
+                kind: ScopeKind::File,
+                path: Some(finding.path.clone()),
+                blob_oid: None,
+                symbol: None,
+                line_span: None,
+            };
+            match finding.uncovered {
+                Some(count) => self.result(
+                    scope,
+                    MetricValue::Count(count),
+                    if finding.degraded {
+                        Completeness::ParseDegraded
+                    } else {
+                        Completeness::Complete
+                    },
+                    evidence.clone(),
+                ),
+                None => self.result(
+                    scope,
+                    MetricValue::Text(REASON_NOT_IN_REPORT.to_string()),
+                    Completeness::Unwitnessed,
+                    evidence.clone(),
+                ),
+            }
+        }));
+        Ok(results)
     }
 }
 

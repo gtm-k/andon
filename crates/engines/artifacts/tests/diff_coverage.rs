@@ -343,3 +343,68 @@ fn every_unwitnessed_value_comes_from_the_closed_reason_set() {
     }
     assert!(seen >= 2, "the fixture must produce unwitnessed results");
 }
+
+#[test]
+fn a_broken_report_beside_a_working_one_is_still_reported() {
+    // The case that was invisible: `lcov.info` answers the question, so the
+    // engine had a report and said nothing about the `coverage.xml` it could not
+    // read. Somebody's coverage step is failing, and the working file next to it
+    // is exactly what keeps that quiet.
+    let fixture = fixture("broken-beside-working");
+    std::fs::write(
+        fixture.path.join("lcov.info"),
+        "SF:src/a.ts\nDA:4,0\nend_of_record\n",
+    )
+    .expect("write good report");
+    std::fs::write(fixture.path.join("coverage.xml"), b"<coverage><classes>")
+        .expect("write broken report");
+
+    let discovery = discover(&fixture.path);
+    assert_eq!(discovery.reports.len(), 1, "the good report was read");
+    assert_eq!(discovery.problems.len(), 1, "the broken one was refused");
+
+    let range = ResolvedRange::resolve(
+        &fixture.git,
+        &Revision::Rev(fixture.base.clone()),
+        &Revision::Rev(fixture.head.clone()),
+    )
+    .expect("both endpoints are commits");
+    let changed = ChangedSet::enumerate(&fixture.git, &range).expect("enumerating");
+    let engine = ArtifactsEngine::for_discovery(&fixture.git, &range, &changed, &discovery)
+        .expect("the hunk diff runs");
+    let ctx = MeasureContext {
+        compare_context: range.compare_context().expect("a commit range"),
+        policy: Policy::default(),
+        changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
+        sandbox_available: false,
+    };
+    let results = run_engine(&engine, &ctx).expect("the engine measures");
+
+    // The real finding from the readable report survives.
+    let gap = results
+        .iter()
+        .find(|r| r.scope.kind == ScopeKind::File)
+        .expect("the working report still produced its finding");
+    assert_eq!(gap.value, MetricValue::Count(1));
+
+    // And the broken one is named, by path, in its own note.
+    let note = results
+        .iter()
+        .find(|r| r.scope.kind == ScopeKind::Change)
+        .expect("the broken report must be reported");
+    assert_eq!(note.completeness, Completeness::Unwitnessed);
+    assert_eq!(
+        note.value,
+        MetricValue::Text(REASON_REPORT_UNREADABLE.to_string())
+    );
+    assert_eq!(
+        note.scope.path.as_deref(),
+        Some("coverage.xml"),
+        "an operator has to be told which file is broken"
+    );
+
+    // And "no coverage report found" is never said when one was found.
+    assert!(!results
+        .iter()
+        .any(|r| r.value == MetricValue::Text(REASON_NO_REPORT.to_string())));
+}

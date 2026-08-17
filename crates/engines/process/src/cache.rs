@@ -23,6 +23,26 @@
 //! aggregate has already thrown that away. Size is linear in the window's
 //! path-touches.
 //!
+//! # Nothing here evicts, and that is a decision routed rather than made
+//!
+//! An entry is written per anchor commit, and no entry is ever removed. On a
+//! busy repository measured every commit, that is one entry per commit measured,
+//! each linear in the window's path-touches — roughly 156 bytes per touch,
+//! measured on a 300-commit fixture. It grows without bound.
+//!
+//! No eviction is implemented here **on purpose**. Cache lifecycle is not a
+//! property of the process family: P3's clone index, P5a's assembled fast lane,
+//! and P9's verifier all put state under the git directory, and three phases
+//! each inventing a retention policy is how a repository ends up with three. The
+//! decision — a size cap, an age cap, an `andon cache prune`, or a documented
+//! "delete the directory" — belongs to whichever phase first owns cache
+//! lifecycle across the workspace, which the plan puts at **P5a or P9**.
+//!
+//! What is safe to rely on in the meantime: every entry is a derived value, so
+//! the directory can be deleted at any moment and the only cost is a slower next
+//! run. It lives under the git directory, so a fresh clone starts empty and
+//! removing the clone removes it.
+//!
 //! # Over-keying, deliberately
 //!
 //! [`andon_core::cache::CacheKey`] carries a `policy_hash`, and the window does

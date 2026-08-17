@@ -157,6 +157,23 @@ pub enum ReportError {
     },
 }
 
+impl ReportError {
+    /// The report this error is about.
+    ///
+    /// Every variant carries one, because a failure that cannot name its file is
+    /// a failure nobody can act on — and these are surfaced in the payload, not
+    /// only in a log.
+    pub fn path(&self) -> &str {
+        match self {
+            ReportError::TooLarge { path, .. }
+            | ReportError::NotUtf8 { path }
+            | ReportError::Malformed { path, .. }
+            | ReportError::Unrecognized { path }
+            | ReportError::TooDeep { path, .. } => path,
+        }
+    }
+}
+
 /// Line-level coverage for a set of files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageReport {
