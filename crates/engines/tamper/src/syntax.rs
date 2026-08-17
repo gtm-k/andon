@@ -258,6 +258,53 @@ pub fn each_rows(node: Node<'_>) -> Option<usize> {
     Some(rows)
 }
 
+/// The **name** a call invokes, with any arguments stripped.
+///
+/// For a plain call this is [`callee_text`]. For a curried call —
+/// `it.skip.each(table)(name, fn)` — [`callee_text`] returns the whole inner
+/// call *expression*, arguments and all: `it.skip.each([[1, 1], [2, 2]])`. That
+/// string does not segment usefully, and reading its last segment yields
+/// `each([[1, 1], [2, 2]])`, which matches no marker.
+///
+/// The difference was a one-token full bypass of the entire suite. Changing
+/// `it.each(table)(...)` to `it.skip.each(table)(...)` takes every row out of
+/// the run, and — because it adds no suppression, edits no config, breaks no
+/// parse, and writes no table — all seven detectors stayed silent on it. This
+/// function is what closes that.
+pub fn callee_name(parsed: &Parsed, node: Node<'_>) -> Option<String> {
+    if node.kind() != "call_expression" && node.kind() != "call" {
+        return None;
+    }
+    let callee = node
+        .child_by_field_name("function")
+        .or_else(|| node.child(0))?;
+    let named = match callee.kind() {
+        // A curried call: the name is the inner call's own callee.
+        "call_expression" | "call" => callee
+            .child_by_field_name("function")
+            .or_else(|| callee.child(0))?,
+        _ => callee,
+    };
+    Some(parsed.text(named))
+}
+
+/// Whether any dotted segment of a call name is a skip marker.
+///
+/// Segment-wise, not suffix-wise. Jest spells the same intent as `it.skip`,
+/// `it.skip.each`, `it.concurrent.skip`, `describe.skip.each`, and `xit` — a
+/// rule that read only the last segment caught the first and missed the rest.
+pub fn names_a_skip(callee_name: &str) -> bool {
+    let name = callee_name.trim();
+    if name
+        .split('.')
+        .any(|segment| matches!(segment.trim(), "skip" | "todo" | "failing"))
+    {
+        return true;
+    }
+    // `xit`, `xtest`, `xdescribe`: the skip hidden in the function name.
+    first_segment(name).starts_with('x')
+}
+
 /// The last segment of a dotted callee: `foo.bar.baz` -> `baz`.
 pub fn last_segment(callee: &str) -> &str {
     callee.rsplit(['.', '?']).next().unwrap_or(callee).trim()

@@ -17,7 +17,8 @@
 use crate::change::{is_test_path, ChangeView};
 use crate::detectors::{Detector, Finding, Outcome};
 use crate::syntax::{
-    callee_text, each_rows, first_segment, is_curried_inner, last_segment, Parsed,
+    callee_name, callee_text, each_rows, first_segment, is_curried_inner, last_segment,
+    names_a_skip, Parsed,
 };
 use andon_core::schema::enums::TamperSignal;
 
@@ -26,9 +27,6 @@ pub struct TestRemoval;
 
 /// JavaScript-family functions that declare one test case.
 const JS_CASE: &[&str] = &["it", "test", "xit", "xtest", "fit", "bench"];
-
-/// Suffixes that take a case out of the run without deleting it.
-const JS_SKIP_SUFFIX: &[&str] = &["skip", "todo", "concurrent.skip"];
 
 /// Python decorators that take a case out of the run.
 const PY_SKIP: &[&str] = &["skip", "skipif", "skipunless", "skiptest"];
@@ -152,11 +150,13 @@ fn count_js(parsed: &Parsed) -> Counts {
         // removed.
         let rows = each_rows(node).unwrap_or(1).max(1) as u32;
         counts.cases += rows;
-        let tail = last_segment(&callee);
-        // `xit`/`xtest` are the skip spelling that hides in the function name
-        // rather than in a suffix.
-        if JS_SKIP_SUFFIX.contains(&tail) || base.starts_with('x') || in_skipped_group(parsed, node)
-        {
+        // The *name*, not the callee text: for `it.skip.each(table)(...)` the
+        // callee text is the whole inner call with its table inlined, and no
+        // marker survives being read off the end of it (`syntax::callee_name`).
+        let name = callee_name(parsed, node).unwrap_or_else(|| callee.clone());
+        if names_a_skip(&name) || in_skipped_group(parsed, node) {
+            // A skipped table case takes every one of its rows out of the run,
+            // not one case.
             counts.skipped += rows;
         }
     }
@@ -171,11 +171,8 @@ fn count_js(parsed: &Parsed) -> Counts {
 fn in_skipped_group(parsed: &Parsed, node: tree_sitter::Node<'_>) -> bool {
     let mut parent = node.parent();
     while let Some(current) = parent {
-        if let Some(callee) = callee_text(parsed, current) {
-            let base = first_segment(&callee);
-            if JS_GROUP.contains(&base)
-                && (JS_SKIP_SUFFIX.contains(&last_segment(&callee)) || base.starts_with('x'))
-            {
+        if let Some(name) = callee_name(parsed, current) {
+            if JS_GROUP.contains(&first_segment(&name)) && names_a_skip(&name) {
                 return true;
             }
         }
@@ -292,6 +289,40 @@ mod tests {
         let outcome = TestRemoval.run(&view);
         assert!(!outcome.fired);
         assert_eq!(outcome.magnitude, 1);
+    }
+
+    #[test]
+    fn a_skip_spelled_through_a_table_call_takes_every_row_out() {
+        // The one-token full bypass: `it.each` -> `it.skip.each` removes three
+        // tests from the run and, before this was fixed, left all seven
+        // detectors silent. The callee text of the outer call is the whole
+        // inner call with the table inlined, so no marker read off its end.
+        let table = "[[1, 1], [2, 2], [3, 3]]";
+        let base = format!("it.each({table})('case %i', (a, b) => {{ expect(a).toBe(b); }});\n");
+        let head =
+            format!("it.skip.each({table})('case %i', (a, b) => {{ expect(a).toBe(b); }});\n");
+        let view = ChangeView::new(vec![FileChange::modified("src/a.test.ts", &base, &head)]);
+        let outcome = TestRemoval.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 3, "all three rows left the run");
+    }
+
+    #[test]
+    fn every_jest_skip_spelling_reads_as_a_skip() {
+        let base = "it('a', () => { expect(1).toBe(1); });\n";
+        for spelling in [
+            "it.skip('a', () => { expect(1).toBe(1); });\n",
+            "it.todo('a');\n",
+            "xit('a', () => { expect(1).toBe(1); });\n",
+            "it.concurrent.skip('a', () => { expect(1).toBe(1); });\n",
+            "test.skip('a', () => { expect(1).toBe(1); });\n",
+        ] {
+            let view = ChangeView::new(vec![FileChange::modified("src/a.test.ts", base, spelling)]);
+            assert!(
+                TestRemoval.run(&view).fired,
+                "{spelling:?} did not read as a skip"
+            );
+        }
     }
 
     #[test]
