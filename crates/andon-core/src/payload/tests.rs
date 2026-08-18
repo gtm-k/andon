@@ -227,7 +227,66 @@ fn five_engines() -> Vec<EngineOutput> {
     ]
 }
 
+/// A request whose engine roster is complete by construction.
+///
+/// Assembly requires every engine the registry declares to appear exactly once
+/// (`account_for_every_engine`), which is the point of that rule — but almost
+/// every test here is about one engine's results and should not have to build
+/// five to say so. So the roster is padded: any declared engine the caller did
+/// not supply is added as an output with no results, which is the honest shape
+/// of an engine that ran over a change it had nothing to say about, and leaves
+/// `completeness` alone.
+///
+/// The tests that are *about* the roster call [`bare_request`] and build it
+/// themselves.
 fn request<'a>(
+    policy: &'a Policy,
+    registry: &'a LoadedRegistry,
+    engines: Vec<EngineOutput>,
+) -> AssembleRequest<'a> {
+    let mut engines = engines;
+    let supplied: std::collections::BTreeSet<String> = engines
+        .iter()
+        .map(|e| e.descriptor.engine_id.clone())
+        .collect();
+    for engine_id in &registry.expected_engines {
+        if !supplied.contains(engine_id) {
+            engines.push(output(engine_id, family_of(engine_id), Vec::new()));
+        }
+    }
+    bare_request(policy, registry, engines)
+}
+
+/// The family each shipped engine reports, for the roster padding above.
+fn family_of(engine_id: &str) -> EngineFamily {
+    match engine_id {
+        "static-metrics" => EngineFamily::Static,
+        "clones" => EngineFamily::Clones,
+        "tamper" => EngineFamily::Tamper,
+        "process" => EngineFamily::Process,
+        "artifacts" => EngineFamily::Artifacts,
+        other => panic!("no family known for engine '{other}'"),
+    }
+}
+
+/// Move an engine from the output list to the failure list.
+///
+/// The two are exclusive by construction now — an engine that both produced
+/// results and reported a failure has made two statements one of which is false,
+/// and assembly cannot tell which — so a test declaring a failure has to take
+/// the output away as well.
+fn failed<'a>(mut req: AssembleRequest<'a>, engine_id: &str, reason: &str) -> AssembleRequest<'a> {
+    req.engines
+        .retain(|output| output.descriptor.engine_id != engine_id);
+    req.engine_failures.push(EngineFailure {
+        engine_id: engine_id.to_string(),
+        reason: reason.to_string(),
+    });
+    req
+}
+
+/// A request with exactly the engines the caller named, and no padding.
+fn bare_request<'a>(
     policy: &'a Policy,
     registry: &'a LoadedRegistry,
     engines: Vec<EngineOutput>,
@@ -267,6 +326,216 @@ fn advance(count: u32, cap: u32) -> Advance {
         recovered: false,
     }
 }
+
+// --- the roster ------------------------------------------------------------
+
+#[test]
+fn an_empty_success_set_cannot_be_complete_or_pass() {
+    // CODEX'S PROBE, VERBATIM IN INTENT. Before the roster check this produced a
+    // record with no results, `completeness: complete` and `verdict: pass` — a
+    // clean bill of health from a run in which no engine was invoked. The
+    // reported artifact was `left: (Complete, Pass), right: (Complete, Pass)`.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let err = prepare(bare_request(&policy, &registry, Vec::new()))
+        .expect_err("a payload from no engines is not a measurement");
+    let AssemblyError::MissingEngine { engine_id } = err else {
+        panic!("expected a missing-engine refusal, got {err:?}");
+    };
+    assert!(
+        registry.expected_engines.contains(&engine_id),
+        "the refusal names an engine the registry declares: {engine_id}"
+    );
+}
+
+#[test]
+fn every_declared_engine_must_appear_exactly_once() {
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    assert_eq!(
+        registry.expected_engines.len(),
+        5,
+        "the shipped registry declares five engines: {:?}",
+        registry.expected_engines
+    );
+
+    // Four of five, and the fifth neither ran nor was reported as unavailable.
+    let mut four = five_engines();
+    four.retain(|e| e.descriptor.engine_id != "process");
+    let err = prepare(bare_request(&policy, &registry, four))
+        .expect_err("a silently absent engine is not a measurement");
+    assert_eq!(
+        err,
+        AssemblyError::MissingEngine {
+            engine_id: "process".to_string()
+        }
+    );
+}
+
+#[test]
+fn an_engine_the_registry_does_not_declare_cannot_contribute() {
+    // The other direction. A result whose claim resolves can still come from an
+    // engine no registry file declares — the P1.5 spike is exactly such an
+    // engine, and it reports the `static` family, so a family-keyed rule would
+    // have let it stand in for `static-metrics`.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines();
+    engines.push(output(
+        "spike-size",
+        EngineFamily::Static,
+        vec![result(
+            "spike-size",
+            EngineFamily::Static,
+            "static.cognitive-complexity.typescript",
+            "andon.static.cognitive@1|typescript|comprehension-time",
+            MetricValue::Count(3),
+        )],
+    ));
+    assert_eq!(
+        prepare(bare_request(&policy, &registry, engines)).expect_err("refused"),
+        AssemblyError::UnknownEngine {
+            engine_id: "spike-size".to_string()
+        }
+    );
+}
+
+#[test]
+fn an_engine_cannot_both_produce_results_and_report_a_failure() {
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut req = bare_request(&policy, &registry, five_engines());
+    req.engine_failures = vec![EngineFailure {
+        engine_id: "clones".to_string(),
+        reason: "index lock held".to_string(),
+    }];
+    assert_eq!(
+        prepare(req).expect_err("two statements, one of them false"),
+        AssemblyError::EngineSucceededAndFailed {
+            engine_id: "clones".to_string()
+        }
+    );
+}
+
+#[test]
+fn an_engine_cannot_fail_twice() {
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines();
+    engines.retain(|e| e.descriptor.engine_id != "clones");
+    let mut req = bare_request(&policy, &registry, engines);
+    req.engine_failures = vec![
+        EngineFailure {
+            engine_id: "clones".to_string(),
+            reason: "index lock held".to_string(),
+        },
+        EngineFailure {
+            engine_id: "clones".to_string(),
+            reason: "and something else".to_string(),
+        },
+    ];
+    assert_eq!(
+        prepare(req).expect_err("refused"),
+        AssemblyError::DuplicateFailure {
+            engine_id: "clones".to_string()
+        }
+    );
+}
+
+#[test]
+fn an_unknown_engine_cannot_hide_in_the_failure_list() {
+    // A failure entry is a claim about an engine that was asked. Naming one
+    // nobody declares would let a caller satisfy the roster with an invention.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines();
+    engines.retain(|e| e.descriptor.engine_id != "process");
+    let mut req = bare_request(&policy, &registry, engines);
+    req.engine_failures = vec![EngineFailure {
+        engine_id: "prcoess".to_string(),
+        reason: "a typo is a different engine".to_string(),
+    }];
+    assert_eq!(
+        prepare(req).expect_err("refused"),
+        AssemblyError::UnknownEngine {
+            engine_id: "prcoess".to_string()
+        }
+    );
+}
+
+#[test]
+fn five_engines_that_found_nothing_still_pass() {
+    // The state the roster check must NOT refuse, and the reason it is about
+    // accounting rather than about emptiness: a documentation-only change is a
+    // change every engine looked at and none of them had anything to say about.
+    // "Nobody was asked" and "everybody was asked and found nothing" are
+    // different records, and only the first is a bug.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let quiet: Vec<EngineOutput> = registry
+        .expected_engines
+        .iter()
+        .map(|id| output(id, family_of(id), Vec::new()))
+        .collect();
+    let record = prepare(bare_request(&policy, &registry, quiet))
+        .expect("five engines with nothing to report is a measurement")
+        .finish(advance(0, 3));
+    assert!(record.results.is_empty());
+    assert_eq!(record.completeness, Completeness::Complete);
+    assert_eq!(record.verdict.verdict, Verdict::Pass);
+}
+
+#[test]
+fn the_expected_roster_comes_from_the_registry_and_not_from_a_constant() {
+    // A deployment shipping one registry file expects one engine. Writing the
+    // five down here would make the check pass on a tree that had lost four.
+    let registry = registry_from(&[("clones.toml", ONE_ENGINE_REGISTRY)]);
+    assert_eq!(
+        registry.expected_engines,
+        std::collections::BTreeSet::from(["clones".to_string()])
+    );
+
+    let policy = Policy::default();
+    let one = vec![output(
+        "clones",
+        EngineFamily::Clones,
+        vec![result(
+            "clones",
+            EngineFamily::Clones,
+            "clones.duplicated-tokens",
+            "andon.clones.token-duplication@1|any|token-duplication",
+            MetricValue::Count(0),
+        )],
+    )];
+    prepare(bare_request(&policy, &registry, one)).expect("one declared engine, one contribution");
+}
+
+/// A registry declaring a single engine, for the roster-derivation test.
+const ONE_ENGINE_REGISTRY: &str = r#"
+schema_version = 1
+engine = "clones"
+family = "clones"
+
+[[metric]]
+metric_id = "clones.duplicated-tokens"
+claim_id = "andon.clones.token-duplication@1|any|token-duplication"
+class = "diff-actionable"
+deterministic = true
+
+[[claim]]
+claim_id = "andon.clones.token-duplication@1|any|token-duplication"
+implementation = "andon.clones.token-duplication"
+implementation_version = "1"
+language = "any"
+outcome = "token-duplication"
+tier = "N"
+citation = "Novel."
+population = "none"
+effect = "none claimed"
+does_not_predict = ["anything"]
+owner = "gtm-k"
+expiry = "2027-01-01"
+"#;
 
 // --- the join -------------------------------------------------------------
 
@@ -728,11 +997,11 @@ fn the_loader_decides_staleness_not_the_engine() {
 fn a_failed_engine_makes_the_record_partial() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut req = request(&policy, &registry, five_engines());
-    req.engine_failures = vec![EngineFailure {
-        engine_id: "clones".to_string(),
-        reason: "index lock held by another process".to_string(),
-    }];
+    let req = failed(
+        request(&policy, &registry, five_engines()),
+        "clones",
+        "index lock held by another process",
+    );
     let prepared = prepare(req).expect("assembles");
     assert_eq!(prepared.completeness(), Completeness::Partial);
 
@@ -757,11 +1026,11 @@ fn a_failed_engine_does_not_mask_a_weaker_completeness() {
     let mut engines = five_engines();
     engines[0].results[0].completeness = Completeness::Unwitnessed;
     engines[0].results[0].seal(&compare_context()).unwrap();
-    let mut req = request(&policy, &registry, engines);
-    req.engine_failures = vec![EngineFailure {
-        engine_id: "clones".to_string(),
-        reason: "unavailable".to_string(),
-    }];
+    let req = failed(
+        request(&policy, &registry, engines),
+        "clones",
+        "unavailable",
+    );
     assert_eq!(
         prepare(req).expect("assembles").completeness(),
         Completeness::Unwitnessed,
@@ -773,11 +1042,11 @@ fn a_failed_engine_does_not_mask_a_weaker_completeness() {
 fn a_record_with_no_results_at_all_is_partial_when_engines_failed() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut req = request(&policy, &registry, Vec::new());
-    req.engine_failures = vec![EngineFailure {
-        engine_id: "static-metrics".to_string(),
-        reason: "every grammar failed to load".to_string(),
-    }];
+    let req = failed(
+        request(&policy, &registry, Vec::new()),
+        "static-metrics",
+        "every grammar failed to load",
+    );
     let record = prepare(req).expect("assembles").finish(advance(0, 3));
     assert!(record.results.is_empty());
     assert_eq!(

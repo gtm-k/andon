@@ -22,6 +22,12 @@
 //!   `(metric_id, scope)`; two results sharing one pair make the pairing
 //!   ambiguous, and an ambiguous pairing is a place a forged result can shadow
 //!   an honest one.
+//! - **Every engine the registry declares is accounted for.** Each appears
+//!   exactly once, as an output or as a named failure, and nothing appears that
+//!   no registry file declares ([`account_for_every_engine`]). "Assembly from
+//!   all engines" is the phase's own acceptance criterion, and until this check
+//!   existed nothing held it: a payload assembled from no engines at all came
+//!   out `complete` and `pass`.
 //!
 //! # Grouped by engine, never by family
 //!
@@ -143,6 +149,33 @@ pub enum AssemblyError {
     UnknownTamperSignal {
         /// The metric.
         metric_id: String,
+    },
+    /// An engine the registry declares contributed neither results nor a
+    /// failure.
+    #[error(
+        "engine '{engine_id}' is declared in the registry and appears in this payload neither          as an output nor as a failure"
+    )]
+    MissingEngine {
+        /// The engine nobody accounted for.
+        engine_id: String,
+    },
+    /// An output or failure names an engine the registry does not declare.
+    #[error("engine '{engine_id}' contributed to this payload and no registry file declares it")]
+    UnknownEngine {
+        /// The engine nobody declared.
+        engine_id: String,
+    },
+    /// Two failure entries name the same engine.
+    #[error("engine '{engine_id}' failed twice in one payload")]
+    DuplicateFailure {
+        /// The engine named twice.
+        engine_id: String,
+    },
+    /// One engine both produced results and reported a failure.
+    #[error("engine '{engine_id}' both produced results and reported a failure")]
+    EngineSucceededAndFailed {
+        /// The engine in both lists.
+        engine_id: String,
     },
     /// The policy in force could not be hashed for the record.
     ///
@@ -277,14 +310,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
     let mut engines = engines;
     engines.sort_by(|a, b| a.descriptor.engine_id.cmp(&b.descriptor.engine_id));
 
-    let mut seen_engines: BTreeSet<&str> = BTreeSet::new();
-    for output in &engines {
-        if !seen_engines.insert(output.descriptor.engine_id.as_str()) {
-            return Err(AssemblyError::DuplicateEngine {
-                engine_id: output.descriptor.engine_id.clone(),
-            });
-        }
-    }
+    account_for_every_engine(&engines, &engine_failures, &registry.expected_engines)?;
 
     let mut results: Vec<MeasurementResult> = Vec::new();
     let mut pairing_keys: BTreeSet<(String, String)> = BTreeSet::new();
@@ -356,6 +382,77 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
         completeness,
         countable,
     })
+}
+
+/// Every engine the registry declares appears exactly once, and nothing else
+/// appears at all.
+///
+/// # Why an unaccounted engine is a bug and not a quiet zero
+///
+/// PLAN P5a's first acceptance criterion is "payload assembly **from all
+/// engines**", and before this check there was nothing behind that phrase. An
+/// empty engine list with no failures assembled into an empty payload marked
+/// `complete` and `pass` — a record saying every engine ran and found nothing,
+/// produced by a run in which no engine ran at all. The two states are
+/// indistinguishable downstream, and the wrong one is the one that passes.
+///
+/// The consequence is not merely cosmetic. A record whose detectors were never
+/// invoked is exactly what a change that wants to avoid a detector would like
+/// to produce, and `completeness` is inside the digest input — so the honest
+/// version of the same run (`partial`, with the engines named as failures) is a
+/// *different record*, and the verifier can tell them apart. Without the check
+/// there was no honest version to differ from.
+///
+/// The roster comes from the registry rather than from a constant: the
+/// `engine =` header of every file the loader read. Five today; whatever the
+/// deployment ships tomorrow.
+fn account_for_every_engine(
+    engines: &[EngineOutput],
+    failures: &[EngineFailure],
+    expected: &BTreeSet<String>,
+) -> Result<(), AssemblyError> {
+    let mut succeeded: BTreeSet<&str> = BTreeSet::new();
+    for output in engines {
+        let engine_id = output.descriptor.engine_id.as_str();
+        if !succeeded.insert(engine_id) {
+            return Err(AssemblyError::DuplicateEngine {
+                engine_id: engine_id.to_string(),
+            });
+        }
+    }
+
+    let mut failed: BTreeSet<&str> = BTreeSet::new();
+    for failure in failures {
+        let engine_id = failure.engine_id.as_str();
+        if !failed.insert(engine_id) {
+            return Err(AssemblyError::DuplicateFailure {
+                engine_id: engine_id.to_string(),
+            });
+        }
+        if succeeded.contains(engine_id) {
+            // Both at once is not a partial success to be merged. One of the two
+            // statements is false and assembly cannot tell which.
+            return Err(AssemblyError::EngineSucceededAndFailed {
+                engine_id: engine_id.to_string(),
+            });
+        }
+    }
+
+    for engine_id in succeeded.iter().chain(failed.iter()) {
+        if !expected.contains(*engine_id) {
+            return Err(AssemblyError::UnknownEngine {
+                engine_id: (*engine_id).to_string(),
+            });
+        }
+    }
+    for engine_id in expected {
+        if !succeeded.contains(engine_id.as_str()) && !failed.contains(engine_id.as_str()) {
+            return Err(AssemblyError::MissingEngine {
+                engine_id: engine_id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Every check that is about one result.

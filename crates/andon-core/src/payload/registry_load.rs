@@ -26,6 +26,7 @@
 //! carries them so a surface can render them; discarding them here would make
 //! the demotion silent, which is the one outcome S2 rules out.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::date::Date;
@@ -67,6 +68,16 @@ pub enum RegistryLoadError {
 pub struct LoadedRegistry {
     /// The merged claims and metric declarations.
     pub registry: Registry,
+    /// Every engine the registry declares a file for.
+    ///
+    /// The roster assembly holds itself to: each of these must appear exactly
+    /// once in a payload, as an output or as a named failure
+    /// ([`crate::payload::prepare`]). Derived from the `engine =` header of each
+    /// file rather than written down as a list of five, so an engine added to
+    /// the registry is expected the day its file lands, and a deployment
+    /// carrying four registry files expects four engines rather than failing
+    /// against a constant nobody updated.
+    pub expected_engines: BTreeSet<String>,
     /// Non-fatal findings — stale claims, uncited claims. Carried rather than
     /// dropped so a surface can show them; a demotion nobody renders is a
     /// demotion that did not happen.
@@ -136,6 +147,7 @@ pub fn load_files(
         .collect();
     Ok(LoadedRegistry {
         registry,
+        expected_engines: files.iter().map(|(_, file)| file.engine.clone()).collect(),
         notices,
         as_of,
     })
