@@ -125,8 +125,11 @@ pub struct Measurement {
     /// Paths withheld by `policy.self_measure.excluded_paths`, when
     /// `--self-measure` was given.
     pub excluded: Vec<String>,
-    /// Registry loader notices: stale claims, uncited claims, schedule hygiene.
-    pub registry_notices: Vec<String>,
+    /// Operational notices a reader needs and the record does not carry:
+    /// registry staleness, schedule hygiene, and anything a run did differently
+    /// from the ordinary path. Handling that produces no observable signal is a
+    /// silent failure for whoever has to account for the result.
+    pub notices: Vec<String>,
     /// The branch the iteration counter was keyed on.
     pub branch: String,
     /// How many files the measured change touched, after any exclusions.
@@ -238,7 +241,8 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
         sandbox_available: false,
     };
 
-    let (engines, engine_failures) = run_all_engines(&git, &resolution, &changed, &policy, &ctx);
+    let (engines, engine_failures, engine_notes) =
+        run_all_engines(&git, &resolution, &changed, &policy, &ctx);
 
     let policy_change = detect_policy_change(&git, &changed).map_err(MeasureError::Policy)?;
 
@@ -282,13 +286,63 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
         how: resolution.how,
         excluded,
         changed_files: changed.len(),
-        registry_notices: registry
-            .notices
-            .iter()
-            .map(|d| format!("{}: {}", d.code, d.message))
+        notices: engine_notes
+            .into_iter()
+            .chain(
+                registry
+                    .notices
+                    .iter()
+                    .map(|d| format!("registry {}: {}", d.code, d.message)),
+            )
             .collect(),
         branch,
     })
+}
+
+/// The clone engine, with a cold retry when another process holds the index.
+///
+/// # Why a busy lock must not cost a whole engine
+///
+/// The incremental index is a cache. `IndexLock` serializes writes to it, and a
+/// second `andon` in the same checkout — a hook firing while an agent measures,
+/// two worktrees sharing a git directory, this suite's own tests — gets
+/// `IndexError::Locked` and the constructor fails. Before this, that failure
+/// removed the entire clone family from the payload: no duplication numbers, and
+/// a record whose completeness dropped to `partial`, because a cache was busy.
+///
+/// A cold run is the same measurement. `incremental_equivalence` is the property
+/// P3 gated the phase on — the index changes how long it takes and never what it
+/// says — so retrying without it costs time and nothing else.
+///
+/// The retry is **narrow and observable**. Only a lock contention takes it: a
+/// corrupt or unwritable index is a real problem and stays a real failure. And
+/// the caller reports that it happened, because handling that produces no signal
+/// is a silent failure for whoever has to explain why a measurement took longer.
+fn build_clone_engine(
+    git: &Git,
+    changed: &ChangedSet,
+) -> (Result<Box<dyn MeasureEngine>, String>, Option<String>) {
+    use andon_engine_clones::index::IndexError;
+    use andon_engine_clones::CloneEngineError;
+
+    let index = store::clones_index(git);
+    match andon_engine_clones::ClonesEngine::for_change(git, changed, Some(&index)) {
+        Ok(engine) => (Ok(Box::new(engine) as Box<dyn MeasureEngine>), None),
+        Err(CloneEngineError::Index(IndexError::Locked { path })) => {
+            let cold = andon_engine_clones::ClonesEngine::for_change(git, changed, None)
+                .map(|e| Box::new(e) as Box<dyn MeasureEngine>)
+                .map_err(|e| e.to_string());
+            (
+                cold,
+                Some(format!(
+                    "clones: another Andon process holds the index lock at {path}, so this run \
+                     rebuilt the clone index from scratch. The numbers are the same either way; \
+                     only the time taken differs."
+                )),
+            )
+        }
+        Err(other) => (Err(other.to_string()), None),
+    }
 }
 
 /// Run every shipped engine, turning each failure into a named absence.
@@ -298,9 +352,10 @@ fn run_all_engines(
     changed: &ChangedSet,
     policy: &Policy,
     ctx: &MeasureContext,
-) -> (Vec<EngineOutput>, Vec<EngineFailure>) {
+) -> (Vec<EngineOutput>, Vec<EngineFailure>, Vec<String>) {
     let mut outputs: Vec<EngineOutput> = Vec::new();
     let mut failures: Vec<EngineFailure> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
 
     // A closure rather than five copies: an engine whose failure path differed
     // from the others' would be an engine whose absence reads differently, and
@@ -343,18 +398,11 @@ fn run_all_engines(
         &mut failures,
     );
 
-    record(
-        "clones",
-        andon_engine_clones::ClonesEngine::for_change(
-            git,
-            changed,
-            Some(&store::clones_index(git)),
-        )
-        .map(|e| Box::new(e) as Box<dyn MeasureEngine>)
-        .map_err(|e| e.to_string()),
-        &mut outputs,
-        &mut failures,
-    );
+    let (clones, clone_note) = build_clone_engine(git, changed);
+    if let Some(note) = clone_note {
+        notes.push(note);
+    }
+    record("clones", clones, &mut outputs, &mut failures);
 
     record(
         "tamper",
@@ -407,7 +455,7 @@ fn run_all_engines(
         &mut failures,
     );
 
-    (outputs, failures)
+    (outputs, failures, notes)
 }
 
 /// Per-path complexity for the hotspot metric, from the static engine's results.

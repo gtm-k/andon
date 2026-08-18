@@ -60,7 +60,7 @@ pub fn render(measurement: &Measurement) -> String {
         Some(&measurement.how),
         measurement.substitution.as_ref(),
         &measurement.excluded,
-        &measurement.registry_notices,
+        &measurement.notices,
     )
 }
 

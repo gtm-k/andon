@@ -24,19 +24,7 @@
 //! `--exit-zero` turns every verdict into a 0 for the caller who wants the
 //! report without the gate.
 
-#![deny(missing_docs)]
 #![warn(clippy::all)]
-
-mod args;
-mod attest;
-mod explain;
-mod lanes;
-mod ledger;
-mod measure;
-mod render;
-mod resolve;
-mod shipped;
-mod store;
 
 use std::process::ExitCode;
 
@@ -44,8 +32,9 @@ use andon_core::git::Git;
 use andon_core::policy::Policy;
 use andon_core::schema::enums::{InvocationSource, Verdict};
 
-use args::Flags;
-use render::terminal::{Colour, Detail};
+use andon_cli::args::Flags;
+use andon_cli::render::terminal::{Colour, Detail};
+use andon_cli::{attest, explain, lanes, ledger, measure, render, store};
 
 const USAGE: &str = "\
 andon — measurement that carries its evidence.

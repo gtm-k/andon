@@ -6,3 +6,12 @@
 # purpose: the Rust build cache manages that directory, and on CI it restored a
 # partial copy that the generator then tried to reuse.
 /.perf-fixture
+
+# Self-measurement artefacts (scripts/self-measure.sh). Written into the working
+# tree rather than under .git because CI uploads them as a build artefact and a
+# reader needs a path to point at — but they are outputs, not sources, and a
+# dogfood run must never show up as a dirty tree in the measurement that follows
+# it.
+/andon-self-measure.txt
+/andon-self-measure.html
+/andon-self-measure.json

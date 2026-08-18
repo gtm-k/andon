@@ -208,8 +208,8 @@ fn header(out: &mut String, measurement: &Measurement, colour: Colour) {
         );
     }
 
-    for notice in &measurement.registry_notices {
-        let _ = writeln!(out, " {} {notice}", colour.dim("registry"));
+    for notice in &measurement.notices {
+        let _ = writeln!(out, " {} {notice}", colour.dim("note    "));
     }
 }
 
