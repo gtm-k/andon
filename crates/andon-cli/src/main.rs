@@ -357,7 +357,11 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
     match flags.first().unwrap_or("list") {
         "list" => print!("{}", ledger::list(&git)?),
         "show" => {
-            let commit = flags.positional().get(1).map(String::as_str).unwrap_or("HEAD");
+            let commit = flags
+                .positional()
+                .get(1)
+                .map(String::as_str)
+                .unwrap_or("HEAD");
             let records = ledger::show(&git, commit)?;
             if records.is_empty() {
                 println!("\n  No record is recorded against {commit}.\n");
@@ -369,7 +373,10 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 );
             }
         }
-        "ack" => print!("\n{}\n", ledger::ack(&git, flags.get("branch"), &Policy::default())?),
+        "ack" => print!(
+            "\n{}\n",
+            ledger::ack(&git, flags.get("branch"), &Policy::default())?
+        ),
         other => return Err(format!("unknown ledger command '{other}'")),
     }
     Ok(ExitCode::SUCCESS)

@@ -87,7 +87,9 @@ pub fn subject_of(query: &str) -> Result<Subject, String> {
                 .join("\n  ")
         )
     };
-    Err(format!("no metric or claim matches '{query}'.\n{suggestion}"))
+    Err(format!(
+        "no metric or claim matches '{query}'.\n{suggestion}"
+    ))
 }
 
 /// Every metric this build can emit, with the engine that emits it.
@@ -148,8 +150,7 @@ pub fn explain(
     claim(&mut out, resolved, registry.as_of);
 
     if let Subject::Metric(metric_id) = subject {
-        let (_, descriptor) =
-            shipped::engine_for_metric(metric_id).expect("resolved above");
+        let (_, descriptor) = shipped::engine_for_metric(metric_id).expect("resolved above");
         reach(
             &mut out,
             resolved.claim.tier,
@@ -298,8 +299,10 @@ fn claim(out: &mut String, resolved: &ResolvedClaim, as_of: Date) {
         "    re-reviewed   {}{}",
         claim.expiry,
         if resolved.stale {
-            format!(" — STALE as of {as_of}. Past its re-review date, and shown as stale \
-                     everywhere it is cited until somebody checks it again.")
+            format!(
+                " — STALE as of {as_of}. Past its re-review date, and shown as stale \
+                     everywhere it is cited until somebody checks it again."
+            )
         } else {
             String::new()
         }
@@ -309,7 +312,6 @@ fn claim(out: &mut String, resolved: &ResolvedClaim, as_of: Date) {
     for line in &claim.does_not_predict {
         let _ = writeln!(out, "    · {line}");
     }
-
 }
 
 /// The strongest severity a finding on this metric could reach, and why.
@@ -343,10 +345,7 @@ fn reach(
             "    its own ladder reaches at most        {declared:?}"
         );
     }
-    let _ = writeln!(
-        out,
-        "    the policy in force caps it at       {ceiling:?}"
-    );
+    let _ = writeln!(out, "    the policy in force caps it at       {ceiling:?}");
     // Both halves, because either can be the binding one and a reader needs to
     // know which. A ladder that never reaches Medium is not the same situation
     // as a policy that will not admit one that does.
@@ -453,9 +452,7 @@ fn tier_meaning(tier: EvidenceTier) -> &'static str {
         EvidenceTier::B => "published validation, narrower population or weaker linkage",
         EvidenceTier::C => "weak or contested on its own",
         EvidenceTier::D => "critiqued; not to be used as a headline",
-        EvidenceTier::N => {
-            "novel and unvalidated — motivated by evidence, not yet supported by it"
-        }
+        EvidenceTier::N => "novel and unvalidated — motivated by evidence, not yet supported by it",
     }
 }
 

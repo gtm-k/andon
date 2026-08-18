@@ -112,17 +112,27 @@ fn document(
 }
 
 fn masthead(out: &mut String, record: &MeasurementRecord, how: Option<&str>, range: &str) {
+    // `how` already contains the range when a measurement produced it, so
+    // printing both would read the tuple twice with different punctuation. The
+    // resolution alone is what a record read back from disk can offer.
+    let engines: std::collections::BTreeSet<&str> = record
+        .results
+        .iter()
+        .map(|r| r.engine_id.as_str())
+        .collect();
     let _ = write!(
         out,
         "<header class=\"masthead\">\n\
            <div class=\"wordmark\"><span class=\"cord\" aria-hidden=\"true\"></span>ANDON</div>\n\
            <div class=\"masthead-meta\">\n\
              <span class=\"mono\">{}</span>\n\
-             <span>{}</span>\n\
+             <span>{} engine(s) · {} result(s) · record {}</span>\n\
            </div>\n\
          </header>\n",
-        escape(range),
-        escape(how.unwrap_or(&record.compare_context.base_resolution)),
+        escape(how.unwrap_or(range)),
+        engines.len(),
+        record.results.len(),
+        escape(&format!("{:?}", record.completeness).to_lowercase()),
     );
 }
 
@@ -389,12 +399,7 @@ fn absence_list(out: &mut String, record: &MeasurementRecord) {
     let _ = writeln!(out, "</tbody>\n</table></div>\n</section>");
 }
 
-fn trust(
-    out: &mut String,
-    record: &MeasurementRecord,
-    excluded: &[String],
-    notices: &[String],
-) {
+fn trust(out: &mut String, record: &MeasurementRecord, excluded: &[String], notices: &[String]) {
     let _ = write!(
         out,
         "<section class=\"panel\">\n<h2 class=\"eyebrow\">Trust</h2>\n\
@@ -454,7 +459,11 @@ fn colophon(out: &mut String, record: &MeasurementRecord) {
 
 /// A severity chip: word, shape, and a treatment that draws the MED+ boundary.
 fn chip(severity: Severity) -> String {
-    let filled = if severity.is_med_plus() { "filled" } else { "hollow" };
+    let filled = if severity.is_med_plus() {
+        "filled"
+    } else {
+        "hollow"
+    };
     format!(
         "<span class=\"chip chip-{tone} chip-{filled}\">\
            <span class=\"chip-mark\" aria-hidden=\"true\">{mark}</span>{word}</span>",
@@ -794,7 +803,10 @@ mod tests {
             Severity::High,
             Severity::Critical,
         ] {
-            assert!(chip(severity).contains(severity_word(severity)), "{severity:?}");
+            assert!(
+                chip(severity).contains(severity_word(severity)),
+                "{severity:?}"
+            );
         }
     }
 }

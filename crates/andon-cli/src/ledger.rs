@@ -105,8 +105,7 @@ pub fn ack(git: &Git, branch: Option<&str>, policy: &Policy) -> Result<String, S
                     .to_string()
             })?,
     };
-    let store =
-        IterationStore::open(store::state_dir(git)).map_err(|e| e.to_string())?;
+    let store = IterationStore::open(store::state_dir(git)).map_err(|e| e.to_string())?;
     let before = store.peek(&branch, policy.loop_policy.iteration_cap);
     store.reset(&branch).map_err(|e| e.to_string())?;
     Ok(format!(

@@ -71,12 +71,7 @@ pub fn attest(request: &Request) -> Result<Attested, String> {
     // The verifier's own base. Resolved from the branch it trusts, never read
     // off the record it is examining.
     let trusted_base = git
-        .cmd([
-            "merge-base",
-            "--",
-            &request.trusted_branch,
-            &request.head,
-        ])
+        .cmd(["merge-base", "--", &request.trusted_branch, &request.head])
         .succeeds_with_output()
         .map_err(|e| e.to_string())?
         .map(|text| text.trim().to_string())
@@ -147,11 +142,7 @@ fn read_self_report(git: &Git, head: &str) -> Result<Option<MeasurementRecord>, 
 }
 
 /// How a claimed base relates to the branch this verifier trusts.
-fn relate(
-    git: &Git,
-    claimed: Option<&str>,
-    trusted_base: &str,
-) -> Result<BaseRelation, String> {
+fn relate(git: &Git, claimed: Option<&str>, trusted_base: &str) -> Result<BaseRelation, String> {
     let Some(claimed) = claimed else {
         // No self-report, so no claim to relate. `classify` short-circuits
         // before reading this, and `Equal` is the value that adds nothing.

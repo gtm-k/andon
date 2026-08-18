@@ -213,9 +213,11 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
 
     let policy = load_policy(&git, &request.policy_source)?;
     let as_of = Date::today_utc().map_err(|_| {
-        MeasureError::Registry("the system clock could not be read, so claim expiry cannot be \
+        MeasureError::Registry(
+            "the system clock could not be read, so claim expiry cannot be \
                                 evaluated"
-            .to_string())
+                .to_string(),
+        )
     })?;
     let registry = load_registry(request.registry_dir.as_deref(), &policy, as_of)?;
 
@@ -265,7 +267,11 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
     let store = IterationStore::open(store::state_dir(&git))
         .map_err(|e| MeasureError::Iteration(e.to_string()))?;
     let advance = store
-        .advance(&branch, policy.loop_policy.iteration_cap, prepared.loop_outcome())
+        .advance(
+            &branch,
+            policy.loop_policy.iteration_cap,
+            prepared.loop_outcome(),
+        )
         .map_err(|e| MeasureError::Iteration(e.to_string()))?;
 
     let record = prepared.finish(advance);
@@ -300,9 +306,9 @@ fn run_all_engines(
     // from the others' would be an engine whose absence reads differently, and
     // the reader cannot tell a bespoke message from a bespoke rule.
     let record = |engine_id: &str,
-                      built: Result<Box<dyn MeasureEngine>, String>,
-                      out: &mut Vec<EngineOutput>,
-                      failed: &mut Vec<EngineFailure>| {
+                  built: Result<Box<dyn MeasureEngine>, String>,
+                  out: &mut Vec<EngineOutput>,
+                  failed: &mut Vec<EngineFailure>| {
         match built {
             Ok(engine) => {
                 let descriptor = engine.descriptor();
@@ -428,7 +434,8 @@ fn complexity_from(outputs: &[EngineOutput]) -> BTreeMap<String, u64> {
             if !result.metric_id.starts_with("static.cognitive-complexity") {
                 continue;
             }
-            let (Some(path), MetricValue::Count(value)) = (&result.scope.path, &result.value) else {
+            let (Some(path), MetricValue::Count(value)) = (&result.scope.path, &result.value)
+            else {
                 continue;
             };
             let entry = by_path.entry(path.clone()).or_insert(0);
@@ -528,8 +535,9 @@ fn load_policy(git: &Git, source: &PolicySource) -> Result<Policy, MeasureError>
             .map_err(|e| MeasureError::Policy(e.to_string()))?,
     };
     match text {
-        Some(text) => Policy::from_toml(&text)
-            .map_err(|e| MeasureError::Policy(format!("{source:?}: {e}"))),
+        Some(text) => {
+            Policy::from_toml(&text).map_err(|e| MeasureError::Policy(format!("{source:?}: {e}")))
+        }
         None => Ok(Policy::default()),
     }
 }
@@ -560,7 +568,9 @@ fn tool_identity() -> ToolIdentity {
     ToolIdentity {
         name: TOOL_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        build_oid: option_env!("ANDON_BUILD_OID").unwrap_or("unknown").to_string(),
+        build_oid: option_env!("ANDON_BUILD_OID")
+            .unwrap_or("unknown")
+            .to_string(),
         attested_release: false,
     }
 }

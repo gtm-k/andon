@@ -304,11 +304,11 @@ fn rev_parse(git: &Git, spec: &str) -> Result<String, ResolveFailure> {
         ])
         .succeeds_with_output()
         .map_err(|e| ResolveFailure::Git(ResolveError::Git(e)))?;
-    output
-        .map(|text| text.trim().to_string())
-        .ok_or_else(|| ResolveFailure::Git(ResolveError::UnknownRevision {
+    output.map(|text| text.trim().to_string()).ok_or_else(|| {
+        ResolveFailure::Git(ResolveError::UnknownRevision {
             rev: spec.to_string(),
-        }))
+        })
+    })
 }
 
 /// Twelve characters, the length git itself prints in most contexts.

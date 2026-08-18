@@ -1,0 +1,34 @@
+# A change an honest author makes, measured by all five engines.
+#
+# The other case in this set is deliberately guilty. This one is the control,
+# and it is the harder half to get right: a golden set made only of gamed
+# fixtures passes on a tool that shouts at everything, which is the same shape
+# of vacuity as a suite made only of prohibitions (DEFERRED-APPROVALS E21).
+schema_version = 1
+name = "honest-change"
+description = """
+A small, well-formed function added with the test that covers it, on a file with \
+real history behind it. Every engine has something to say and none of it should \
+stop the line: complexity stays low, nothing is duplicated, no test is removed, \
+no configuration is loosened, and the added lines are in the coverage report. \
+This case fails if the tool starts blocking ordinary work — PREMORTEM A4's \
+uninstall loop, caught by fixture rather than by a user."""
+
+base = "03"
+head = "04"
+
+[[step]]
+id = "01"
+message = "the module and its test"
+
+[[step]]
+id = "02"
+message = "widen the greeting"
+
+[[step]]
+id = "03"
+message = "record coverage"
+
+[[step]]
+id = "04"
+message = "add a formatter and cover it"

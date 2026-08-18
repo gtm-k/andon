@@ -1,0 +1,831 @@
+{
+  "base_oid": "349a5f64963c0cdc90b90277fc14d1b899d27b81",
+  "head_oid": "97ec962e3c9b8b287449a2f6d8489bffe270ad7d",
+  "verdict": "pass",
+  "reasons": [
+    [
+      "measurement-incomplete",
+      "info"
+    ]
+  ],
+  "attestation": "unwitnessed",
+  "completeness": "unwitnessed",
+  "tamper_signals": [],
+  "engines": [
+    "artifacts",
+    "clones",
+    "process",
+    "static-metrics",
+    "tamper"
+  ],
+  "policy_hash": "a96a69095a9ab1d482b9a05ab906a6cdaf7e88e7498b31761c54bbc257985a58",
+  "results": [
+    {
+      "metric_id": "artifacts.uncovered-changed-lines",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"lcov.info\",\"symbol\":null}",
+      "engine_id": "artifacts",
+      "claim_id": "andon.artifacts.diff-coverage@1|any|test-gap",
+      "value": {
+        "kind": "text",
+        "value": "unwitnessed: this file is not in the coverage report"
+      },
+      "severity": "info",
+      "completeness": "unwitnessed",
+      "metric_class": "diffactionable",
+      "deterministic": false
+    },
+    {
+      "metric_id": "artifacts.uncovered-changed-lines",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "artifacts",
+      "claim_id": "andon.artifacts.diff-coverage@1|any|test-gap",
+      "value": {
+        "kind": "text",
+        "value": "unwitnessed: this file is not in the coverage report"
+      },
+      "severity": "info",
+      "completeness": "unwitnessed",
+      "metric_class": "diffactionable",
+      "deterministic": false
+    },
+    {
+      "metric_id": "artifacts.uncovered-changed-lines",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "artifacts",
+      "claim_id": "andon.artifacts.diff-coverage@1|any|test-gap",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": false
+    },
+    {
+      "metric_id": "clones.clone-groups",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "clones",
+      "claim_id": "andon.clones.token-duplication@1|any|token-duplication",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "9f5d4b5e88532e83e7073383b8f87537c9a4a3774f7f46e3bcae89cffad95dff"
+    },
+    {
+      "metric_id": "clones.duplicated-token-ratio",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "clones",
+      "claim_id": "andon.clones.token-duplication@1|any|token-duplication",
+      "value": {
+        "kind": "ratio",
+        "value": 0.0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "a46d8294b4b6e3e7ecf0664cf8f0c26d3d9a4ae5f9817420002fcf0c3b540879"
+    },
+    {
+      "metric_id": "clones.duplicated-tokens",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "clones",
+      "claim_id": "andon.clones.token-duplication@1|any|token-duplication",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "38dba2a9a19e767ffbff6a47719166841aa1e42cfbd4e6a74baf448a6ece615f"
+    },
+    {
+      "metric_id": "clones.file-duplicated-tokens",
+      "scope": "{\"blob_oid\":\"4eff25043a3b5a7aa40195ef570466a912ee510f\",\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "clones",
+      "claim_id": "andon.clones.token-duplication@1|any|token-duplication",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "ea64195df6f2345a0e4af7dd1568742d548ac1efb891a47e2f297d1c83782445"
+    },
+    {
+      "metric_id": "clones.file-duplicated-tokens",
+      "scope": "{\"blob_oid\":\"7664a917bfaadb19dfb1b8fc6cd44af229250953\",\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "clones",
+      "claim_id": "andon.clones.token-duplication@1|any|token-duplication",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "629f2ffe0b424da9878f3c5b341bd8a8e221db2d1a069fea95c169a140a23eb1"
+    },
+    {
+      "metric_id": "clones.largest-clone-tokens",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "clones",
+      "claim_id": "andon.clones.token-duplication@1|any|token-duplication",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "e79de80f04d2a075c21b7ab2ce189bb1805922fdb52106b9b413764a3ed4eb9c"
+    },
+    {
+      "metric_id": "process.change-coupling",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"lcov.info\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.change-coupling@1|any|co-change-risk",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "ec6d0a873e0962b5dd0eb8db8e2467614d27285ef4eb3ee2457b07df091c02f9"
+    },
+    {
+      "metric_id": "process.change-coupling",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.change-coupling@1|any|co-change-risk",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "085d75393e91aad9dd5ae5059f9af89ae77675778b688e8bc5f761c1eb4bad01"
+    },
+    {
+      "metric_id": "process.change-coupling",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.change-coupling@1|any|co-change-risk",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "34cd9dea7076ca97ac6d68925db3f87a79ebbfc7ebab75d9a8c7732fccfabba2"
+    },
+    {
+      "metric_id": "process.churn-commits",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"lcov.info\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.churn@1|any|defect-proneness",
+      "value": {
+        "kind": "count",
+        "value": 2
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "a3ca94a9817b37fa1c9d4cc8ef7ae346c676c09e35893be53e6e0d00560db4bd"
+    },
+    {
+      "metric_id": "process.churn-commits",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.churn@1|any|defect-proneness",
+      "value": {
+        "kind": "count",
+        "value": 1
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "d0ebebd1f1319b08c7145c8a7e79fecdb92fe00d47636e0ae3002557cf172289"
+    },
+    {
+      "metric_id": "process.churn-commits",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.churn@1|any|defect-proneness",
+      "value": {
+        "kind": "count",
+        "value": 1
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "860c58bc5593eff47915df60bd9b1a5da8b57292cf80b94303c6d50916960ba1"
+    },
+    {
+      "metric_id": "process.churn-lines",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"lcov.info\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.churn@1|any|defect-proneness",
+      "value": {
+        "kind": "count",
+        "value": 12
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "5a20136585bd11ffc95ee76e389a2fa0ec6d04f9f6030823fa93d02bd25807f7"
+    },
+    {
+      "metric_id": "process.churn-lines",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.churn@1|any|defect-proneness",
+      "value": {
+        "kind": "count",
+        "value": 5
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "992363c87cbeee3680e36c3c1170f6a2de0bbb72ebdd213bde78b6effe35de36"
+    },
+    {
+      "metric_id": "process.churn-lines",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.churn@1|any|defect-proneness",
+      "value": {
+        "kind": "count",
+        "value": 3
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "d1c15cb253583a050f50e3e1884795c891f933abb7889fa0b4a836a8b809bd68"
+    },
+    {
+      "metric_id": "process.code-age-days",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"lcov.info\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.code-age@1|any|defect-proneness",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "34a51002721450cfa423409d6b25445b4d191fe15cb52138184ee711e8e81e22"
+    },
+    {
+      "metric_id": "process.code-age-days",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.code-age@1|any|defect-proneness",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "c720b5b95c487ad93fdff7659dc06b493f021e5d8f352343d8755309e434a2fe"
+    },
+    {
+      "metric_id": "process.code-age-days",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.code-age@1|any|defect-proneness",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "431c20311d1ebea965e1151fe71bc500142d1fc8a5e20ede5c7fe6282a25bbeb"
+    },
+    {
+      "metric_id": "process.hotspot",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"lcov.info\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.hotspot@1|any|risk-prioritisation",
+      "value": {
+        "kind": "text",
+        "value": "unwitnessed: no complexity input for this path"
+      },
+      "severity": "info",
+      "completeness": "unwitnessed",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "58c17c120434a98e6f9f1509b4614547889002ca9585991811777fcb8863f331"
+    },
+    {
+      "metric_id": "process.hotspot",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.hotspot@1|any|risk-prioritisation",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "410438e799ec4103c45e9fcf2b1fc5e322fd63c29027e697fa38a4c2653bdac7"
+    },
+    {
+      "metric_id": "process.hotspot",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.hotspot@1|any|risk-prioritisation",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "40624c7ac6aad5fbe19cfc62ee527c7861453c926b27d870af116895922666ad"
+    },
+    {
+      "metric_id": "process.ownership-entropy",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"lcov.info\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.ownership@1|any|defect-proneness",
+      "value": {
+        "kind": "ratio",
+        "value": 0.0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "339868894547904a95d58d24b44d75adb4933ad21db010cb6d3e9b24bc641b37"
+    },
+    {
+      "metric_id": "process.ownership-entropy",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.ownership@1|any|defect-proneness",
+      "value": {
+        "kind": "ratio",
+        "value": 0.0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "e226190cb7f03ba0368fe20e6f32d42a421a51ae91a91a806f8d895ebd74cdea"
+    },
+    {
+      "metric_id": "process.ownership-entropy",
+      "scope": "{\"blob_oid\":null,\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "process",
+      "claim_id": "andon.process.ownership@1|any|defect-proneness",
+      "value": {
+        "kind": "ratio",
+        "value": 0.0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "e47120c27266095f726451872b143afd11eb5eeec5f96cd492d16ef6541e0ae7"
+    },
+    {
+      "metric_id": "static.cognitive-complexity.typescript",
+      "scope": "{\"blob_oid\":\"4eff25043a3b5a7aa40195ef570466a912ee510f\",\"kind\":\"function\",\"line_span\":{\"end\":3,\"start\":1},\"path\":\"src/shout.ts\",\"symbol\":\"shout\"}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.cognitive@1|typescript|comprehension-time",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "a701009722aef6cea1cea6fe0c23c3d41f4f34be86894041503269a23f00e2e6"
+    },
+    {
+      "metric_id": "static.cognitive-complexity.typescript",
+      "scope": "{\"blob_oid\":\"7664a917bfaadb19dfb1b8fc6cd44af229250953\",\"kind\":\"function\",\"line_span\":{\"end\":5,\"start\":3},\"path\":\"src/shout.test.ts\",\"symbol\":\"<anonymous>\"}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.cognitive@1|typescript|comprehension-time",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "a0c53c7ea1a05cae6d8b14c1e21121431af99cb62f448cf3fbba7aa34c321e03"
+    },
+    {
+      "metric_id": "static.cyclomatic-complexity.typescript",
+      "scope": "{\"blob_oid\":\"4eff25043a3b5a7aa40195ef570466a912ee510f\",\"kind\":\"function\",\"line_span\":{\"end\":3,\"start\":1},\"path\":\"src/shout.ts\",\"symbol\":\"shout\"}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.cyclomatic@1|typescript|minimum-test-paths",
+      "value": {
+        "kind": "count",
+        "value": 1
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "0966144c60b7162f908522ed9270e98464bf773c999fb7ca62aec5cd03696d4d"
+    },
+    {
+      "metric_id": "static.cyclomatic-complexity.typescript",
+      "scope": "{\"blob_oid\":\"7664a917bfaadb19dfb1b8fc6cd44af229250953\",\"kind\":\"function\",\"line_span\":{\"end\":5,\"start\":3},\"path\":\"src/shout.test.ts\",\"symbol\":\"<anonymous>\"}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.cyclomatic@1|typescript|minimum-test-paths",
+      "value": {
+        "kind": "count",
+        "value": 1
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "a2744a9cc72a1e2188cf11a6de43053bb0a4fcef3f776ad9e9322cb1666bc390"
+    },
+    {
+      "metric_id": "static.parse-errors",
+      "scope": "{\"blob_oid\":\"4eff25043a3b5a7aa40195ef570466a912ee510f\",\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.parse-health@1|any|parse-completeness",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "dffdf2e99adad93ade02a02d7247d158ee74067d2187b1b85954d83336d8282b"
+    },
+    {
+      "metric_id": "static.parse-errors",
+      "scope": "{\"blob_oid\":\"7664a917bfaadb19dfb1b8fc6cd44af229250953\",\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.parse-health@1|any|parse-completeness",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "7ff7c3446217f885b9810cc459e1d2182213e37f0ffb39521335047e5c859a31"
+    },
+    {
+      "metric_id": "static.parse-missing",
+      "scope": "{\"blob_oid\":\"4eff25043a3b5a7aa40195ef570466a912ee510f\",\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.parse-health@1|any|parse-completeness",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "2cfbefb523ae5bb5b14015548f0b24a58738021c134ee0427c6c3163056fcfaa"
+    },
+    {
+      "metric_id": "static.parse-missing",
+      "scope": "{\"blob_oid\":\"7664a917bfaadb19dfb1b8fc6cd44af229250953\",\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.parse-health@1|any|parse-completeness",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "86cf42b07e41fa6ec55e449c186af47e124851857c0e9b7225e1fa0615df94bd"
+    },
+    {
+      "metric_id": "static.sloc",
+      "scope": "{\"blob_oid\":\"4eff25043a3b5a7aa40195ef570466a912ee510f\",\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.ts\",\"symbol\":null}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.sloc@1|any|maintenance-effort",
+      "value": {
+        "kind": "count",
+        "value": 3
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "1c2f8677482f54361dab88478b3cbeb7168528c2cb6f3af82fd4f3154fd5d298"
+    },
+    {
+      "metric_id": "static.sloc",
+      "scope": "{\"blob_oid\":\"4eff25043a3b5a7aa40195ef570466a912ee510f\",\"kind\":\"function\",\"line_span\":{\"end\":3,\"start\":1},\"path\":\"src/shout.ts\",\"symbol\":\"shout\"}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.sloc@1|any|maintenance-effort",
+      "value": {
+        "kind": "count",
+        "value": 3
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "80048b74fe54b9f81af1d20b880f13ae9f72da24c6613dc3202a40da8a34f859"
+    },
+    {
+      "metric_id": "static.sloc",
+      "scope": "{\"blob_oid\":\"7664a917bfaadb19dfb1b8fc6cd44af229250953\",\"kind\":\"file\",\"line_span\":null,\"path\":\"src/shout.test.ts\",\"symbol\":null}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.sloc@1|any|maintenance-effort",
+      "value": {
+        "kind": "count",
+        "value": 4
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "525e8315ca6053df665aa83393c76049b295533ab128e911c5e41f21ba8963bb"
+    },
+    {
+      "metric_id": "static.sloc",
+      "scope": "{\"blob_oid\":\"7664a917bfaadb19dfb1b8fc6cd44af229250953\",\"kind\":\"function\",\"line_span\":{\"end\":5,\"start\":3},\"path\":\"src/shout.test.ts\",\"symbol\":\"<anonymous>\"}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.sloc@1|any|maintenance-effort",
+      "value": {
+        "kind": "count",
+        "value": 3
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "f5ae15183d35ad8c620eced4007b9a3b9d0bd3c7282a02e130c17515515d2af5"
+    },
+    {
+      "metric_id": "static.unmeasured-files",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "static-metrics",
+      "claim_id": "andon.static.parse-health@1|any|parse-completeness",
+      "value": {
+        "kind": "count",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "contextinformational",
+      "deterministic": true,
+      "digest": "7eba86a41d984e021684c6870d9c6bd8fb409e90b4c9486dbe0b3bfe647660a4"
+    },
+    {
+      "metric_id": "tamper.assertion-free-test",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.test-evidence@1|any|test-evidence-withdrawal",
+      "value": {
+        "kind": "flag",
+        "value": false
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "83f016d46cbb4d44a3c2031b3a9a569b69bbb16bec473d0ac4e4d42201ceaba1"
+    },
+    {
+      "metric_id": "tamper.assertion-free-test.magnitude",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.test-evidence@1|any|test-evidence-withdrawal",
+      "value": {
+        "kind": "integer",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "7d8524f7c1186447f6e85bab9e0167fd39cb549dacf523131df59f88a8c9e742"
+    },
+    {
+      "metric_id": "tamper.coverage-exclusion-drift",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.gate-loosening@1|any|quality-gate-loosening",
+      "value": {
+        "kind": "flag",
+        "value": false
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "b0a23222cead80bbcd2b407c1de8bebf841976ed50de49f0778466fe3940b7b0"
+    },
+    {
+      "metric_id": "tamper.coverage-exclusion-drift.magnitude",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.gate-loosening@1|any|quality-gate-loosening",
+      "value": {
+        "kind": "integer",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "17bf87bcc82cc9734800c45dfbb2bc2f8001fd085dd10c54f0e4ff25d740c47c"
+    },
+    {
+      "metric_id": "tamper.lookup-table-blowup",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.hard-coded-answers@1|any|hard-coded-answers",
+      "value": {
+        "kind": "flag",
+        "value": false
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "4af7146e537d62ba796030e3659468549630664863943347d6b3bd64428f373e"
+    },
+    {
+      "metric_id": "tamper.lookup-table-blowup.magnitude",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.hard-coded-answers@1|any|hard-coded-answers",
+      "value": {
+        "kind": "integer",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "227769142e48d5255705e2b82a07f0899992ac61f300c3ed626dfcb8b40d731d"
+    },
+    {
+      "metric_id": "tamper.parse-error-delta",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.analysis-blind-spot@1|any|analysis-blind-spot",
+      "value": {
+        "kind": "flag",
+        "value": false
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "5a891a0e00e498824f3fb82e5aafdcdd7e3f7faa6ebceb4a98cf0711bd7bc2d2"
+    },
+    {
+      "metric_id": "tamper.parse-error-delta.magnitude",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.analysis-blind-spot@1|any|analysis-blind-spot",
+      "value": {
+        "kind": "integer",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "91473a18e33d8d050458622035df03f94317b7f269ebba2719d37f1e3ae1460b"
+    },
+    {
+      "metric_id": "tamper.suppression-density",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.analysis-blind-spot@1|any|analysis-blind-spot",
+      "value": {
+        "kind": "flag",
+        "value": false
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "e2e4b64c76daa3d5c3d7a2e7b6b0923143a2cc070eda871c2196745f68015d8e"
+    },
+    {
+      "metric_id": "tamper.suppression-density.magnitude",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.analysis-blind-spot@1|any|analysis-blind-spot",
+      "value": {
+        "kind": "integer",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "937ba07406c0abe03172416779208f6e95ac8da3267816c94cb47e0d7b644e93"
+    },
+    {
+      "metric_id": "tamper.test-removal",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.test-evidence@1|any|test-evidence-withdrawal",
+      "value": {
+        "kind": "flag",
+        "value": false
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "53472c28b7a35991c577541fa2113f37ff299cc076668ff7b43bd8e5b8ed0b4c"
+    },
+    {
+      "metric_id": "tamper.test-removal.magnitude",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.test-evidence@1|any|test-evidence-withdrawal",
+      "value": {
+        "kind": "integer",
+        "value": 1
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "27a7f82587f2243b35f6766eaa173685048e449eb5f1877e6c44470a38e05109"
+    },
+    {
+      "metric_id": "tamper.threshold-config-edit",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.gate-loosening@1|any|quality-gate-loosening",
+      "value": {
+        "kind": "flag",
+        "value": false
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "8def8975a465538d51274450fef93fdb41c09cedb46e63dc633d200f473133a5"
+    },
+    {
+      "metric_id": "tamper.threshold-config-edit.magnitude",
+      "scope": "{\"blob_oid\":null,\"kind\":\"change\",\"line_span\":null,\"path\":null,\"symbol\":null}",
+      "engine_id": "tamper",
+      "claim_id": "andon.tamper.gate-loosening@1|any|quality-gate-loosening",
+      "value": {
+        "kind": "integer",
+        "value": 0
+      },
+      "severity": "info",
+      "completeness": "complete",
+      "metric_class": "diffactionable",
+      "deterministic": true,
+      "digest": "5e2effc4b0c34006095144193f38b6aa2dccf8bc70a373198b9b21322d63a323"
+    }
+  ]
+}

@@ -250,12 +250,7 @@ fn reasons(out: &mut String, record: &MeasurementRecord, colour: Colour) {
     }
 }
 
-fn finding_list(
-    out: &mut String,
-    record: &MeasurementRecord,
-    colour: Colour,
-    detail: Detail,
-) {
+fn finding_list(out: &mut String, record: &MeasurementRecord, colour: Colour, detail: Detail) {
     let all = findings(record);
     let shown: Vec<&&MeasurementResult> = all
         .iter()
@@ -353,12 +348,7 @@ fn finding(out: &mut String, result: &MeasurementResult, colour: Colour) {
     }
 }
 
-fn absence_list(
-    out: &mut String,
-    record: &MeasurementRecord,
-    colour: Colour,
-    detail: Detail,
-) {
+fn absence_list(out: &mut String, record: &MeasurementRecord, colour: Colour, detail: Detail) {
     let absent = absences(record);
     if absent.is_empty() {
         return;
@@ -392,12 +382,7 @@ fn absence_list(
     }
 }
 
-fn iteration(
-    out: &mut String,
-    record: &MeasurementRecord,
-    colour: Colour,
-    branch: Option<&str>,
-) {
+fn iteration(out: &mut String, record: &MeasurementRecord, colour: Colour, branch: Option<&str>) {
     let state = record.verdict.iteration;
     if state.count == 0 && !state.escalated {
         return;
@@ -426,9 +411,8 @@ fn footer(out: &mut String, colour: Colour) {
     let _ = writeln!(
         out,
         "\n {}\n",
-        colour.dim(
-            "Every number above stands on a claim you can read: `andon explain <metric-id>`."
-        )
+        colour
+            .dim("Every number above stands on a claim you can read: `andon explain <metric-id>`.")
     );
 }
 

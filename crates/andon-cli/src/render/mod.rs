@@ -142,11 +142,8 @@ pub fn findings(record: &MeasurementRecord) -> Vec<&MeasurementResult> {
 
 /// Results that carry an absence, with the reason each names.
 pub fn absences(record: &MeasurementRecord) -> Vec<&MeasurementResult> {
-    let mut ordered: Vec<&MeasurementResult> = record
-        .results
-        .iter()
-        .filter(|r| is_absence(r))
-        .collect();
+    let mut ordered: Vec<&MeasurementResult> =
+        record.results.iter().filter(|r| is_absence(r)).collect();
     ordered.sort_by(|a, b| {
         a.metric_id
             .cmp(&b.metric_id)
