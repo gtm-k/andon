@@ -272,7 +272,16 @@ impl SeverityLadder {
                 .map(|rung| rung.severity)
                 .max()
                 .unwrap_or(Severity::Info),
-            // The tamper suite's own declaration, not restated here.
+            // A deliberate upper bound, and it IS a restatement — the previous
+            // comment claimed otherwise. The real declaration is per detector
+            // (`Detector::severity_when_fired`, `High` for the six that describe
+            // evidence being removed and `Low` for the threshold edit) and it
+            // lives downstream of this crate, which depends on no engine and so
+            // cannot read it. `Critical` is the ceiling of the scale rather than
+            // the suite's actual maximum, chosen because the one direction this
+            // answer must never take is under-reporting what a ladder can do:
+            // no caller may conclude "this family cannot reach MED+" from a
+            // number this module had to guess.
             SeverityLadder::PerResult => Severity::Critical,
         }
     }
