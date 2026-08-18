@@ -343,8 +343,17 @@ impl Prepared {
         &self.results
     }
 
-    /// Record-level completeness: the weakest of the results', demoted to
-    /// `partial` when an engine could not run at all.
+    /// Record-level completeness: the weakest of the results', held to no
+    /// stronger than `partial` when an engine could not run at all.
+    ///
+    /// "Demoted to `partial`" is what this said, and it was wrong in the
+    /// direction that matters. A failed engine *floors* the record; it does not
+    /// set it. A result carrying an honest `unwitnessed` marker is weaker than
+    /// `partial` and keeps its value, so the sentence claimed a stronger record
+    /// than the one it described — the same defect class as the
+    /// `ENGINE_UNAVAILABLE` message corrected in [`crate::verdict`], found in a
+    /// third place by the phase that inherited it as an entry note. See
+    /// [`record_completeness`], which is where the rule actually lives.
     pub fn completeness(&self) -> Completeness {
         self.completeness
     }
