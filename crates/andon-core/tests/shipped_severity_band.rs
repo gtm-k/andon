@@ -492,6 +492,28 @@ fn the_shape_fixture_does_not_impersonate_a_shipped_engine() {
     );
 }
 
+#[test]
+fn every_shipped_tamper_claim_stays_outside_the_default_med_plus_tiers() {
+    // The muzzle rule's *premise*, bound to the registry the binary compiles in
+    // rather than to a hardcoded `EvidenceTier::N` in a unit test. Retier one
+    // shipped tamper claim from N to A and the argument in
+    // `verdict::severity`'s module documentation stops being true — "the tier
+    // ceiling caps every tamper firing at Low" — while every muzzle test keeps
+    // passing, because each of them sets the tier itself.
+    let as_of: andon_core::date::Date = "2026-08-17".parse().expect("a valid date");
+    let registry = andon_engine_tamper::engine::registry(as_of).expect("the tamper registry lints");
+    let admitted = Policy::default().severity.med_plus_tiers;
+    assert!(!registry.claims.is_empty(), "the suite ships claims");
+    for (claim_id, resolved) in &registry.claims {
+        assert!(
+            !admitted.contains(&resolved.claim.tier),
+            "{claim_id} is tier {:?}, which the default policy admits to the MED+ band — the \
+             muzzle rule's stated premise is that no tamper claim is",
+            resolved.claim.tier
+        );
+    }
+}
+
 /// Which engine each family belongs to, so the assertions above cannot be read
 /// as being about `EngineFamily` alone.
 ///
