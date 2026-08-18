@@ -30,8 +30,55 @@
 pub mod html;
 pub mod terminal;
 
+use std::path::Path;
+
+use andon_core::schema::agent_profile::{self, AgentProfileBounds, PROFILE_NAME};
 use andon_core::schema::enums::{Attestation, Completeness, Severity, Verdict};
 use andon_core::schema::payload::{MeasurementRecord, MeasurementResult};
+
+/// Render a record as a named bounded view.
+///
+/// # The third surface, and why the full record is not it
+///
+/// The payload is the wire contract and it is *large* — measured at 572 KB on
+/// this repository and 622 KB on a mid-sized one, because every result carries
+/// its whole `EvidenceRef` and the same fifteen claims repeat across forty-eight
+/// results. That is correct for a record a verifier recomputes and a report
+/// renders. It is the wrong thing to put in front of an agent whose context it
+/// would consume entirely, which is one of the ways PREMORTEM A2 says a tool
+/// gets installed and then ignored.
+///
+/// `andon-core` has always had the answer — `build_agent_profile` projects a
+/// record into a view whose encoded size *cannot* exceed the budget, by adding
+/// findings one at a time and stopping before the encoding would cross it, with
+/// `truncated` saying so. It references each finding's claim by `claim_id`
+/// rather than inlining the evidence, so the repetition disappears. Nothing
+/// called it. This is the call.
+///
+/// The budget is read from `[agent]` in the repository's own `.andon.toml`, not
+/// from a constant here: it is a policy field precisely so that changing it is a
+/// reviewable edit, and a surface that hardcoded its own number would be
+/// enforcing a budget nobody agreed to.
+pub fn profile(record: &MeasurementRecord, name: &str, repo: &Path) -> Result<String, String> {
+    if name != PROFILE_NAME {
+        return Err(format!(
+            "unknown profile '{name}'. This build ships one: `{PROFILE_NAME}`"
+        ));
+    }
+    // Outside a repository the conservative defaults apply, which is what the
+    // binary would have measured under anyway.
+    let policy = match andon_core::git::Git::open(repo) {
+        Ok(git) => crate::measure::load_policy(&git, &crate::measure::PolicySource::Worktree)
+            .map_err(|e| e.to_string())?,
+        Err(_) => andon_core::policy::Policy::default(),
+    };
+    let bounds = AgentProfileBounds::from_token_budget(
+        policy.agent.profile_token_budget,
+        policy.agent.bytes_per_token,
+    );
+    let view = agent_profile::build_agent_profile(record, &bounds);
+    andon_core::canonical::to_canonical_string(&view).map_err(|e| e.to_string())
+}
 
 /// The four words, spelled as an actor reads them.
 pub fn verdict_word(verdict: Verdict) -> &'static str {

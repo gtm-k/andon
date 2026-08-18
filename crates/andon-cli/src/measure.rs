@@ -64,6 +64,13 @@ pub struct Request {
     pub head: Option<String>,
     /// Refuse rather than fall back to the last merged change.
     pub no_fallback: bool,
+    /// Measure the last merged change even when there is uncommitted work.
+    ///
+    /// Uncommitted work is otherwise a refusal, because this build cannot seal a
+    /// measurement of bytes that have no commit OID and reporting a verdict
+    /// about *different* bytes is the worse answer. This flag is how a caller
+    /// says they meant the last merged change, having been told.
+    pub last_merged: bool,
     /// `--registry <dir>`, or `None` for the compiled-in registry.
     pub registry_dir: Option<PathBuf>,
     /// Apply `policy.self_measure.excluded_paths` — Andon measuring Andon.
@@ -102,6 +109,7 @@ impl Default for Request {
             base: None,
             head: None,
             no_fallback: false,
+            last_merged: false,
             registry_dir: None,
             self_measure: false,
             source: InvocationSource::HumanCli,
@@ -211,6 +219,7 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
             base: request.base.clone(),
             head: request.head.clone(),
             no_fallback: request.no_fallback,
+            last_merged: request.last_merged,
         },
     )?;
 
@@ -241,8 +250,22 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
         sandbox_available: false,
     };
 
-    let (engines, engine_failures, engine_notes) =
+    let (engines, engine_failures, mut engine_notes) =
         run_all_engines(&git, &resolution, &changed, &policy, &ctx);
+
+    // Uncommitted work that this measurement does not describe. On the fallback
+    // path the substitution already says it; on every other path — a branch with
+    // commits ahead of its fork point, an explicit `--base` — nothing did, and a
+    // reader had no way to know their newest edits were not in these numbers.
+    // An actor can only act on what they can observe.
+    if !resolution.uncommitted.is_empty() && resolution.substitution.is_none() {
+        engine_notes.push(format!(
+            "{} path(s) have uncommitted content and are NOT described by this measurement, \
+             which covers committed content only: {}. Commit them and re-run to measure them.",
+            resolution.uncommitted.len(),
+            resolution.uncommitted.join(", ")
+        ));
+    }
 
     let policy_change = detect_policy_change(&git, &changed).map_err(MeasureError::Policy)?;
 

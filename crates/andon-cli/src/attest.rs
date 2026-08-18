@@ -90,6 +90,9 @@ pub fn attest(request: &Request) -> Result<Attested, String> {
         // A verifier never falls back. If there is nothing to measure, that is
         // the answer.
         no_fallback: true,
+        // A verifier examines a commit pair it was handed; there is no working
+        // tree in a CI checkout to fall back from or refuse over.
+        last_merged: false,
         registry_dir: None,
         self_measure: false,
         source: InvocationSource::CiVerifier,

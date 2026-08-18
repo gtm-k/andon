@@ -116,13 +116,23 @@ fn the_substitution_is_announced_in_the_record_and_in_the_render() {
         repo.path().to_str().expect("utf-8"),
         "--no-color",
     ]));
+    // Asserted on the structure the substitution has, not on its wording. The
+    // headline is prose that improves — it did, once, to stop claiming a clean
+    // tree over a dirty one — and a test that pinned the sentence would have
+    // reddened on the fix rather than on a regression.
     assert!(
-        rendered.contains("not your working change"),
-        "the terminal render does not announce the substitution:\n{rendered}"
+        rendered.contains("asked for") && rendered.contains("measured"),
+        "the terminal render does not announce what was asked for and what was measured \
+         instead:\n{rendered}"
     );
     assert!(
         rendered.contains("last merged change"),
         "the terminal render does not say what was measured instead:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("working change"),
+        "the terminal render does not say the numbers are not about the working \
+         change:\n{rendered}"
     );
 }
 
@@ -526,4 +536,232 @@ fn tracked_status(repo: &Path) -> String {
     git.cmd(["status", "--porcelain"])
         .text()
         .expect("git status")
+}
+
+/// A repository with a change written and not committed — the state an agent is
+/// in for most of its loop.
+fn dirty_repo() -> common::Built {
+    let repo = stranger_repo();
+    std::fs::write(
+        repo.path().join("src").join("greet.ts"),
+        b"export function greet(n: string): string {\n  return n;\n}\n",
+    )
+    .expect("write");
+    repo
+}
+
+#[test]
+fn uncommitted_work_is_refused_and_never_reported_as_a_pass() {
+    // The worst available answer, and the one this replaced: measure the last
+    // merged change instead, print PASS, exit 0. The caller reads a verdict
+    // about bytes that are not the ones they asked about, and a hook keyed on
+    // the exit code lets the change through.
+    //
+    // The capability itself is blocked upstream — `andon_core::git::resolve`
+    // refuses to build a `CompareContext` from a dirty endpoint, and every
+    // result is sealed against one — so the honest answer available to this
+    // crate is a refusal that names the limitation.
+    let repo = dirty_repo();
+    let output = run(&[
+        "measure",
+        "--repo",
+        repo.path().to_str().expect("utf-8"),
+        "--no-color",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "uncommitted work must not produce a verdict exit code; a hook cannot tell a verdict \
+         about other bytes from a verdict about these ones.\nstdout: {}\nstderr: {stderr}",
+        stdout(&output)
+    );
+    assert!(
+        !stdout(&output).contains("PASS"),
+        "a pass was reported over unmeasured uncommitted work"
+    );
+    // The refusal names what it is about, and what actually works.
+    assert!(stderr.contains("src/greet.ts"), "{stderr}");
+    assert!(stderr.contains("commit the change"), "{stderr}");
+    assert!(stderr.contains("--last-merged"), "{stderr}");
+    // And it does not send the reader down a path that cannot work: staging
+    // leaves an index endpoint, which is dirty too and errors identically.
+    assert!(
+        !stderr.contains("git add"),
+        "the refusal suggests staging, which does not help: {stderr}"
+    );
+}
+
+#[test]
+fn staging_the_change_does_not_turn_the_refusal_into_a_measurement() {
+    // Pinned because it is the first thing a reader tries, and because a future
+    // edit reaching for `Revision::Index` would look like it worked — an index
+    // endpoint is a dirty endpoint and `compare_context` refuses it the same way.
+    let repo = dirty_repo();
+    let git = Git::open(repo.path()).expect("a repository");
+    git.cmd(["add", "--all", "."]).output().expect("git add");
+    let output = run(&[
+        "measure",
+        "--repo",
+        repo.path().to_str().expect("utf-8"),
+        "--no-color",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Staging does not change this"));
+}
+
+#[test]
+fn the_opt_in_fallback_says_the_tree_is_dirty_rather_than_claiming_it_is_clean() {
+    // `--last-merged` is how a caller says they meant the last merged change.
+    // What it must not do is repeat the sentence the clean path uses: "nothing
+    // is in flight in this checkout" is false here, and it is false about the
+    // one thing the reader can check in a single command.
+    let repo = dirty_repo();
+    let rendered = stdout(&run(&[
+        "measure",
+        "--repo",
+        repo.path().to_str().expect("utf-8"),
+        "--no-color",
+        "--last-merged",
+        "--exit-zero",
+    ]));
+    assert!(
+        !rendered.contains("nothing is in flight"),
+        "the report asserts a clean tree over a dirty one:\n{rendered}"
+    );
+    assert!(rendered.contains("there IS uncommitted work"), "{rendered}");
+    assert!(rendered.contains("src/greet.ts"), "{rendered}");
+}
+
+#[test]
+fn a_clean_checkout_still_falls_back_and_still_says_the_tree_was_clean() {
+    // The other half of the same rule, and PREMORTEM A1's path: the refusal must
+    // not have swallowed the first-run experience. A clean tree falls back, and
+    // the sentence it prints is true.
+    let repo = stranger_repo();
+    let rendered = stdout(&run(&[
+        "measure",
+        "--repo",
+        repo.path().to_str().expect("utf-8"),
+        "--no-color",
+    ]));
+    assert!(rendered.contains("nothing is in flight"), "{rendered}");
+    assert!(
+        !rendered.contains("there IS uncommitted work"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn the_agent_profile_is_bounded_by_the_policy_the_repository_declares() {
+    // PREMORTEM A2: a payload that blows an agent's context is one way to earn
+    // "installed and never invoked". The bounded projection has existed in
+    // `andon-core` since P0 and nothing called it, so the only machine-readable
+    // surface was the full record — measured at 572 KB on this repository,
+    // against a declared budget of 6000 bytes.
+    let repo = stranger_repo();
+    let path = repo.path().to_str().expect("utf-8").to_string();
+
+    let full = run(&["measure", "--repo", &path, "--json", "--exit-zero"]);
+    let profile = run(&[
+        "measure",
+        "--repo",
+        &path,
+        "--profile",
+        "agent-mode",
+        "--exit-zero",
+    ]);
+    assert!(
+        profile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&profile.stderr)
+    );
+
+    let policy = andon_core::policy::Policy::default();
+    let budget = (policy.agent.profile_token_budget * policy.agent.bytes_per_token) as usize;
+    let view: serde_json::Value =
+        serde_json::from_slice(&profile.stdout).expect("the profile is JSON");
+
+    // The bound, read from policy rather than restated as a number here.
+    assert!(
+        profile.stdout.len() <= budget + 1,
+        "the agent profile is {} bytes against a declared budget of {budget}",
+        profile.stdout.len()
+    );
+    assert!(
+        profile.stdout.len() < full.stdout.len(),
+        "the profile is not smaller than the record it projects"
+    );
+    assert_eq!(view["profile"], "agent-mode");
+    // A projection that dropped findings says so; one that did not must not
+    // claim it did.
+    let shown = view["findings"].as_array().expect("findings").len();
+    let total = view["total_findings"].as_u64().expect("a total") as usize;
+    assert_eq!(
+        view["truncated"].as_bool().expect("a flag"),
+        shown < total,
+        "the truncation flag disagrees with what was kept ({shown} of {total})"
+    );
+    // Evidence is referenced, not inlined: the repetition that made the full
+    // record large is exactly what this view removes.
+    for finding in view["findings"].as_array().expect("findings") {
+        assert!(finding["claim_id"].is_string());
+        assert!(
+            finding.get("does_not_predict").is_none(),
+            "the profile inlines the evidence block it exists to reference"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_profile_name_is_refused_rather_than_ignored() {
+    let repo = stranger_repo();
+    let output = run(&[
+        "measure",
+        "--repo",
+        repo.path().to_str().expect("utf-8"),
+        "--profile",
+        "small",
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("agent-mode"));
+}
+
+#[test]
+fn uncommitted_work_is_disclosed_even_when_committed_changes_were_measured() {
+    // The narrower version of the same gap, and the one that survives the
+    // refusal: on a branch with commits ahead of its fork point, those commits
+    // are measured — correctly — and an agent that has since edited the tree has
+    // work these numbers do not describe. The refusal never fires here, because
+    // there *was* something to measure. Silence would leave the reader unable to
+    // see the one fact that changes how they read the verdict.
+    let repo = stranger_repo();
+    let git = Git::open(repo.path()).expect("a repository");
+    // A branch point, so the ladder finds committed work ahead of it.
+    git.cmd(["branch", "base-point", &repo.base_oid])
+        .output()
+        .expect("branch");
+    std::fs::write(
+        repo.path().join("src").join("late.ts"),
+        b"export const late = 1;
+",
+    )
+    .expect("write");
+
+    let rendered = stdout(&run(&[
+        "measure",
+        "--repo",
+        repo.path().to_str().expect("utf-8"),
+        "--base",
+        &repo.base_oid,
+        "--no-color",
+        "--exit-zero",
+    ]));
+    assert!(
+        rendered.contains("uncommitted content"),
+        "a measurement of committed work said nothing about the uncommitted work beside          it:
+{rendered}"
+    );
+    assert!(rendered.contains("src/late.ts"), "{rendered}");
 }

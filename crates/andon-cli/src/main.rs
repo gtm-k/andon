@@ -59,6 +59,9 @@ andon measure [OPTIONS]
                         upstream, falling back to the last merged change)
   --head <REV>         head revision (default: HEAD)
   --no-fallback        refuse rather than measure the last merged change
+  --last-merged        measure the last merged change even when there is
+                       uncommitted work (which is otherwise a refusal, because
+                       this build cannot seal a measurement of uncommitted bytes)
   --registry <DIR>     load the evidence registry from a directory instead of
                        the copy compiled into this binary
   --self-measure       apply [self_measure] excluded_paths from .andon.toml
@@ -66,6 +69,9 @@ andon measure [OPTIONS]
   --harness <NAME>     harness that invoked this, for the ledger
   --model <ID>         model identifier, for the ledger
   --json               print the record as canonical JSON instead of a report
+  --profile <NAME>     print a bounded view instead of the full record.
+                       `agent-mode` is the token-budgeted projection for an agent
+                       (PREMORTEM A2), sized from [agent] in .andon.toml
   --html <FILE>        also write a self-contained HTML report
   --record             append the record to refs/notes/andon-measure
   --full               print every result, including absences and INFO findings
@@ -89,6 +95,7 @@ const SWITCHES: &[&str] = &[
     "full",
     "no-color",
     "no-fallback",
+    "last-merged",
     "self-measure",
     "exit-zero",
     "list",
@@ -156,7 +163,7 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&[
-        "repo", "base", "head", "registry", "source", "harness", "model", "html",
+        "repo", "base", "head", "registry", "source", "harness", "model", "html", "profile",
     ])?;
 
     let request = measure::Request {
@@ -164,6 +171,7 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
         base: flags.get("base").map(str::to_string),
         head: flags.get("head").map(str::to_string),
         no_fallback: flags.on("no-fallback"),
+        last_merged: flags.on("last-merged"),
         registry_dir: flags.get("registry").map(std::path::PathBuf::from),
         self_measure: flags.on("self-measure"),
         source: source_of(flags.get("source"))?,
@@ -183,7 +191,12 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
     // record and say nothing about it.
     let saved = store::write_last(&git, &measurement.record);
 
-    if flags.on("json") {
+    if let Some(name) = flags.get("profile") {
+        println!(
+            "{}",
+            render::profile(&measurement.record, name, &request.repo)?
+        );
+    } else if flags.on("json") {
         println!(
             "{}",
             andon_core::canonical::to_canonical_string(&measurement.record)
@@ -227,12 +240,13 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
 fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
     if flags.on("help") {
         println!(
-            "andon report [--repo <PATH>] [--input <FILE>] [--html <FILE>] [--json] [--full]\n\n  \
+            "andon report [--repo <PATH>] [--input <FILE>] [--html <FILE>] [--json] [--full]\n\
+             andon report --profile agent-mode\n\n  \
              Renders the last measurement taken in this checkout, or a record from a file."
         );
         return Ok(ExitCode::SUCCESS);
     }
-    flags.reject_unknown(&["repo", "input", "html"])?;
+    flags.reject_unknown(&["repo", "input", "html", "profile"])?;
 
     let record = match flags.get("input") {
         Some(path) => store::read_record(std::path::Path::new(path))?,
@@ -242,6 +256,13 @@ fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
         }
     };
 
+    if let Some(name) = flags.get("profile") {
+        println!(
+            "{}",
+            render::profile(&record, name, &flags.path("repo", "."))?
+        );
+        return Ok(code_for(record.verdict.verdict, flags.on("exit-zero")));
+    }
     if flags.on("json") {
         println!(
             "{}",

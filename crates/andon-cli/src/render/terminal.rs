@@ -190,7 +190,11 @@ fn header(out: &mut String, measurement: &Measurement, colour: Colour) {
             out,
             " {} {}",
             colour.bold("NOTE"),
-            colour.bold("nothing was in flight, so this is not your working change")
+            // The headline states the consequence, which is true whether the tree
+            // was clean or dirty; the reason underneath states which it was. An
+            // earlier version asserted "nothing was in flight" here and was
+            // false over a dirty tree.
+            colour.bold("these numbers are not about your working change")
         );
         let _ = writeln!(out, "   asked for  {}", substitution.asked_for);
         let _ = writeln!(out, "   measured   {}", substitution.measured);

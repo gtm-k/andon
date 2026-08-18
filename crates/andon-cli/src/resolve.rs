@@ -83,6 +83,44 @@ pub enum ResolveFailure {
         /// Abbreviated HEAD, so the message names the commit it is about.
         head_short: String,
     },
+    /// There is uncommitted work, and this build cannot measure it.
+    ///
+    /// # Why this is a refusal and not a fallback
+    ///
+    /// This is the state the product exists for: an agent that has just written
+    /// a change and not committed it. Measuring the last merged change instead
+    /// and reporting `pass` is the worst available answer — the caller reads a
+    /// verdict about bytes that are not the ones they are asking about, and a
+    /// hook keyed on the exit code lets the change through.
+    ///
+    /// The reason it cannot be measured is a contract, not an oversight.
+    /// `andon_core::git::resolve` refuses to build a `CompareContext` from a
+    /// dirty endpoint, because the working tree has no commit OID and writing
+    /// `HEAD`'s in its place produces a record that passes the verifier's
+    /// tuple check while describing bytes that were never committed — the
+    /// laundering path R2-4 exists to close, and false `divergent` verdicts on
+    /// honest work, which is PREMORTEM Story 1. Every result is sealed against
+    /// that context, so there is no arrangement of this crate that measures
+    /// uncommitted bytes into a record.
+    ///
+    /// Staging does not help and the message does not suggest it: an index
+    /// endpoint is dirty too and errors identically.
+    #[error(
+        "there is uncommitted work here ({}), and this build measures committed content \
+         only.\n  \
+         A measurement is sealed against a (base, head) commit pair, and the working tree has \
+         no commit OID — writing HEAD's in its place would describe bytes that were never \
+         committed, which is the failure the trust model exists to prevent. Staging does not \
+         change this.\n  \
+         What works now:  commit the change, then re-run `andon measure`.\n  \
+         Or, deliberately: `andon measure --last-merged` measures the last merged change \
+         instead and says so.",
+        summarize(.paths)
+    )]
+    UncommittedWork {
+        /// Every uncommitted path, so the refusal names what it is about.
+        paths: Vec<String>,
+    },
     /// Git refused.
     #[error(transparent)]
     Git(#[from] ResolveError),
@@ -120,6 +158,15 @@ pub struct Resolution {
     pub how: String,
     /// Present only when something other than the request was measured.
     pub substitution: Option<Substitution>,
+    /// Repository-relative paths with uncommitted content at resolution time.
+    ///
+    /// Carried on **every** path, not just the one that refuses over it. A
+    /// branch with commits ahead of its fork point measures those commits, which
+    /// is correct — but an agent that has since edited the tree has work this
+    /// measurement does not describe, and saying nothing about it leaves the
+    /// actor unable to see the one thing that would change how they read the
+    /// verdict.
+    pub uncommitted: Vec<String>,
 }
 
 /// What the caller asked for.
@@ -131,12 +178,30 @@ pub struct Request {
     pub head: Option<String>,
     /// `--no-fallback`: refuse rather than measure the last merged change.
     pub no_fallback: bool,
+    /// `--last-merged`: measure the last merged change even though there is
+    /// uncommitted work, having been told that is what it will do.
+    pub last_merged: bool,
+}
+
+/// Name the uncommitted paths, and stop before the message becomes a listing.
+///
+/// Three is enough for a reader to recognise their own change; the count tells
+/// them whether the rest is one more file or forty.
+fn summarize(paths: &[String]) -> String {
+    const SHOWN: usize = 3;
+    let head: Vec<&str> = paths.iter().take(SHOWN).map(String::as_str).collect();
+    match paths.len().checked_sub(SHOWN) {
+        Some(rest) if rest > 0 => format!("{} and {rest} more", head.join(", ")),
+        _ => head.join(", "),
+    }
 }
 
 /// Resolve a range, applying the base ladder and the no-diff fallback.
 pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailure> {
     let head_spec = request.head.clone().unwrap_or_else(|| "HEAD".to_string());
     let head = Revision::Rev(head_spec.clone());
+    // Read once, before any branch, so every outcome can disclose it.
+    let uncommitted = uncommitted_paths(git)?;
 
     // An explicit base is obeyed exactly, including when it yields an empty
     // change. A caller who named both ends asked a specific question, and
@@ -159,6 +224,7 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
             changed,
             how,
             substitution: None,
+            uncommitted,
         });
     }
 
@@ -191,13 +257,21 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
                 changed,
                 how,
                 substitution: None,
+                uncommitted,
             });
         }
     }
 
-    // Nothing in flight. This is the clean checkout — the state PREMORTEM A1 is
-    // about — and the last merged change is a real change with real evidence
-    // behind it.
+    // Nothing has been *committed* ahead of the fork point. Two very different
+    // situations reach this line, and telling them apart is the whole of the
+    // decision below.
+    if !uncommitted.is_empty() && !request.last_merged {
+        return Err(ResolveFailure::UncommittedWork { paths: uncommitted });
+    }
+
+    // Genuinely clean. This is the checkout PREMORTEM A1 is about — the stranger
+    // who cloned something and ran one command — and the last merged change is a
+    // real change with real evidence behind it.
     let asked_for = if tried.is_empty() {
         "the working change (no branch point found)".to_string()
     } else {
@@ -208,7 +282,25 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
             head_short: short(&rev_parse(git, &head_spec)?),
         });
     }
-    last_merged_change(git, &head_spec, &asked_for)
+    last_merged_change(git, &head_spec, &asked_for, &uncommitted)
+}
+
+/// Repository-relative paths with uncommitted content, staged or not.
+///
+/// `--porcelain` because the human-readable form is explicitly not a stable
+/// interface, and untracked files are included: a new source file nobody has
+/// committed is uncommitted work in exactly the sense that matters here.
+fn uncommitted_paths(git: &Git) -> Result<Vec<String>, ResolveFailure> {
+    let text = git
+        .cmd(["status", "--porcelain", "--untracked-files=normal"])
+        .text()
+        .map_err(|e| ResolveFailure::Git(ResolveError::Git(e)))?;
+    Ok(text
+        .lines()
+        .filter_map(|line| line.get(3..).map(str::trim))
+        .filter(|path| !path.is_empty())
+        .map(|path| path.to_string())
+        .collect())
 }
 
 /// `HEAD~1..HEAD`, labelled as the substitution it is.
@@ -216,6 +308,7 @@ fn last_merged_change(
     git: &Git,
     head_spec: &str,
     asked_for: &str,
+    uncommitted: &[String],
 ) -> Result<Resolution, ResolveFailure> {
     let head_oid = rev_parse(git, head_spec)?;
     let parent_spec = format!("{head_spec}~1");
@@ -252,13 +345,30 @@ fn last_merged_change(
         compare_context,
         changed,
         how,
+        uncommitted: uncommitted.to_vec(),
         substitution: Some(Substitution {
             asked_for: asked_for.to_string(),
             measured,
-            because: "nothing is in flight in this checkout, so there was no working change to \
-                      measure. These numbers describe the most recent commit, not uncommitted \
-                      work."
-                .to_string(),
+            // Two different situations reach this line and they need two
+            // different sentences. Saying "nothing is in flight" over a dirty
+            // tree is false about the one thing the reader can check in a
+            // single command, and it is the defect class this phase inherited
+            // three instances of: a statement that contradicts the state it
+            // describes. So the sentence reads the state.
+            because: if uncommitted.is_empty() {
+                "nothing is in flight in this checkout, so there was no working change to \
+                 measure. These numbers describe the most recent commit, not uncommitted work."
+                    .to_string()
+            } else {
+                format!(
+                    "there IS uncommitted work here ({}), and these numbers are not about \
+                     it. You asked for the last merged change; this build cannot measure \
+                     uncommitted bytes into a record, because a measurement is sealed \
+                     against a (base, head) commit pair and the working tree has no commit \
+                     OID.",
+                    summarize(uncommitted)
+                )
+            },
         }),
     })
 }
