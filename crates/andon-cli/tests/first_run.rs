@@ -427,6 +427,84 @@ fn two_measurements_racing_in_one_checkout_both_produce_a_record() {
 }
 
 #[test]
+fn a_verification_reads_the_loop_counter_and_does_not_take_a_turn() {
+    // The counter counts one thing: how many passes an agent has made at this
+    // change. `attest-stub` recomputes the same change from outside that loop,
+    // and it used to advance the counter on the way through — so a verifier
+    // sharing a checkout with an agent inflated the agent's number, and enough
+    // verifications pushed the agent's next measurement into
+    // `escalate_to_human` for work the agent never did.
+    // The gamed fixture, deliberately: the counter advances only on a run with
+    // something an agent could act on, so the honest case correctly leaves it at
+    // zero and would make this assertion vacuous.
+    let dir = common::golden_root().join("gamed-change");
+    let repo = common::build(&dir, &common::read_case(&dir));
+    let path = repo.path().to_str().expect("utf-8").to_string();
+
+    // Three measurements, so the counter holds a number worth preserving.
+    for _ in 0..3 {
+        let _ = run(&[
+            "measure",
+            "--repo",
+            &path,
+            "--base",
+            &repo.base_oid,
+            "--head",
+            &repo.head_oid,
+            "--json",
+            "--exit-zero",
+        ]);
+    }
+    let before = loop_state(repo.path());
+    assert!(
+        before.values().any(|count| *count > 0),
+        "the counter never advanced, so this assertion would be vacuous: {before:?}"
+    );
+
+    let output = run(&[
+        "attest-stub",
+        "--repo",
+        &path,
+        "--head",
+        &repo.head_oid,
+        "--trusted-branch",
+        "main",
+    ]);
+    assert!(
+        output.status.success(),
+        "attest-stub failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        before,
+        loop_state(repo.path()),
+        "a verification moved the agent's loop counter"
+    );
+}
+
+/// The per-branch counts, read from the tool's own state file.
+fn loop_state(repo: &Path) -> std::collections::BTreeMap<String, u32> {
+    let git = Git::open(repo).expect("a repository");
+    let path = git
+        .facts()
+        .git_dir
+        .join("andon")
+        .join("iteration-state.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Default::default();
+    };
+    let value: serde_json::Value = serde_json::from_str(&text).expect("valid state");
+    value["branches"]
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
 fn the_tool_writes_nothing_into_the_working_tree() {
     // A tool invited to look at somebody's repository does not leave state in
     // it. Everything goes under the git directory, which is ignored by

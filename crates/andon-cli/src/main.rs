@@ -291,16 +291,17 @@ fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
 
     // Policy shapes what a claim's tier is allowed to do, so it is loaded even
     // when no measurement is taken. Outside a repository the conservative
-    // defaults apply, which is what the binary would have used anyway.
+    // defaults apply, which is what the binary would have used anyway — but
+    // inside one, a `.andon.toml` that exists and cannot be read is surfaced
+    // rather than defaulted. `measure` treats that condition as an error, and
+    // two surfaces answering one question differently is how an operator ends
+    // up reading a ceiling computed under a policy that is not theirs.
     let git = Git::open(&flags.path("repo", ".")).ok();
-    let policy = git
-        .as_ref()
-        .map(|git| git.workdir().join(".andon.toml"))
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .map(|text| Policy::from_toml(&text))
-        .transpose()
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
+    let policy = match &git {
+        Some(git) => measure::load_policy(git, &measure::PolicySource::Worktree)
+            .map_err(|e| e.to_string())?,
+        None => Policy::default(),
+    };
 
     let as_of = andon_core::date::Date::today_utc()
         .map_err(|_| "the system clock could not be read".to_string())?;
@@ -373,10 +374,15 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 );
             }
         }
-        "ack" => print!(
-            "\n{}\n",
-            ledger::ack(&git, flags.get("branch"), &Policy::default())?
-        ),
+        // The cap comes from the policy in force, never from the default. An
+        // acknowledgement reporting "of a cap of 3" in a repository whose
+        // `.andon.toml` says five would be a sentence stating a number it did
+        // not read — the defect class this phase inherited three instances of.
+        "ack" => {
+            let policy = measure::load_policy(&git, &measure::PolicySource::Worktree)
+                .map_err(|e| e.to_string())?;
+            print!("\n{}\n", ledger::ack(&git, flags.get("branch"), &policy)?);
+        }
         other => return Err(format!("unknown ledger command '{other}'")),
     }
     Ok(ExitCode::SUCCESS)

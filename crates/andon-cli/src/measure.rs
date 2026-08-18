@@ -43,7 +43,7 @@ use andon_core::schema::payload::{
     Invocation, MeasurementRecord, MeasurementResult, MetricValue, Reserved, ScopeKind,
     ToolIdentity,
 };
-use andon_core::verdict::iteration::IterationStore;
+use andon_core::verdict::iteration::{Advance, IterationStore};
 use andon_core::verdict::policy_change::{self, PolicyChange};
 use andon_core::verdict::EngineFailure;
 
@@ -270,13 +270,28 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
     let branch = current_branch(&git, &resolution);
     let store = IterationStore::open(store::state_dir(&git))
         .map_err(|e| MeasureError::Iteration(e.to_string()))?;
-    let advance = store
-        .advance(
-            &branch,
-            policy.loop_policy.iteration_cap,
-            prepared.loop_outcome(),
-        )
-        .map_err(|e| MeasureError::Iteration(e.to_string()))?;
+    let cap = policy.loop_policy.iteration_cap;
+    // A verifier reads the counter; it does not take a turn.
+    //
+    // The counter counts one thing: how many passes an agent has made at this
+    // change. A recompute is an observation of that loop from outside it, so
+    // advancing here would be the verifier inflating the number it was asked to
+    // report — and where the verifier and the agent share a checkout, it would
+    // push the agent's *next* measurement into `escalate_to_human` for work the
+    // agent never did. Where they do not share one, the number it advanced is a
+    // count of nothing on a machine nobody reads.
+    let advance = match request.record_kind {
+        RecordKind::SelfReport => store
+            .advance(&branch, cap, prepared.loop_outcome())
+            .map_err(|e| MeasureError::Iteration(e.to_string()))?,
+        RecordKind::Attestation => Advance {
+            state: store.peek(&branch, cap),
+            // `peek` cannot report a restart because it does not perform one.
+            // A verifier that claimed to have recovered state would be claiming
+            // something about a counter it did not write.
+            recovered: false,
+        },
+    };
 
     let record = prepared.finish(advance);
 
@@ -562,12 +577,18 @@ fn matches_prefix(pattern: &str, path: &str) -> bool {
 
 /// Read `.andon.toml` from wherever this caller's policy lives.
 ///
+/// Public because every surface needs the same answer. `explain` reports what a
+/// tier is allowed to do under the policy in force, and `ledger ack` reports the
+/// cap the counter was measured against — both read this file, and a surface
+/// that reached for `Policy::default()` instead would print a number the
+/// repository does not use.
+///
 /// Absent means the conservative defaults were in force, which is what the
 /// binary would have used and what every repository but this one will hit.
 /// A file that exists and cannot be read is surfaced rather than defaulted: a
 /// policy the operator believes is in force and is not is the whole reason
 /// `Policy` refuses unknown keys.
-fn load_policy(git: &Git, source: &PolicySource) -> Result<Policy, MeasureError> {
+pub fn load_policy(git: &Git, source: &PolicySource) -> Result<Policy, MeasureError> {
     let text = match source {
         PolicySource::Worktree => {
             let path = git.workdir().join(".andon.toml");
@@ -577,10 +598,34 @@ fn load_policy(git: &Git, source: &PolicySource) -> Result<Policy, MeasureError>
                 Err(e) => return Err(MeasureError::Policy(format!("{}: {e}", path.display()))),
             }
         }
-        PolicySource::Commit(oid) => git
-            .cmd(["show", "--no-textconv", &format!("{oid}:.andon.toml")])
-            .succeeds_with_output()
-            .map_err(|e| MeasureError::Policy(e.to_string()))?,
+        PolicySource::Commit(oid) => {
+            // Presence is asked first, and separately. `git show` on a path a
+            // commit does not carry exits 128, which the wrapper reports as a
+            // failure — so reading it directly made "this repository has no
+            // policy file", which is the ordinary case for every repository but
+            // this one, indistinguishable from "git broke". A verifier that
+            // refused to attest any project without an `.andon.toml` would refuse
+            // nearly all of them, and the error message would name a git command
+            // rather than the situation.
+            //
+            // `cat-file -e` answers exactly the question — does this commit carry
+            // this blob — and leaves a real git failure still able to surface as
+            // one.
+            let spec = format!("{oid}:.andon.toml");
+            let present = git
+                .cmd(["cat-file", "-e", &spec])
+                .succeeds()
+                .map_err(|e| MeasureError::Policy(e.to_string()))?;
+            if present {
+                Some(
+                    git.cmd(["show", "--no-textconv", &spec])
+                        .text()
+                        .map_err(|e| MeasureError::Policy(e.to_string()))?,
+                )
+            } else {
+                None
+            }
+        }
     };
     match text {
         Some(text) => {

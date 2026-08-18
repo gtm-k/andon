@@ -139,6 +139,18 @@ pub fn build(dir: &Path, case: &Case) -> Built {
     git.cmd(["config", "user.email", FIXTURE_EMAIL])
         .output()
         .expect("config user.email");
+    // The bytes this repository commits must not depend on whose machine built
+    // it. `GIT_CONFIG_NOSYSTEM` keeps `/etc/gitconfig` out, but the *global*
+    // config still reaches `git add` — and `core.autocrlf` there decides whether
+    // a CRLF working-tree file becomes a CRLF blob or an LF one. Two answers,
+    // two blobs, two commit OIDs, and every reference digest is a function of
+    // the OIDs. Pinned here rather than assumed, so a contributor whose global
+    // config says `true` records the same fixture as CI does.
+    for (key, value) in [("core.autocrlf", "false"), ("core.eol", "lf")] {
+        git.cmd(["config", key, value])
+            .output()
+            .unwrap_or_else(|e| panic!("config {key}: {e}"));
+    }
 
     let mut base_oid = String::new();
     let mut head_oid = String::new();

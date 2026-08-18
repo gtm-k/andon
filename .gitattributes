@@ -23,6 +23,25 @@ fixtures/**     -text
 # line existed.
 fixtures/**/*.sh  text eol=lf
 
+# Nor is the golden set. Its files are ordinary source that a fixture repository
+# is BUILT from, not specimens whose exact bytes are the measurement — and
+# leaving them byte-exact broke the thing they exist to provide.
+#
+# The failure, concretely: `-text` stores whatever bytes the author's editor
+# wrote, so the golden sources went in as CRLF from a Windows session. The
+# builder copies those bytes into a temporary repository and commits them, and
+# `git add` there obeys the *ambient* `core.autocrlf` — `input` on the author's
+# machine normalized them to LF, `false` on a Linux runner would not. Two
+# machines, two blobs, two commit OIDs, and every reference digest is a function
+# of the OIDs. The golden suite would have reddened on CI with "the fixture no
+# longer builds the same commits" and nothing in the diff to explain it.
+#
+# Normalizing here is half the fix; the other half is in the builder, which pins
+# `core.autocrlf=false` in the fixture repository so the bytes it commits do not
+# depend on whoever's global config it inherited. Either alone leaves a machine
+# that disagrees.
+fixtures/golden/**  text eol=lf
+
 # Nor is prose *about* a fixture. Left byte-exact, a doc edited on Windows
 # commits CRLF into a repository that is LF everywhere else — noise in every
 # later diff, and in a repository whose product is byte-level determinism, noise

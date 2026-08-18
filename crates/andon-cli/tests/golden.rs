@@ -437,6 +437,45 @@ fn the_deterministic_set_is_digest_pinned_and_non_empty() {
 }
 
 #[test]
+fn the_fixture_sources_are_lf_so_the_commit_oids_do_not_depend_on_the_checkout() {
+    // Every reference digest is a function of `base_oid` and `head_oid`, which
+    // are functions of these bytes. A CR in one of them means the fixture builds
+    // different commits on a machine that checks out differently, and the
+    // failure arrives as a wall of digest mismatches whose real cause is
+    // invisible in the diff.
+    //
+    // `.gitattributes` normalizes `fixtures/golden/**` on the way in, so this
+    // should be unreachable — which is the point. It is the assertion that says
+    // so, and it survives somebody editing that rule.
+    for dir in common::cases() {
+        for path in walk(&dir) {
+            let bytes = std::fs::read(&path).expect("a fixture file");
+            assert!(
+                !bytes.windows(2).any(|w| w == b"\r\n"),
+                "{} contains CRLF; the commit OIDs this fixture builds would depend on the \
+                 checkout that produced it",
+                path.display()
+            );
+        }
+    }
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            found.extend(walk(&entry.path()));
+        } else {
+            found.push(entry.path());
+        }
+    }
+    found
+}
+
+#[test]
 fn the_band_has_an_absolute_floor_near_zero() {
     // The R2 fold, checked rather than described. A purely relative band would
     // answer `false` to the first of these.
