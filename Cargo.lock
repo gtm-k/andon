@@ -12,6 +12,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "andon-cli"
+version = "0.1.0"
+dependencies = [
+ "andon-core",
+ "andon-engine-artifacts",
+ "andon-engine-clones",
+ "andon-engine-process",
+ "andon-engine-tamper",
+ "andon-ledger-min",
+ "andon-static-metrics",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "andon-core"
 version = "0.1.0"
 dependencies = [
