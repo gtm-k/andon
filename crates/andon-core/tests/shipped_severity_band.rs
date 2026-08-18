@@ -137,6 +137,7 @@ const LCOV: &str = "SF:src/classify.ts\nDA:2,0\nDA:3,0\nDA:4,0\nend_of_record\n"
 /// One repository, measured by all five shipped engines.
 struct Measured {
     results: Vec<MeasurementResult>,
+    compare_context: andon_core::schema::payload::CompareContext,
     _dir: tempfile::TempDir,
 }
 
@@ -239,7 +240,133 @@ fn measure_everything() -> Measured {
             .expect("the artifacts engine reads the hunks");
     results.extend(run_engine(&artifacts, &ctx).expect("artifacts measures"));
 
-    Measured { results, _dir: dir }
+    Measured {
+        results,
+        compare_context: ctx.compare_context.clone(),
+        _dir: dir,
+    }
+}
+
+/// The five engines' outputs, assembled the way a measurement assembles them.
+///
+/// Through `payload::prepare`, not through a hand call to `severity::apply`.
+/// That distinction is the whole point of `the_assembly_path_applies_the_ceilings`
+/// below: a test that applies the ceilings itself proves the ceilings work and
+/// says nothing about whether the assembly path still calls them.
+fn assemble(measured: &Measured) -> andon_core::schema::payload::MeasurementRecord {
+    use andon_core::engine::EngineDescriptor;
+    use andon_core::payload::{registry_load, AssembleRequest, EngineOutput};
+    use andon_core::schema::enums::{EngineClass, InvocationSource, RecordKind};
+    use andon_core::schema::payload::{Invocation, Reserved, ToolIdentity};
+    use andon_core::verdict::iteration::Advance;
+
+    let registry_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("registry");
+    let registry = registry_load::load(
+        &registry_dir,
+        &andon_core::policy::RegistryPolicy::default(),
+        andon_core::date::Date::today_utc().expect("a clock"),
+    )
+    .expect("the shipped registry loads");
+
+    let engines: Vec<EngineOutput> = registry
+        .expected_engines
+        .iter()
+        .map(|engine_id| {
+            let results: Vec<_> = measured
+                .results
+                .iter()
+                .filter(|r| &r.engine_id == engine_id)
+                .cloned()
+                .collect();
+            let family = results
+                .first()
+                .map(|r| r.family)
+                .expect("every shipped engine produced something");
+            EngineOutput {
+                descriptor: EngineDescriptor {
+                    engine_id: engine_id.clone(),
+                    family,
+                    class: EngineClass::StaticSafe,
+                    version: "0.1.0".to_string(),
+                },
+                results,
+            }
+        })
+        .collect();
+
+    let policy = Policy::default();
+    let prepared = andon_core::payload::prepare(AssembleRequest {
+        tool: ToolIdentity {
+            name: "andon".to_string(),
+            version: "0.1.0".to_string(),
+            build_oid: "4".repeat(40),
+            attested_release: false,
+        },
+        record_kind: RecordKind::SelfReport,
+        compare_context: measured.compare_context.clone(),
+        invocation: Invocation {
+            source: InvocationSource::HumanCli,
+            harness: None,
+            model: None,
+            author: None,
+            iteration: 0,
+        },
+        reserved: Reserved::default(),
+        policy: &policy,
+        registry: &registry,
+        engines,
+        engine_failures: Vec::new(),
+        policy_change: None,
+    })
+    .expect("real engine output assembles");
+    prepared.finish(Advance {
+        state: andon_core::schema::payload::IterationState {
+            count: 0,
+            cap: 3,
+            escalated: false,
+        },
+        recovered: false,
+    })
+}
+
+#[test]
+fn the_assembly_path_applies_the_ceilings() {
+    // THE MUTANT THIS KILLS: delete `severity::apply` from `payload::prepare`.
+    // Before the ladders existed, that deletion changed nothing anywhere in the
+    // workspace — every engine emitted `Info` and there was nothing to cap. It
+    // is caught here rather than in the band assertions above, because those
+    // call `apply` themselves and would go on passing over a payload that never
+    // did.
+    //
+    // Real engines, real registry, real `prepare`, and the record it produced.
+    let measured = measure_everything();
+    let record = assemble(&measured);
+
+    for result in &record.results {
+        if result.family == EngineFamily::Static {
+            continue;
+        }
+        assert!(
+            !result.severity.is_med_plus(),
+            "{} left assembly at {:?}: the ceilings were not applied",
+            result.metric_id,
+            result.severity
+        );
+    }
+    assert!(
+        record
+            .results
+            .iter()
+            .any(|r| r.family == EngineFamily::Static && r.severity.is_med_plus()),
+        "and the band is still reachable through the assembly path"
+    );
+    assert_eq!(
+        record.verdict.verdict,
+        andon_core::schema::enums::Verdict::Block,
+        "a complexity finding past the High rung on a diff-actionable, tier-B claim          stops the line"
+    );
 }
 
 /// Every shipped engine, paired with the ladders it declares.
