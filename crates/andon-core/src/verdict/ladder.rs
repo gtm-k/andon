@@ -94,6 +94,21 @@ impl Threshold {
         }
     }
 
+    /// Whether `next` sits strictly above this rung on the same axis.
+    ///
+    /// `None` when the two compare against different kinds of value — a rung
+    /// list that changes units partway through, which has no ordering at all
+    /// and is a refusal rather than a comparison.
+    fn strictly_below(self, next: Threshold) -> Option<bool> {
+        match (self, next) {
+            (Threshold::Count(a), Threshold::Count(b)) => Some(a < b),
+            (Threshold::Integer(a), Threshold::Integer(b)) => Some(a < b),
+            (Threshold::Ratio(a), Threshold::Ratio(b)) => Some(a < b),
+            (Threshold::Millis(a), Threshold::Millis(b)) => Some(a < b),
+            _ => None,
+        }
+    }
+
     /// The kind name, for a refusal a reader can act on.
     fn kind(self) -> &'static str {
         match self {
@@ -173,6 +188,17 @@ pub enum LadderError {
     /// The rungs are not in ascending severity order.
     #[error("the declared rungs are not in ascending severity order")]
     UnorderedRungs,
+    /// The rungs' severities ascend but their thresholds do not.
+    #[error("the declared thresholds do not ascend with the severities they carry")]
+    UnorderedThresholds,
+    /// Two rungs compare against different kinds of value.
+    #[error("the declared rungs mix a {first} threshold with a {second} one")]
+    MixedThresholdKinds {
+        /// The lower rung's kind.
+        first: &'static str,
+        /// The rung declared above it.
+        second: &'static str,
+    },
 }
 
 /// The [`MetricValue`] kind name, for refusals.
@@ -206,9 +232,7 @@ impl SeverityLadder {
                 }),
             },
             SeverityLadder::Thresholds(rungs) => {
-                if !ascending(rungs) {
-                    return Err(LadderError::UnorderedRungs);
-                }
+                ascending(rungs)?;
                 match value {
                     // No number, nothing to rank. The `unwitnessed` case every
                     // engine spells as text.
@@ -254,15 +278,38 @@ impl SeverityLadder {
     }
 }
 
-/// Whether rungs ascend in severity.
+/// Whether the rungs ascend — on **both** axes, in lockstep, in one unit.
 ///
-/// Checked rather than assumed: rungs written out of order still *work* —
-/// `severity_for` takes the maximum — but a table that reads as descending is a
-/// table whose next editor inserts a rung in the wrong place.
-fn ascending(rungs: &[Rung]) -> bool {
-    rungs
-        .windows(2)
-        .all(|pair| pair[0].severity < pair[1].severity)
+/// The severity axis alone is not enough, and the reason is the over-reporting
+/// direction this project ranks worse than a miss. `severity_for` takes the
+/// maximum over every rung the value reached, so a table whose severities
+/// ascend while its thresholds descend hands the *lowest* value the *highest*
+/// rung: invert the cyclomatic table to 51/21/11 and a function needing eleven
+/// test paths reports `Critical`. That mutation left the whole workspace green
+/// while the check read one axis.
+///
+/// The units are checked here too. A rung list that changes kind partway
+/// through has no ordering to verify, and at `severity_for` time only the rungs
+/// matching the value's kind would ever be compared — the others would refuse
+/// or, worse, be the ones that happened to match.
+fn ascending(rungs: &[Rung]) -> Result<(), LadderError> {
+    for pair in rungs.windows(2) {
+        let (lower, upper) = (pair[0], pair[1]);
+        match lower.at.strictly_below(upper.at) {
+            None => {
+                return Err(LadderError::MixedThresholdKinds {
+                    first: lower.at.kind(),
+                    second: upper.at.kind(),
+                })
+            }
+            Some(false) => return Err(LadderError::UnorderedThresholds),
+            Some(true) => {}
+        }
+        if lower.severity >= upper.severity {
+            return Err(LadderError::UnorderedRungs);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -398,6 +445,90 @@ mod tests {
             SeverityLadder::Thresholds(DESCENDING).severity_for(&MetricValue::Count(30)),
             Err(LadderError::UnorderedRungs)
         ));
+    }
+
+    #[test]
+    fn an_inverted_threshold_axis_is_refused() {
+        // THE MUTANT THIS KILLS, in the reviewer's own shape: the shipped
+        // cyclomatic table (11/21/51 → Medium/High/Critical) with its threshold
+        // axis reversed. The severities still ascend, so a check that read one
+        // axis passed it — and because `severity_for` takes the maximum over
+        // every rung reached, a function needing eleven test paths then reported
+        // `Critical`. Over-reporting, which this project ranks worse than a
+        // miss, with the whole workspace green.
+        const INVERTED: &[Rung] = &[
+            Rung {
+                at: Threshold::Count(51),
+                severity: Severity::Medium,
+            },
+            Rung {
+                at: Threshold::Count(21),
+                severity: Severity::High,
+            },
+            Rung {
+                at: Threshold::Count(11),
+                severity: Severity::Critical,
+            },
+        ];
+        assert!(matches!(
+            SeverityLadder::Thresholds(INVERTED).severity_for(&MetricValue::Count(11)),
+            Err(LadderError::UnorderedThresholds)
+        ));
+
+        // A repeated threshold is the same defect one unit smaller: the lower
+        // rung can never be the highest one reached, so it is a rung that does
+        // nothing, and the next editor reads it as if it did.
+        const REPEATED: &[Rung] = &[
+            Rung {
+                at: Threshold::Count(10),
+                severity: Severity::Medium,
+            },
+            Rung {
+                at: Threshold::Count(10),
+                severity: Severity::High,
+            },
+        ];
+        assert!(matches!(
+            SeverityLadder::Thresholds(REPEATED).severity_for(&MetricValue::Count(10)),
+            Err(LadderError::UnorderedThresholds)
+        ));
+    }
+
+    #[test]
+    fn rungs_that_mix_threshold_kinds_are_refused() {
+        // A list that changes units partway through has no ordering to check,
+        // and at application time only the rungs matching the value's kind would
+        // be compared at all — so the ladder's answer would depend on which of
+        // its own rungs the metric happened to agree with.
+        const MIXED: &[Rung] = &[
+            Rung {
+                at: Threshold::Count(10),
+                severity: Severity::Medium,
+            },
+            Rung {
+                at: Threshold::Ratio(0.5),
+                severity: Severity::High,
+            },
+        ];
+        assert!(matches!(
+            SeverityLadder::Thresholds(MIXED).severity_for(&MetricValue::Count(30)),
+            Err(LadderError::MixedThresholdKinds {
+                first: "count",
+                second: "ratio"
+            })
+        ));
+    }
+
+    #[test]
+    fn every_shipped_ladder_shape_is_well_formed_before_it_is_read() {
+        // The refusals above are only worth anything if the check runs on the
+        // path the engines use, which is `severity_for` — so a well-formed
+        // ladder must still answer, and the ordering check must not have become
+        // a refusal of everything.
+        assert_eq!(
+            severity(SeverityLadder::Thresholds(COUNTS), MetricValue::Count(20)),
+            Severity::High
+        );
     }
 
     #[test]
