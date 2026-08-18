@@ -47,12 +47,20 @@ use andon_core::verdict::severity;
 
 use common::TestRepo;
 
-/// A TypeScript function nobody could test in eleven cases.
+/// A TypeScript function nobody could test in fifteen cases.
 ///
-/// Twelve sequential branches, so cyclomatic complexity is thirteen — past the
-/// `High` rung at eleven — and the nesting takes cognitive complexity past its
-/// own. Written out rather than generated so that the number a reader computes
-/// by hand is the number the engine reports.
+/// The engine reports **cyclomatic 15** and **cognitive 20**, both asserted by
+/// [`the_fixture_sits_in_the_middle_of_the_band_it_reaches`] rather than
+/// described here, because a doc comment is the half that rots. The version this
+/// replaced said thirteen and called eleven the `High` rung; the engine reported
+/// eleven and eleven is the `Medium` rung, so the prose was wrong twice about
+/// the code beside it.
+///
+/// The numbers are mid-band on purpose. `Medium` is reached at 11 and 15, `High`
+/// at 21 and 25, so this fixture has four units of room below it and six above —
+/// and retuning a rung by a unit or two, which is an expected kind of change,
+/// leaves the ruling's mandatory band guard green. At eleven against a rung of
+/// eleven it did not.
 const COMPLEX_TS: &[u8] = br#"
 export function classify(a: number, b: number, c: number): string {
   if (a > 0) {
@@ -78,6 +86,18 @@ export function classify(a: number, b: number, c: number): string {
       return "bba";
     }
     return "bbb";
+  }
+  if (a > 1000) {
+    return "big-a";
+  }
+  if (b > 1000) {
+    return "big-b";
+  }
+  if (c > 1000) {
+    return "big-c";
+  }
+  if (a > 2000) {
+    return "huge-a";
   }
   if (a < -100 && b < -100) {
     return "ccc";
@@ -113,6 +133,18 @@ export function classifyAgain(a: number, b: number, c: number): string {
       return "bba";
     }
     return "bbb";
+  }
+  if (a > 1000) {
+    return "big-a";
+  }
+  if (b > 1000) {
+    return "big-b";
+  }
+  if (c > 1000) {
+    return "big-c";
+  }
+  if (a > 2000) {
+    return "huge-a";
   }
   if (a < -100 && b < -100) {
     return "cccc";
@@ -365,7 +397,7 @@ fn the_assembly_path_applies_the_ceilings() {
     assert_eq!(
         record.verdict.verdict,
         andon_core::schema::enums::Verdict::Block,
-        "a complexity finding past the High rung on a diff-actionable, tier-B claim          stops the line"
+        "a complexity finding in the MED+ band on a diff-actionable, tier-B claim stops the line"
     );
 }
 
@@ -723,5 +755,60 @@ fn the_static_family_results_asserted_on_come_from_the_production_engine() {
             "{} is stamped `static` but came from another engine",
             result.metric_id
         );
+    }
+}
+
+#[test]
+fn the_fixture_sits_in_the_middle_of_the_band_it_reaches() {
+    // The mandatory band guard is only as robust as the fixture under it, and
+    // the fixture had none: it reported cyclomatic 11 against a `Medium` rung of
+    // 11 and cognitive 16 against a rung of 15. Retuning either rung by one unit
+    // — an expected kind of change, and one the ladders invite by declaring the
+    // thresholds in one place — would have turned the ruling's guard red for a
+    // reason no reader could have found in it.
+    //
+    // So the numbers are asserted here, where the guard can say what it
+    // measured, and they are asserted with their room either side.
+    use andon_core::schema::payload::MetricValue;
+
+    let measured = measure_everything();
+    let ladders = shipped_ladders()
+        .into_iter()
+        .collect::<BTreeMap<&str, BTreeMap<String, SeverityLadder>>>();
+
+    for (metric_id, expected_value) in [
+        ("static.cyclomatic-complexity.typescript", 15u64),
+        ("static.cognitive-complexity.typescript", 20),
+    ] {
+        let values: Vec<&MetricValue> = measured
+            .from("static-metrics")
+            .into_iter()
+            .filter(|r| r.metric_id == metric_id)
+            .map(|r| &r.value)
+            .collect();
+        assert!(!values.is_empty(), "{metric_id} was not measured at all");
+        assert!(
+            values
+                .iter()
+                .all(|v| **v == MetricValue::Count(expected_value)),
+            "{metric_id}: the two copies of the fixture function report one number, and it \
+             is the number this file's doc comment states — got {values:?}"
+        );
+
+        // Pre-policy, the ladder puts that number in the MED+ band — and keeps
+        // it there three units either way, which is the margin. A rung moved by
+        // one or two does not move this fixture's severity; one moved by four
+        // does, and that is a change worth reddening for.
+        let ladder = ladders["static-metrics"][metric_id];
+        for value in [expected_value - 3, expected_value, expected_value + 3] {
+            assert_eq!(
+                ladder
+                    .severity_for(&MetricValue::Count(value))
+                    .expect("a count ladder over a count")
+                    .expect("not a per-result ladder"),
+                Severity::Medium,
+                "{metric_id} at {value}"
+            );
+        }
     }
 }
