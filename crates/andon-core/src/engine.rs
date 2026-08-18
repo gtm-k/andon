@@ -401,6 +401,31 @@ mod tests {
     }
 
     #[test]
+    fn the_descriptor_half_of_the_family_check_is_load_bearing_on_its_own() {
+        // The mutant this kills: delete `result.family != descriptor.family` and
+        // leave `result.family != regime_family`. Every other family test keeps
+        // passing, because in each of them the regime disagrees too — so the
+        // surviving clause catches them and the deleted one is never missed.
+        //
+        // Here the result is internally consistent and wrong: it says `clones`
+        // and carries a clones regime, from an engine that says `static`. Only
+        // the deleted clause sees it.
+        let reason = refusal(Stamper {
+            result_family: EngineFamily::Clones,
+            result_regime: MeasurementRegime::Clones {
+                engine_version: "0.1.0".to_string(),
+                algorithm: "rabin-karp".to_string(),
+                min_tokens: 50,
+                window_tokens: 25,
+                normalization_revision: "rules2".to_string(),
+            },
+            ..Stamper::default()
+        });
+        assert!(reason.contains("Clones"), "{reason}");
+        assert!(reason.contains("Static"), "{reason}");
+    }
+
+    #[test]
     fn a_result_whose_regime_belongs_to_another_family_is_refused() {
         // The subtlest of the three: descriptor and stamp agree, and the regime
         // — which is *also* inside the digest input — says something else.

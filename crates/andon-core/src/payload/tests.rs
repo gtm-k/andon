@@ -354,6 +354,124 @@ fn advance(count: u32, cap: u32) -> Advance {
     }
 }
 
+// --- the loop counter's inputs ---------------------------------------------
+
+#[test]
+fn a_measurement_that_could_not_see_does_not_clear_the_budget() {
+    // The reset an agent can reach for. `has_countable_finding` answers "nothing
+    // to act on" identically whether the run was clean or blind, and the counter
+    // used to take that boolean — so breaking the engine that keeps finding the
+    // problem cleared the budget and the cap started again from one.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+
+    let clean = prepare(request(&policy, &registry, five_engines(&registry))).expect("assembles");
+    assert!(!clean.has_countable_finding());
+    assert_eq!(clean.completeness(), Completeness::Complete);
+    assert_eq!(
+        clean.loop_outcome(),
+        crate::verdict::iteration::LoopOutcome::Finished,
+        "a clean look at everything ends the loop"
+    );
+
+    let blinded = prepare(failed(
+        request(&policy, &registry, five_engines(&registry)),
+        "artifacts",
+        "no coverage report in the tree",
+    ))
+    .expect("assembles");
+    assert!(!blinded.has_countable_finding());
+    assert_eq!(
+        blinded.loop_outcome(),
+        crate::verdict::iteration::LoopOutcome::Inconclusive,
+        "a run that could not see is not evidence that the loop ended"
+    );
+}
+
+#[test]
+fn an_inconclusive_run_holds_the_count_rather_than_advancing_or_clearing_it() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = crate::verdict::iteration::IterationStore::open(dir.path()).expect("opens");
+    use crate::verdict::iteration::LoopOutcome;
+
+    for _ in 0..3 {
+        store
+            .advance("feat/a", 3, LoopOutcome::Countable)
+            .expect("advances");
+    }
+    assert_eq!(store.peek("feat/a", 3).count, 3);
+
+    store
+        .advance("feat/a", 3, LoopOutcome::Inconclusive)
+        .expect("advances");
+    assert_eq!(
+        store.peek("feat/a", 3).count,
+        3,
+        "held: neither advanced nor cleared"
+    );
+
+    store
+        .advance("feat/a", 3, LoopOutcome::Finished)
+        .expect("advances");
+    assert_eq!(store.peek("feat/a", 3).count, 0);
+}
+
+#[test]
+fn the_counter_is_the_only_writer_of_the_pass_number() {
+    // One record, one fact, and it used to have two writers: the caller filled
+    // in `invocation.iteration` from whatever it believed, and the counter
+    // produced `verdict.iteration.count`. Nothing said which a reader should
+    // believe, and a process that had forgotten its own history is exactly why
+    // the counter is on disk.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut req = request(&policy, &registry, five_engines(&registry));
+    req.invocation.iteration = 99;
+    let record = prepare(req).expect("assembles").finish(advance(2, 3));
+    assert_eq!(record.verdict.iteration.count, 2);
+    assert_eq!(
+        record.invocation.iteration, 2,
+        "the counter's answer, not the caller's belief"
+    );
+}
+
+#[test]
+fn a_measurement_that_did_not_see_everything_says_so_in_the_verdict() {
+    // The blinding case, at the surface an actor can actually read. The engine
+    // failure already advises; what was missing is the record-level statement,
+    // which is the only thing a reader of the verdict alone can see about
+    // whether the measurement was whole.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    engines[0].results[0].completeness = Completeness::Unwitnessed;
+    engines[0].results[0].seal(&compare_context()).unwrap();
+
+    let record = prepare(request(&policy, &registry, engines))
+        .expect("assembles")
+        .finish(advance(0, 3));
+    let notice = record
+        .verdict
+        .reasons
+        .iter()
+        .find(|r| r.code == reason::MEASUREMENT_INCOMPLETE)
+        .expect("incompleteness is never silent");
+    assert_eq!(notice.severity, Severity::Info);
+    assert!(notice.message.contains("unwitnessed"), "{}", notice.message);
+
+    let whole = prepare(request(&policy, &registry, five_engines(&registry)))
+        .expect("assembles")
+        .finish(advance(0, 3));
+    assert!(
+        !whole
+            .verdict
+            .reasons
+            .iter()
+            .any(|r| r.code == reason::MEASUREMENT_INCOMPLETE),
+        "and a complete measurement does not say it twice"
+    );
+}
+
 // --- the justification seam ------------------------------------------------
 
 #[test]
@@ -847,6 +965,30 @@ fn a_result_stamped_with_the_wrong_family_is_refused() {
         matches!(err, AssemblyError::FamilyMismatch { .. }),
         "{err:?}"
     );
+}
+
+#[test]
+fn a_result_consistent_with_itself_and_wrong_about_its_engine_is_refused() {
+    // The descriptor half of the family check, at this boundary. A result that
+    // says `clones` and carries a clones regime is internally consistent; only
+    // the comparison against the engine that produced it sees the lie. Without
+    // this, the clause is deletable and the suite stays green.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    engines[0].results[0].family = EngineFamily::Clones;
+    engines[0].results[0].measurement_regime = regime(EngineFamily::Clones);
+    engines[0].results[0].seal(&compare_context()).unwrap();
+
+    let err = prepare(request(&policy, &registry, engines)).expect_err("must refuse");
+    let AssemblyError::FamilyMismatch {
+        result, descriptor, ..
+    } = err
+    else {
+        panic!("expected a family mismatch, got {err:?}");
+    };
+    assert_eq!(result, EngineFamily::Clones);
+    assert_eq!(descriptor, EngineFamily::Static);
 }
 
 #[test]
@@ -1405,7 +1547,7 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     for pass in 1..=cap {
         let prepared = prepare(request(&policy, &registry, firing())).expect("assembles");
         let advance = store
-            .advance("feat/a", cap, prepared.has_countable_finding())
+            .advance("feat/a", cap, prepared.loop_outcome())
             .expect("advances");
         let record = prepared.finish(advance);
         assert_eq!(record.verdict.iteration.count, pass);
@@ -1415,7 +1557,7 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     // One more, and the tool stops asking the agent.
     let prepared = prepare(request(&policy, &registry, firing())).expect("assembles");
     let advance = store
-        .advance("feat/a", cap, prepared.has_countable_finding())
+        .advance("feat/a", cap, prepared.loop_outcome())
         .expect("advances");
     let record = prepared.finish(advance);
     assert_eq!(record.verdict.verdict, Verdict::EscalateToHuman);
@@ -1426,7 +1568,7 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     let prepared =
         prepare(request(&policy, &registry, five_engines(&registry))).expect("assembles");
     let advance = store
-        .advance("feat/a", cap, prepared.has_countable_finding())
+        .advance("feat/a", cap, prepared.loop_outcome())
         .expect("advances");
     let record = prepared.finish(advance);
     assert_eq!(record.verdict.verdict, Verdict::Pass);

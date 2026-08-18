@@ -21,8 +21,26 @@
 //! state*, not a security boundary: the file is local and writable by whoever
 //! runs the tool, so deleting it resets the count. That is acceptable and
 //! deliberate — the cap exists to stop honest grinding, and the mechanism that
-//! stops dishonest work is the verifier, not this file. What the design does owe
-//! is that a reset never happens *silently*: see [`Advance::recovered`].
+//! stops dishonest work is the verifier, not this file.
+//!
+//! # Which resets are visible, stated exactly
+//!
+//! An earlier version of this paragraph said a reset "never happens silently",
+//! and that was wider than the mechanism. Precisely:
+//!
+//! | Reset | Visible? | How |
+//! |---|---|---|
+//! | state present but unusable — corrupt, or another layout version | yes | [`Advance::recovered`], surfaced as a verdict reason |
+//! | the run found nothing to act on over a complete measurement | yes | it is the ordinary end of a loop, and the verdict says `pass` |
+//! | the state file was deleted | **no** | absent state is indistinguishable from a first run, here and by construction |
+//!
+//! The third row is the honest gap, and it is bounded rather than closed: a
+//! deleted counter is a local file a local actor removed, and nothing in this
+//! module can tell that from a first pass without a durable record kept
+//! somewhere the actor does not control. That record is the ledger, and it is
+//! P8's. What this module does close is the neighbouring hole that did *not*
+//! need durable state — a measurement resetting the count because it could not
+//! see, rather than because there was nothing to see. See [`LoopOutcome`].
 //!
 //! # Concurrency
 //!
@@ -72,6 +90,33 @@ struct StateFile {
     branches: BTreeMap<String, u32>,
 }
 
+/// What a measurement said about the loop it is part of.
+///
+/// The counter needs three answers, not two, and the missing third is a way for
+/// a change to reset its own budget. `advance` used to take a boolean: something
+/// to act on, or nothing. "Nothing" reset the count — correctly, when the loop
+/// really did end — but a measurement that found nothing *because it could not
+/// see* answers "nothing" in exactly the same words. Break the engine that keeps
+/// finding the problem, or delete the coverage report it reads, and the run is
+/// clean, the count resets, and the cap starts again from one.
+///
+/// So the third answer is [`LoopOutcome::Inconclusive`], and the count holds
+/// rather than resetting. Holding is the conservative direction: the worst case
+/// is an agent reaching `escalate_to_human` one pass earlier than it strictly
+/// had to, which asks a human to look at a measurement that could not complete —
+/// which is the right thing to ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopOutcome {
+    /// Something the agent can act on. The count advances.
+    Countable,
+    /// Nothing to act on, over a measurement that saw everything it set out to.
+    /// The loop is over and the count resets.
+    Finished,
+    /// Nothing to act on, over a measurement that did not see everything. The
+    /// count holds: this run is not evidence that the loop ended.
+    Inconclusive,
+}
+
 /// The outcome of advancing the counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Advance {
@@ -118,29 +163,33 @@ impl IterationStore {
 
     /// Record a pass on `branch` and return where it now sits against `cap`.
     ///
-    /// `has_countable_finding` is what makes this a loop counter rather than a
-    /// call counter. A measurement that found nothing an agent can act on means
-    /// the loop is over, so the count resets: the next unrelated finding on this
-    /// branch starts from one rather than inheriting a history that was already
-    /// resolved.
+    /// [`LoopOutcome`] is what makes this a loop counter rather than a call
+    /// counter, and what stops a blinded measurement from clearing the budget —
+    /// see the enum.
     pub fn advance(
         &self,
         branch: &str,
         cap: u32,
-        has_countable_finding: bool,
+        outcome: LoopOutcome,
     ) -> Result<Advance, IterationError> {
         let (mut file, recovered) = self.read();
 
-        let count = if has_countable_finding {
-            let entry = file.branches.entry(branch.to_string()).or_insert(0);
-            // Saturating: a counter that wrapped to zero would hand an agent an
-            // unlimited budget at exactly the moment the evidence says it should
-            // have stopped long ago.
-            *entry = entry.saturating_add(1);
-            *entry
-        } else {
-            file.branches.remove(branch);
-            0
+        let count = match outcome {
+            LoopOutcome::Countable => {
+                let entry = file.branches.entry(branch.to_string()).or_insert(0);
+                // Saturating: a counter that wrapped to zero would hand an agent
+                // an unlimited budget at exactly the moment the evidence says it
+                // should have stopped long ago.
+                *entry = entry.saturating_add(1);
+                *entry
+            }
+            LoopOutcome::Finished => {
+                file.branches.remove(branch);
+                0
+            }
+            // Held, not advanced and not cleared: this run says nothing about
+            // whether the loop ended.
+            LoopOutcome::Inconclusive => file.branches.get(branch).copied().unwrap_or(0),
         };
         self.write(&file)?;
 
@@ -239,7 +288,7 @@ mod tests {
     fn a_branch_counts_its_own_passes() {
         let (_dir, store) = store();
         for expected in 1..=3 {
-            let advance = store.advance("feat/a", 3, true).unwrap();
+            let advance = store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
             assert_eq!(advance.state.count, expected);
             assert!(!advance.state.escalated);
             assert!(!advance.recovered);
@@ -249,9 +298,9 @@ mod tests {
     #[test]
     fn branches_do_not_share_a_counter() {
         let (_dir, store) = store();
-        store.advance("feat/a", 3, true).unwrap();
-        store.advance("feat/a", 3, true).unwrap();
-        let other = store.advance("fix/b", 3, true).unwrap();
+        store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
+        store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
+        let other = store.advance("fix/b", 3, LoopOutcome::Countable).unwrap();
         assert_eq!(other.state.count, 1, "a fresh branch starts fresh");
         assert_eq!(store.peek("feat/a", 3).count, 2);
     }
@@ -261,9 +310,17 @@ mod tests {
         let (_dir, store) = store();
         let cap = DEFAULT_ITERATION_CAP;
         for _ in 0..cap {
-            assert!(!store.advance("feat/a", cap, true).unwrap().state.escalated);
+            assert!(
+                !store
+                    .advance("feat/a", cap, LoopOutcome::Countable)
+                    .unwrap()
+                    .state
+                    .escalated
+            );
         }
-        let over = store.advance("feat/a", cap, true).unwrap();
+        let over = store
+            .advance("feat/a", cap, LoopOutcome::Countable)
+            .unwrap();
         assert_eq!(over.state.count, cap + 1);
         assert!(over.state.escalated);
     }
@@ -271,13 +328,17 @@ mod tests {
     #[test]
     fn a_run_with_nothing_to_act_on_ends_the_loop() {
         let (_dir, store) = store();
-        store.advance("feat/a", 3, true).unwrap();
-        store.advance("feat/a", 3, true).unwrap();
-        let clean = store.advance("feat/a", 3, false).unwrap();
+        store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
+        store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
+        let clean = store.advance("feat/a", 3, LoopOutcome::Finished).unwrap();
         assert_eq!(clean.state.count, 0);
         assert!(!clean.state.escalated);
         assert_eq!(
-            store.advance("feat/a", 3, true).unwrap().state.count,
+            store
+                .advance("feat/a", 3, LoopOutcome::Countable)
+                .unwrap()
+                .state
+                .count,
             1,
             "the next finding starts a new loop, not the old one"
         );
@@ -288,39 +349,57 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         IterationStore::open(dir.path())
             .unwrap()
-            .advance("feat/a", 3, true)
+            .advance("feat/a", 3, LoopOutcome::Countable)
             .unwrap();
         // A different store over the same root: a fresh process, same repository.
         let reopened = IterationStore::open(dir.path()).unwrap();
-        assert_eq!(reopened.advance("feat/a", 3, true).unwrap().state.count, 2);
+        assert_eq!(
+            reopened
+                .advance("feat/a", 3, LoopOutcome::Countable)
+                .unwrap()
+                .state
+                .count,
+            2
+        );
     }
 
     #[test]
     fn reset_is_the_way_out_of_escalation() {
         let (_dir, store) = store();
         for _ in 0..5 {
-            store.advance("feat/a", 3, true).unwrap();
+            store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
         }
         assert!(store.peek("feat/a", 3).escalated);
         store.reset("feat/a").unwrap();
         assert_eq!(store.peek("feat/a", 3).count, 0);
-        assert!(!store.advance("feat/a", 3, true).unwrap().state.escalated);
+        assert!(
+            !store
+                .advance("feat/a", 3, LoopOutcome::Countable)
+                .unwrap()
+                .state
+                .escalated
+        );
     }
 
     #[test]
     fn a_corrupt_state_file_restarts_the_count_and_says_so() {
         let (_dir, store) = store();
-        store.advance("feat/a", 3, true).unwrap();
+        store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
         std::fs::write(store.path(), b"{ this is not json").unwrap();
 
-        let advance = store.advance("feat/a", 3, true).unwrap();
+        let advance = store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
         assert_eq!(advance.state.count, 1);
         assert!(
             advance.recovered,
             "a silent restart is a cap that silently stopped applying"
         );
         // And the store is usable again afterwards.
-        assert!(!store.advance("feat/a", 3, true).unwrap().recovered);
+        assert!(
+            !store
+                .advance("feat/a", 3, LoopOutcome::Countable)
+                .unwrap()
+                .recovered
+        );
     }
 
     #[test]
@@ -331,7 +410,7 @@ mod tests {
             br#"{"layout_version": 99, "branches": {"feat/a": 40}}"#,
         )
         .unwrap();
-        let advance = store.advance("feat/a", 3, true).unwrap();
+        let advance = store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
         assert_eq!(advance.state.count, 1, "not 41");
         assert!(advance.recovered);
     }
@@ -339,7 +418,12 @@ mod tests {
     #[test]
     fn a_first_run_is_not_a_recovery() {
         let (_dir, store) = store();
-        assert!(!store.advance("feat/a", 3, true).unwrap().recovered);
+        assert!(
+            !store
+                .advance("feat/a", 3, LoopOutcome::Countable)
+                .unwrap()
+                .recovered
+        );
     }
 
     #[test]
@@ -347,7 +431,9 @@ mod tests {
         // Keys in one file rather than a file per branch: `feat/a/b` needs no
         // escaping and cannot collide with a directory that already exists.
         let (_dir, store) = store();
-        store.advance("feat/a/b/c", 3, true).unwrap();
+        store
+            .advance("feat/a/b/c", 3, LoopOutcome::Countable)
+            .unwrap();
         assert_eq!(store.peek("feat/a/b/c", 3).count, 1);
         assert_eq!(store.peek("feat/a", 3).count, 0);
     }
@@ -363,7 +449,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let advance = store.advance("feat/a", 3, true).unwrap();
+        let advance = store.advance("feat/a", 3, LoopOutcome::Countable).unwrap();
         assert_eq!(advance.state.count, u32::MAX);
         assert!(
             advance.state.escalated,

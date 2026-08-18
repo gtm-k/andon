@@ -68,6 +68,8 @@ pub mod reason {
     pub const EVIDENCE_STALE: &str = "evidence-stale";
     /// The iteration counter restarted because its state was unusable.
     pub const ITERATION_STATE_RESET: &str = "iteration-state-reset";
+    /// The measurement did not see everything it set out to.
+    pub const MEASUREMENT_INCOMPLETE: &str = "measurement-incomplete";
 }
 
 /// An engine that was asked to measure and could not.
@@ -82,6 +84,13 @@ pub struct EngineFailure {
 /// Everything the verdict needs besides the results themselves.
 #[derive(Debug, Clone, Copy)]
 pub struct VerdictContext<'a> {
+    /// Record-level completeness, the weakest of the results'.
+    ///
+    /// Read so the verdict can *say* the measurement was partial. It used to be
+    /// computed beside the verdict and never reach it, so a run that could not
+    /// see — a deleted coverage report, a file the parser gave up on — produced
+    /// a verdict indistinguishable from one that looked and found nothing.
+    pub completeness: Completeness,
     /// Policy in force. The verifier's copy comes from the base commit.
     pub policy: &'a Policy,
     /// The `.andon.toml` edit inside this change, if there was one.
@@ -307,6 +316,33 @@ pub fn evaluate(
             metric_ids: Vec::new(),
         });
     }
+    if ctx.completeness != Completeness::Complete {
+        // A notice rather than an advisory, and the severity is the whole of the
+        // argument. Saying "incomplete" out loud is what an actor who can only
+        // see the verdict needs; *escalating* on it would fire on nearly every
+        // change, because a file added in this change has no history for the
+        // process family to read and reports `unwitnessed` by design. Blocking
+        // on the expected absence of a number nobody could have measured is
+        // PREMORTEM A4's uninstall loop.
+        //
+        // What that leaves open is real and worth naming rather than papering
+        // over: record completeness collapses "this file is new, so it has no
+        // history" together with "a detector's input was removed", and only the
+        // second is a gap. Separating them is an emission-rule question that
+        // spans the engines and the schema, and it is recorded as such rather
+        // than guessed at here.
+        reasons.push(VerdictReason {
+            code: reason::MEASUREMENT_INCOMPLETE.to_string(),
+            severity: Severity::Info,
+            message: format!(
+                "this measurement is {:?}: some of what it set out to measure was not \
+                 measured, and the results say which",
+                ctx.completeness
+            )
+            .to_lowercase(),
+            metric_ids: Vec::new(),
+        });
+    }
     if ctx.iteration_state_recovered {
         reasons.push(VerdictReason {
             code: reason::ITERATION_STATE_RESET.to_string(),
@@ -408,6 +444,7 @@ mod tests {
             engine_failures: &[],
             stale_claim_ids: &[],
             iteration_state_recovered: false,
+            completeness: Completeness::Complete,
         }
     }
 

@@ -65,7 +65,7 @@ use crate::schema::payload::{
     AttestationBlock, CompareContext, Invocation, MeasurementRecord, MeasurementResult, Reserved,
     ResultScope, ToolIdentity, SCHEMA_VERSION,
 };
-use crate::verdict::iteration::Advance;
+use crate::verdict::iteration::{Advance, LoopOutcome};
 use crate::verdict::policy_change::PolicyChange;
 use crate::verdict::{self, EngineFailure, VerdictContext};
 
@@ -316,10 +316,25 @@ pub struct Prepared {
 
 impl Prepared {
     /// Whether this run gives an agent something to act on.
-    ///
-    /// The input to [`crate::verdict::iteration::IterationStore::advance`].
     pub fn has_countable_finding(&self) -> bool {
         self.countable
+    }
+
+    /// What this run says about the loop it is part of.
+    ///
+    /// The input to [`crate::verdict::iteration::IterationStore::advance`], and
+    /// three-valued rather than two: a measurement that found nothing because it
+    /// could not see everything must not clear the agent's budget the way a
+    /// measurement that found nothing does. See
+    /// [`crate::verdict::iteration::LoopOutcome`].
+    pub fn loop_outcome(&self) -> LoopOutcome {
+        if self.countable {
+            LoopOutcome::Countable
+        } else if self.completeness == Completeness::Complete {
+            LoopOutcome::Finished
+        } else {
+            LoopOutcome::Inconclusive
+        }
     }
 
     /// The results as they will appear in the record.
@@ -334,6 +349,17 @@ impl Prepared {
     }
 
     /// Reach a verdict and emit the record.
+    ///
+    /// # One fact, one writer
+    ///
+    /// `invocation.iteration` and `verdict.iteration.count` are the same number
+    /// — which pass around the loop this is — and they used to be written by two
+    /// parties: the caller filled in the first from whatever it believed, and the
+    /// counter produced the second. One record, one fact, two writers, and no
+    /// rule anywhere for which a reader should believe. The counter wins, here,
+    /// by overwriting: it is the party that read the durable state, and a
+    /// caller's belief about its own pass number is exactly the thing the
+    /// on-disk counter exists because processes forget.
     pub fn finish(self, iteration: Advance) -> MeasurementRecord {
         let context = VerdictContext {
             policy: &self.policy,
@@ -341,15 +367,21 @@ impl Prepared {
             engine_failures: &self.engine_failures,
             stale_claim_ids: &self.stale_claim_ids,
             iteration_state_recovered: iteration.recovered,
+            completeness: self.completeness,
         };
         let verdict = verdict::evaluate(&self.results, &context, iteration.state);
+
+        let invocation = Invocation {
+            iteration: iteration.state.count,
+            ..self.invocation
+        };
 
         MeasurementRecord {
             schema_version: SCHEMA_VERSION,
             record_kind: self.record_kind,
             tool: self.tool,
             compare_context: self.compare_context,
-            invocation: self.invocation,
+            invocation,
             reserved: self.reserved,
             policy_hash: self.policy_hash,
             completeness: self.completeness,
@@ -457,6 +489,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
             engine_failures: &engine_failures,
             stale_claim_ids: &stale_claim_ids,
             iteration_state_recovered: false,
+            completeness,
         },
     );
 
