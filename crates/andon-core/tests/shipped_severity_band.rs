@@ -32,6 +32,17 @@
 //! - [`the_capped_families_stay_where_policy_puts_them`] fails if the ceilings
 //!   stop working, which is what a `severity::apply` that had quietly become a
 //!   no-op would look like from the other side.
+//!
+//! # And one assertion that something GOOD is reachable
+//!
+//! Everything above, and every other guard this phase added, asserts that a bad
+//! state cannot be reached. A suite made only of prohibitions passes most easily
+//! on a tool that does nothing — which is how the dead band shipped, and then
+//! how a gate that withheld `confirmed` from every ordinary pull request shipped
+//! behind 859 green tests.
+//! [`a_record_this_tool_really_produces_can_still_be_confirmed`] is the other
+//! kind: two honest measurements of one change, assembled and classified, and
+//! the pass they earn.
 
 mod common;
 
@@ -811,4 +822,63 @@ fn the_fixture_sits_in_the_middle_of_the_band_it_reaches() {
             );
         }
     }
+}
+
+#[test]
+fn a_record_this_tool_really_produces_can_still_be_confirmed() {
+    // THE POSITIVE CONTROL, and the assertion whose absence let two defects ship
+    // with the whole suite green.
+    //
+    // Every other guard in this phase asserts that a bad state is UNREACHABLE:
+    // the band cannot go dead, the ceilings cannot be skipped, the fixture
+    // cannot impersonate an engine. Not one asserted that the good state is
+    // REACHABLE. So a gate that withheld `confirmed` from every ordinary pull
+    // request read as 859 tests passing — and, before it, a configuration in
+    // which nothing could reach the MED+ band read the same way. A suite made
+    // only of prohibitions passes most easily on a tool that does nothing.
+    //
+    // Two honest measurements of the same change, assembled the way a
+    // measurement assembles them, and the verifier's own classification of the
+    // pair. The record deliberately carries honest `unwitnessed` markers — a
+    // file absent from the coverage report, a path with no complexity input for
+    // the hotspot product — because that is what a real record looks like and it
+    // is exactly what the reverted gate keyed on. Anything that re-reads record
+    // completeness as a precondition for confirmation reddens here.
+    use andon_core::compare::{classify, BaseRelation, CompareInputs};
+    use andon_core::schema::enums::{Attestation, Completeness};
+
+    let measured = measure_everything();
+    let report = assemble(&measured);
+    let recompute = assemble(&measured);
+
+    assert_ne!(
+        recompute.completeness,
+        Completeness::Complete,
+        "the premise: an ordinary honest record rolls up below `complete`, because an \
+         absence honestly reported is still an absence"
+    );
+
+    let outcome = classify(
+        Some(&report),
+        &recompute,
+        CompareInputs {
+            base_relation: BaseRelation::Equal,
+            head_equal: true,
+            fork_tier: false,
+        },
+    );
+    assert_eq!(
+        outcome.attestation,
+        Attestation::Confirmed,
+        "two honest measurements of one change agreeing on every compared result must \
+         confirm; a tool that can only ever withhold the pass is not a trust channel"
+    );
+
+    let compare = outcome.compare.expect("a compare was attempted");
+    assert!(
+        !compare.matched.is_empty(),
+        "and the pass has to be legible: something was actually compared"
+    );
+    assert!(compare.mismatched.is_empty() && compare.unpaired.is_empty());
+    assert!(compare.tuple_equal && compare.regime_equal);
 }
