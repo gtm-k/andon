@@ -292,8 +292,14 @@ pub fn evaluate(
     // Never blocking. An engine that failed is not evidence against the change,
     // and a flaky engine that stopped the line would be uninstalled within a
     // week. What it *does* do is demote record completeness to `partial`
-    // (`crate::payload`), and an incomplete record cannot be `confirmed` — so a
-    // change does not launder itself past a detector by breaking it.
+    // (`crate::payload`) and say which engine was missing, so that a reader can
+    // see what the measurement did not cover.
+    //
+    // What it does NOT do is decide the attestation. `compare::classify` does
+    // not read `completeness`, and this reason must not claim it does — PLAN
+    // P9's confirmation-completeness criterion owns the rule that a record
+    // missing an engine on both sides cannot be `confirmed`, keyed on per-engine
+    // presence rather than on this roll-up (E20).
     if !ctx.engine_failures.is_empty() {
         let detail: Vec<String> = ctx
             .engine_failures
@@ -305,7 +311,7 @@ pub fn evaluate(
             severity: Severity::Medium,
             message: format!(
                 "{} engine(s) produced no results, so their metrics are absent rather than \
-                 zero; this record cannot be confirmed downstream: {}",
+                 zero and this record is partial: {}",
                 ctx.engine_failures.len(),
                 detail.join("; ")
             ),
@@ -799,6 +805,15 @@ mod tests {
             .find(|r| r.code == reason::ENGINE_UNAVAILABLE)
             .expect("said out loud");
         assert!(unavailable.message.contains("absent rather than"));
+        assert!(
+            unavailable.message.contains("this record is partial"),
+            "the reason states what is true of the record it is attached to"
+        );
+        assert!(
+            !unavailable.message.contains("confirmed"),
+            "and it does not promise a downstream guarantee `compare::classify` \
+             does not provide — that rule is PLAN P9's (E20)"
+        );
         assert!(
             !has_countable_finding(&[clean_result()], &context),
             "an agent must not grind on someone else's broken engine"
