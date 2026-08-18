@@ -562,9 +562,10 @@ fn uncommitted_work_is_measured_rather_than_stepped_around() {
     // the representation, so the refusal is no longer the best available answer
     // and this asserts the capability instead.
     let repo = stranger_repo();
-    let git = Git::open(repo.path()).expect("a repository");
+    // Deliberately NOT staged. Requiring `git add` before a tool will look at
+    // your work makes being measured cost a mutation of state shared with
+    // whoever else is in the repository.
     std::fs::write(repo.path().join("src").join("greet.ts"), COMPLEX_TS).expect("write");
-    git.cmd(["add", "--all", "."]).output().expect("git add");
 
     let output = run(&[
         "measure",
@@ -589,44 +590,125 @@ fn uncommitted_work_is_measured_rather_than_stepped_around() {
 }
 
 #[test]
-fn staged_bytes_are_read_and_unstaged_ones_say_why_they_are_not() {
-    // The boundary that remains, stated exactly rather than left to be
-    // discovered. Engines read blobs, and a staged edit has one — so staged
-    // content is measured. An edit that exists only on disk has no object for
-    // any engine to read (P1's advisory lane, PREMORTEM T1), so it is not
-    // measured, and the tool says so with the one command that fixes it.
+fn unstaged_bytes_are_read_without_touching_the_index() {
+    // The residual this closed, and the reason it was worth closing rather than
+    // disclosing. Engines read blobs, and an edit that exists only on disk has
+    // none — so the honest interim behaviour was to say so and tell the caller
+    // to `git add`. But the caller is usually an agent mid-loop, and `git add`
+    // mutates state shared with the human beside it: being measured should not
+    // cost you a staged change you did not ask for.
+    //
+    // `git hash-object -w` writes the identical object `git add` would write and
+    // leaves the index alone. Verified here on both counts.
     let repo = stranger_repo();
     let git = Git::open(repo.path()).expect("a repository");
     std::fs::write(repo.path().join("src").join("greet.ts"), COMPLEX_TS).expect("write");
 
-    let unstaged = stdout(&run(&[
+    let before = porcelain(&git);
+    let output = run(&[
         "measure",
         "--repo",
         repo.path().to_str().expect("utf-8"),
         "--no-color",
-        "--exit-zero",
-    ]));
-    assert!(
-        unstaged.contains("edited but not staged"),
-        "an unmeasured edit was passed over in silence:\n{unstaged}"
-    );
-    assert!(unstaged.contains("git add"), "{unstaged}");
+    ]);
+    let rendered = stdout(&output);
 
-    git.cmd(["add", "--all", "."]).output().expect("git add");
-    let staged = stdout(&run(&[
+    // Read, and acted on.
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an unstaged complex function did not stop the line:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("static.cognitive-complexity"),
+        "the unstaged bytes were not measured:\n{rendered}"
+    );
+
+    // The index is exactly where it was: the path is still unstaged, and
+    // nothing is staged that was not staged before.
+    assert_eq!(
+        before,
+        porcelain(&git),
+        "measuring mutated the index; ` M` becoming `M ` is the change this avoids"
+    );
+    assert!(
+        git.cmd(["diff", "--cached", "--name-only"])
+            .text()
+            .expect("git diff --cached")
+            .trim()
+            .is_empty(),
+        "something was staged"
+    );
+
+    // And the side effect is disclosed rather than done quietly.
+    assert!(
+        rendered.contains("object database"),
+        "writing objects into the caller's repository was not disclosed:\n{rendered}"
+    );
+}
+
+/// `git status --porcelain`, for comparing index state before and after.
+fn porcelain(git: &Git) -> String {
+    git.cmd(["status", "--porcelain"])
+        .text()
+        .expect("git status")
+}
+
+#[test]
+fn a_change_that_could_not_be_read_never_exits_clean() {
+    // The fallback, and the rule behind it: the honest shape for an unmeasured
+    // thing is not the shape of a clean measurement. An agent keys on the exit
+    // code, so a caveat that lives only in prose is invisible to the actor who
+    // needs it.
+    //
+    // Driven through a read-only object store, which is the real way this
+    // happens — measuring a repository you do not own.
+    let repo = stranger_repo();
+    std::fs::write(repo.path().join("src").join("greet.ts"), COMPLEX_TS).expect("write");
+
+    let objects = repo.path().join(".git").join("objects");
+    let mut perms = std::fs::metadata(&objects)
+        .expect("objects dir")
+        .permissions();
+    perms.set_readonly(true);
+    if std::fs::set_permissions(&objects, perms).is_err() {
+        eprintln!("skipped: cannot make the object store read-only here");
+        return;
+    }
+
+    let output = run(&[
         "measure",
         "--repo",
         repo.path().to_str().expect("utf-8"),
         "--no-color",
-        "--exit-zero",
-    ]));
-    assert!(
-        !staged.contains("edited but not staged"),
-        "staging did not make the bytes readable:\n{staged}"
+    ]);
+    let rendered = stdout(&output);
+
+    // Restore before asserting, so a failure does not leave an unremovable
+    // temporary directory behind.
+    let mut perms = std::fs::metadata(&objects)
+        .expect("objects dir")
+        .permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    let _ = std::fs::set_permissions(&objects, perms);
+
+    if output.status.code() == Some(2) {
+        // Windows honours the read-only bit on directories inconsistently; if
+        // the write succeeded anyway the fallback was not exercised and there is
+        // nothing here to assert.
+        eprintln!("skipped: the object write succeeded despite the read-only bit");
+        return;
+    }
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a change that could not be read exited as though it had been \
+         measured:\n{rendered}"
     );
     assert!(
-        staged.contains("BLOCK"),
-        "the staged complexity was not measured:\n{staged}"
+        rendered.contains("could NOT be read"),
+        "the unreadable paths were not named:\n{rendered}"
     );
 }
 

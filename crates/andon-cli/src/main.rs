@@ -14,12 +14,22 @@
 //! | 0 | `pass` or `advise` — the line keeps moving |
 //! | 2 | `block` — the line stops |
 //! | 3 | `escalate_to_human` — the loop is over; a human decides |
-//! | 1 | the tool could not do its job (bad usage, unreadable repository) |
+//! | 1 | the tool could not do its job (bad usage, unreadable repository, or a changed path it could not read) |
 //!
 //! The distinction between 1 and 2 is the one that matters. A gate that could
 //! not tell "Andon found something" from "Andon fell over" would be a gate whose
 //! red check means nothing, and a team that cannot read a red check turns it off
 //! — which is how a measurement tool stops measuring (PREMORTEM A4).
+//!
+//! **A `pass` requires that the change was actually read.** If any changed path
+//! could not be read, the exit is 1 whatever the verdict says — the report is
+//! still printed in full, and the note names the paths. The reason is the
+//! project's own rule about absences: the honest shape for an unmeasured thing
+//! is not the shape of a clean measurement, and an agent keys on the exit code,
+//! so a caveat that lives only in prose is invisible to the actor who needs it.
+//!
+//! This is rare by design. An ordinary uncommitted working tree is read without
+//! staging (`measure::read_without_staging`), so it does not reach this.
 //!
 //! `--exit-zero` turns every verdict into a 0 for the caller who wants the
 //! report without the gate.
@@ -229,6 +239,12 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
             "andon: the measurement above was not saved for `andon report`: {e}\n       \
              The record itself is unaffected; re-run `andon measure` to store it."
         );
+    }
+
+    // A verdict about less than the caller asked about does not get a clean
+    // exit. The note above names the paths; this is what an agent can see.
+    if !measurement.unreadable.is_empty() && !flags.on("exit-zero") {
+        return Ok(ExitCode::from(1));
     }
 
     Ok(code_for(

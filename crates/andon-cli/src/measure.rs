@@ -146,6 +146,26 @@ pub struct Measurement {
     /// or a change consisting only of paths the self-measure policy withholds —
     /// and a reader seeing change-scope zeros deserves to know which it was.
     pub changed_files: usize,
+    /// Changed paths no engine could read, after every attempt to make them
+    /// readable.
+    ///
+    /// Non-empty means the measurement is about *less* than the caller asked
+    /// about, and the caller needs that in the exit code rather than in prose: a
+    /// `pass` over bytes nobody read has the shape of a clean measurement and is
+    /// not one. Empty on every ordinary run, including an unstaged working tree,
+    /// because [`read_without_staging`] makes those readable.
+    pub unreadable: Vec<String>,
+}
+
+/// What making the working tree readable cost, and what it could not reach.
+#[derive(Debug, Default)]
+struct StageFree {
+    /// Paths whose content was written to the object database.
+    hashed: usize,
+    /// Paths still unreadable afterwards.
+    unreadable: Vec<String>,
+    /// Why, when the attempt failed rather than being unnecessary.
+    reason: Option<String>,
 }
 
 /// Anything that stopped a measurement before it produced a record.
@@ -237,10 +257,19 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
     // suite. Declared policy, applied here, and the withheld paths are reported
     // — an exclusion nobody can see is how a dogfood gate stops meaning
     // anything (PREMORTEM S3, docs/self-measure.md).
-    let (changed, excluded) = if request.self_measure {
+    let (mut changed, excluded) = if request.self_measure {
         apply_exclusions(&resolution.changed, &policy.self_measure.excluded_paths)
     } else {
         (resolution.changed.clone(), Vec::new())
+    };
+
+    // Make the unstaged bytes readable, without touching the index. Only for an
+    // uncommitted head: a commit range has nothing on disk to reach for, and
+    // writing objects for it would be a side effect with no purpose.
+    let stage_free = if resolution.compare_context.head_kind.is_witnessable() {
+        StageFree::default()
+    } else {
+        read_without_staging(&git, &mut changed)
     };
 
     let ctx = MeasureContext {
@@ -272,24 +301,26 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
             }
         } else {
             // An uncommitted head: the working tree IS what was measured, so the
-            // sentence above would be false. The remaining gap is narrower and
-            // it is P1's advisory-lane boundary — engines read committed and
-            // staged blobs, and bytes that exist only on disk have no object for
-            // them to read. Each engine already emits a per-file marker saying
-            // so; this says it once, at the top, with the thing that fixes it.
-            let unstaged: Vec<&str> = changed
-                .entries
-                .iter()
-                .filter(|e| e.dst_mode.is_some() && e.readable_blob().is_none())
-                .map(|e| e.path.as_str())
-                .collect();
-            if !unstaged.is_empty() {
+            // sentence above would be false. What is worth saying here instead
+            // is the side effect, and anything the read could not reach.
+            if stage_free.hashed > 0 {
                 engine_notes.push(format!(
-                    "{} path(s) are edited but not staged, so their bytes are not in the object \
-                     database and no engine could read them: {}. `git add` them and re-run; \
-                     staged content IS measured.",
-                    unstaged.len(),
-                    unstaged.join(", ")
+                    "{} unstaged path(s) were read by writing their content to this \
+                     repository's object database as unreferenced blobs — the same objects \
+                     `git add` would create, without touching your index. `git gc` removes them.",
+                    stage_free.hashed
+                ));
+            }
+            if !stage_free.unreadable.is_empty() {
+                engine_notes.push(format!(
+                    "{} changed path(s) could NOT be read, so nothing below describes them: {}. \
+                     {}",
+                    stage_free.unreadable.len(),
+                    stage_free.unreadable.join(", "),
+                    stage_free
+                        .reason
+                        .as_deref()
+                        .unwrap_or("`git add` them and re-run.")
                 ));
             }
         }
@@ -352,6 +383,7 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
         how: resolution.how,
         excluded,
         changed_files: changed.len(),
+        unreadable: stage_free.unreadable.clone(),
         notices: engine_notes
             .into_iter()
             .chain(
@@ -363,6 +395,118 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
             .collect(),
         branch,
     })
+}
+
+/// Make unstaged working-tree content readable, without touching the index.
+///
+/// # What this does
+///
+/// `git hash-object -w` writes a file's content into the object database and
+/// returns its OID. The changed entries for those paths then carry a real blob
+/// OID, so every engine reads them through the ordinary `BlobBatch` path and no
+/// engine changes at all. One spawn covers every path, so the perf budget is
+/// unaffected.
+///
+/// # Why this does not break P1's blob-OID rule
+///
+/// The rule is that compared-lane content comes from git blob objects and
+/// nothing else, because worktree bytes are checkout-dependent — CRLF here, LF
+/// in CI — and a digest over them produces `divergent` on honest work
+/// (PREMORTEM Story 1). Three things, each checked rather than assumed:
+///
+/// 1. **The engines still read blobs.** They are handed an OID and go to the
+///    object database, exactly as for committed content. Nothing reads the
+///    worktree.
+/// 2. **The blob is checkout-normalized.** `hash-object` applies the same clean
+///    filters `git add` does, so a CRLF working file becomes an LF blob. The
+///    bytes that enter the digest are the bytes that would be committed, not the
+///    bytes on this machine's disk. *Verified: the OID this produces is
+///    byte-identical to the one `git add` puts in the index for the same file.*
+/// 3. **Nothing will ever recompute it anyway.** The record's head is
+///    `uncommitted-worktree` and its attestation is `unwitnessed-uncommitted`,
+///    so `compare::classify` refuses to compare it before it reads anything
+///    else. The false-divergence epidemic needs a verifier comparing digests,
+///    and by construction none ever will.
+///
+/// `git::diff` leaves `dst_oid` empty for these paths and says why: the
+/// snapshot's `worktree_oid` "is a content hash computed for keying, not an
+/// object in the database, and offering it to the blob reader would name
+/// something `cat-file` cannot resolve". That is a mechanical obstacle, and
+/// writing the object removes it. The doctrinal sentence beside it — unstaged
+/// bytes "live only on disk **by construction**" — states the same premise, and
+/// the premise stops holding once the object exists.
+///
+/// # Why not just tell the caller to `git add`
+///
+/// Because the caller is usually an agent mid-loop, and `git add` mutates state
+/// shared with the human sitting beside it. Requiring a change to the index as
+/// the price of being measured is a tool asking its user to stage work they may
+/// not want staged. This writes the identical object and leaves the index alone.
+///
+/// The cost is disclosed rather than hidden: unreferenced loose objects, which
+/// is exactly what `git add` followed by `git reset` leaves behind, and which
+/// `git gc` collects.
+fn read_without_staging(git: &Git, changed: &mut ChangedSet) -> StageFree {
+    let pending: Vec<usize> = changed
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.dst_mode.is_some() && !e.is_gitlink() && e.readable_blob().is_none())
+        .map(|(i, _)| i)
+        .collect();
+    if pending.is_empty() {
+        return StageFree::default();
+    }
+
+    let paths: Vec<String> = pending
+        .iter()
+        .map(|i| changed.entries[*i].path.clone())
+        .collect();
+    // One spawn, whatever the size of the change. `--` so a path that looks
+    // like an option is still a path.
+    let output = git.cmd(["hash-object", "-w", "--"]).args(&paths).text();
+
+    let oids: Vec<String> = match output {
+        Ok(text) => text.lines().map(|l| l.trim().to_string()).collect(),
+        Err(e) => {
+            // A read-only object store, or a file that vanished between the
+            // status scan and now. Honest fallback: the paths stay unreadable
+            // and the caller is told, including why.
+            return StageFree {
+                hashed: 0,
+                unreadable: paths,
+                reason: Some(format!(
+                    "their content could not be written to the object database ({e}), so `git \
+                     add` them and re-run."
+                )),
+            };
+        }
+    };
+
+    // A short reply is a reply about different paths than the ones asked about.
+    // Pairing by position across a mismatched length would attach one file's
+    // bytes to another file's name, which is worse than not reading either.
+    if oids.len() != pending.len() {
+        return StageFree {
+            hashed: 0,
+            unreadable: paths,
+            reason: Some(format!(
+                "git returned {} object id(s) for {} path(s), so which bytes belong to which \
+                 file is not determined; `git add` them and re-run.",
+                oids.len(),
+                pending.len()
+            )),
+        };
+    }
+
+    for (index, oid) in pending.iter().zip(oids) {
+        changed.entries[*index].dst_oid = Some(oid);
+    }
+    StageFree {
+        hashed: pending.len(),
+        unreadable: Vec::new(),
+        reason: None,
+    }
 }
 
 /// The clone engine, with a cold retry when another process holds the index.
