@@ -175,9 +175,13 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
     let measurement = measure::measure(&request).map_err(|e| e.to_string())?;
     let git = Git::open(&request.repo).map_err(|e| e.to_string())?;
 
-    // Persisted before anything is printed, so `report`, `explain`, and `wait`
-    // have an input even if the render or the HTML write fails afterwards.
-    store::write_last(&git, &measurement.record)?;
+    // The measurement is the thing the caller asked for; the saved copy is a
+    // convenience for `report`, `explain` and `wait`. So the answer is delivered
+    // first and the copy is best effort — a transient filesystem failure must
+    // not throw away a measurement that has already been computed, and it must
+    // not be silent either, because the next `andon report` will read a stale
+    // record and say nothing about it.
+    let saved = store::write_last(&git, &measurement.record);
 
     if flags.on("json") {
         println!(
@@ -205,6 +209,13 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
         if !flags.on("json") {
             println!(" {note}\n");
         }
+    }
+
+    if let Err(e) = saved {
+        eprintln!(
+            "andon: the measurement above was not saved for `andon report`: {e}\n       \
+             The record itself is unaffected; re-run `andon measure` to store it."
+        );
     }
 
     Ok(code_for(

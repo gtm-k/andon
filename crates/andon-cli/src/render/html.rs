@@ -793,6 +793,62 @@ mod tests {
     }
 
     #[test]
+    fn every_colour_token_is_defined_in_both_themes() {
+        // A token defined only in the light block inherits the light value under
+        // a dark browser, which is how a report ends up with dark text on a dark
+        // panel — legible in the theme it was written in and unreadable in the
+        // other. The two blocks must declare the same names.
+        let names = |block: &str| -> std::collections::BTreeSet<String> {
+            block
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("--"))
+                .filter_map(|line| line.split(':').next())
+                .map(|name| name.trim().to_string())
+                .collect()
+        };
+        let light = STYLE
+            .split("@media (prefers-color-scheme: dark)")
+            .next()
+            .expect("a light block");
+        let dark = STYLE
+            .split("@media (prefers-color-scheme: dark)")
+            .nth(1)
+            .expect("a dark block")
+            .split("\n* {")
+            .next()
+            .expect("the dark block ends");
+
+        let light_names = names(light);
+        let dark_names = names(dark);
+        // Type stacks are theme-independent by design and are not redeclared.
+        let colour_only: std::collections::BTreeSet<String> = light_names
+            .iter()
+            .filter(|name| !name.starts_with("font-"))
+            .cloned()
+            .collect();
+        assert!(!colour_only.is_empty(), "no tokens were found at all");
+        assert_eq!(
+            colour_only, dark_names,
+            "these tokens differ between the light and dark declarations"
+        );
+    }
+
+    #[test]
+    fn the_page_declares_its_own_background_and_foreground() {
+        // A body with no background borrows whatever the viewer's ground is,
+        // which for a file opened from disk is white — under a dark token set,
+        // that is light-on-light.
+        assert!(STYLE.contains("background: var(--ground)"));
+        assert!(STYLE.contains("color: var(--ink)"));
+        assert!(STYLE.contains("color-scheme: light dark"));
+    }
+
+    #[test]
+    fn motion_is_off_for_a_reader_who_asked_for_it_to_be() {
+        assert!(STYLE.contains("@media (prefers-reduced-motion: reduce)"));
+    }
+
+    #[test]
     fn every_chip_carries_its_band_as_text() {
         // Colour and shape are the accents; the word is the fact. A reader with
         // images off, in greyscale, or using a screen reader gets the band.

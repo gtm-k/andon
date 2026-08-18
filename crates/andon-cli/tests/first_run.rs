@@ -374,6 +374,59 @@ fn report_before_measure_says_what_to_run() {
 }
 
 #[test]
+fn two_measurements_racing_in_one_checkout_both_produce_a_record() {
+    // Not an exotic case. P6's whole point is a gate-shaped hook, so a hook
+    // firing while an agent measures — or a person running the command beside
+    // their editor, or two worktrees on one git directory — is the arrangement
+    // the design creates on purpose.
+    //
+    // This found two real defects, and it is here so they cannot come back. A
+    // busy clone-index lock removed the entire clone family from the payload and
+    // dropped record completeness to `partial` because a *cache* was in use; and
+    // both writers used one fixed temporary filename for the saved record, so on
+    // Windows the second rename failed and took the whole measurement with it.
+    // Both presented as an intermittent test failure, which is the shape a
+    // concurrency defect wears until somebody looks.
+    let repo = stranger_repo();
+    let path = repo.path().to_str().expect("utf-8").to_string();
+
+    let spawn = || {
+        Command::new(EXE)
+            .args(["measure", "--repo", &path, "--json", "--exit-zero"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("andon starts")
+    };
+    let first = spawn();
+    let second = spawn();
+    let outputs = [
+        first.wait_with_output().expect("andon finishes"),
+        second.wait_with_output().expect("andon finishes"),
+    ];
+
+    for (n, output) in outputs.iter().enumerate() {
+        let record: MeasurementRecord =
+            serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+                panic!(
+                    "racing measurement {n} produced no usable record: {e}\nstderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )
+            });
+        let engines: std::collections::BTreeSet<&str> = record
+            .results
+            .iter()
+            .map(|r| r.engine_id.as_str())
+            .collect();
+        assert_eq!(
+            engines.len(),
+            5,
+            "racing measurement {n} lost an engine to contention over derived state: {engines:?}"
+        );
+    }
+}
+
+#[test]
 fn the_tool_writes_nothing_into_the_working_tree() {
     // A tool invited to look at somebody's repository does not leave state in
     // it. Everything goes under the git directory, which is ignored by

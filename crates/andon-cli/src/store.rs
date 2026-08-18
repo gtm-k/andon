@@ -53,17 +53,34 @@ pub fn clones_index(git: &Git) -> PathBuf {
 /// Written through the canonical serializer, so the bytes on disk are the same
 /// bytes a digest would be taken over and `andon report --input` reads exactly
 /// what `andon measure --json` printed.
+///
+/// # Two writers at once is the ordinary case, not the exotic one
+///
+/// A hook firing while an agent measures, two worktrees on one git directory,
+/// a person running the command beside their editor: `andon measure` racing
+/// itself in a single checkout is the arrangement P6's gate-shaped hooks
+/// deliberately create. A fixed temporary filename makes that race destructive
+/// — both writers open the same path, and on Windows the second `rename` fails
+/// outright — so the temporary carries the writer's identity, the way the clone
+/// index's does. The rename itself is atomic, so last-writer-wins is the only
+/// contention left and both writers wrote a valid record.
 pub fn write_last(git: &Git, record: &MeasurementRecord) -> Result<PathBuf, String> {
     let dir = state_dir(git);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(LAST_RECORD_FILE);
     let text = andon_core::canonical::to_canonical_string(record)
         .map_err(|e| format!("the record could not be serialized: {e}"))?;
-    // A temporary and a rename, so a crash mid-write leaves the previous record
-    // rather than a truncated one that parses as far as it goes.
-    let temp = path.with_extension("json.tmp");
+    // A temporary beside the destination, then a rename: a crash mid-write
+    // leaves the previous record rather than a truncated one that parses as far
+    // as it goes. The temporary lives in the destination directory so the
+    // rename stays on one filesystem — a cross-device rename is a copy, and a
+    // copy is not atomic.
+    let temp = dir.join(format!("{LAST_RECORD_FILE}.tmp-{}", std::process::id()));
     std::fs::write(&temp, text.as_bytes()).map_err(|e| format!("{}: {e}", temp.display()))?;
-    std::fs::rename(&temp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Err(e) = std::fs::rename(&temp, &path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("{}: {e}", path.display()));
+    }
     Ok(path)
 }
 
