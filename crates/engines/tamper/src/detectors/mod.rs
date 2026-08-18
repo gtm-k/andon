@@ -37,9 +37,11 @@
 //! # Firing is not accusing
 //!
 //! A detector reports what it saw; policy decides what it is worth, from the
-//! base commit, in the verifier. In particular
-//! [`threshold_config_edit`] is advisory by PLAN round-1 B6 — legitimate policy
-//! evolution must not be blocked — and says so in its severity.
+//! base commit, in the verifier. In particular [`threshold_config_edit`] is the
+//! one whose firing is conditional rather than an unconditional stop — PLAN
+//! round-1 B6, legitimate policy evolution must stay possible — and the
+//! condition is a verified ledgered justification covering the change, not the
+//! detector's own severity. See that module.
 
 use crate::change::ChangeView;
 use andon_core::parse_health::ParseHealth;
@@ -198,8 +200,11 @@ pub trait Detector: Sync {
     /// How serious a firing is, before policy.
     ///
     /// `High` for the six that describe evidence being removed; `Low` for the
-    /// threshold edit, which PLAN round-1 B6 makes advisory because a project
-    /// that cannot change its own thresholds is a project the tool has broken.
+    /// threshold edit, because a project that cannot change its own thresholds
+    /// is a project the tool has broken (PLAN round-1 B6). The number says how
+    /// strong the finding is; whether the line stops is keyed on the flag and,
+    /// for that one detector, on whether a verified justification covers the
+    /// change.
     fn severity_when_fired(&self) -> Severity {
         Severity::High
     }

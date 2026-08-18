@@ -1,13 +1,28 @@
 //! Quality thresholds loosened inside the change being measured.
 //!
-//! # This one is advisory, and that is a design decision
+//! # This one is conditional, and the condition is not the file it found
 //!
 //! PLAN round-1 B6: a tool that blocks on policy edits has made legitimate
 //! policy evolution impossible, and a project that cannot change its own
-//! thresholds will change tools instead. So this detector reports at `Low` — it
-//! is the one of the seven whose firing is a note rather than a stop, and P5a's
-//! verdict assembly is where the "loosening without a ledgered justification"
-//! rule lives.
+//! thresholds will change tools instead. So this is the one of the seven whose
+//! firing is not an unconditional stop, and P5a's verdict assembly is where the
+//! "loosening without a ledgered justification" rule lives.
+//!
+//! **It is not, however, advisory.** That was the first version of the rule and
+//! it was wrong in a way this detector is uniquely placed to cause: the
+//! exemption was keyed on the signal's enum variant, so *every* firing was a
+//! note rather than a stop — while the justification route it was nominally
+//! handed to parses `.andon.toml` and nothing else. This detector reads ESLint,
+//! tsconfig, mypy, ruff, coverage configuration and a dozen more, so a real
+//! loosening in any of them took an exemption with nowhere behind it to be ruled
+//! on. Since then a firing stops the line unless a **verified** ledgered
+//! justification covers the change, wherever the threshold lived
+//! (`andon_core::verdict::severity::signal_stops_the_line`).
+//!
+//! The reported severity stays `Low`, and that is not a contradiction: blocking
+//! is keyed on the flag and never on the severity, for the muzzle reason
+//! `andon_core::verdict::severity` sets out. `Low` says how strong this finding
+//! is, not whether the line stops.
 //!
 //! What the detector still owes is an accurate *delta*: which threshold moved,
 //! in which direction. A `policy-change` finding that cannot say what changed is
@@ -153,7 +168,10 @@ impl Detector for ThresholdConfigEdit {
     }
 
     fn severity_when_fired(&self) -> Severity {
-        // Advisory by PLAN round-1 B6. Policy evolution must stay possible.
+        // The weakest of the seven, and it says how strong the finding is rather
+        // than whether the line stops — blocking is keyed on the flag. B6's
+        // exemption lives in `severity::signal_stops_the_line` and is
+        // conditional on a verified justification, not on this number.
         Severity::Low
     }
 
@@ -407,7 +425,11 @@ disallow_untyped_defs = False
     }
 
     #[test]
-    fn firing_is_advisory_not_blocking() {
+    fn a_firing_is_the_weakest_of_the_seven_and_that_is_not_what_decides_the_line() {
+        // Renamed from `firing_is_advisory_not_blocking`, which stopped being
+        // true when the exemption was narrowed: an unjustified loosening stops
+        // the line. What the severity says is how strong the finding is.
         assert_eq!(ThresholdConfigEdit.severity_when_fired(), Severity::Low);
+        assert!(!ThresholdConfigEdit.severity_when_fired().is_med_plus());
     }
 }
