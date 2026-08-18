@@ -291,9 +291,18 @@ pub fn evaluate(
     //
     // Never blocking. An engine that failed is not evidence against the change,
     // and a flaky engine that stopped the line would be uninstalled within a
-    // week. What it *does* do is demote record completeness to `partial`
-    // (`crate::payload`) and say which engine was missing, so that a reader can
-    // see what the measurement did not cover.
+    // week. What it *does* do is hold record completeness at never stronger than
+    // `partial` (`crate::payload::record_completeness`) and say which engine was
+    // missing, so that a reader can see what the measurement did not cover.
+    //
+    // The message states that completeness by reading `ctx.completeness` rather
+    // than by naming a value. Naming one was wrong: a failed engine only *floors*
+    // the record, so a result carrying an honest `unwitnessed` marker keeps the
+    // weaker value and a sentence that said "partial" contradicted the record it
+    // was attached to. A sentence that reads the field it describes cannot drift
+    // from it. Worded as `MEASUREMENT_INCOMPLETE` words the same value; on this
+    // branch the reachable set is `partial` and `unwitnessed`, for which that
+    // wording and the payload's own serialisation are the same two words.
     //
     // What it does NOT do is decide the attestation. `compare::classify` does
     // not read `completeness`, and this reason must not claim it does — PLAN
@@ -311,8 +320,9 @@ pub fn evaluate(
             severity: Severity::Medium,
             message: format!(
                 "{} engine(s) produced no results, so their metrics are absent rather than \
-                 zero and this record is partial: {}",
+                 zero and this record is {}: {}",
                 ctx.engine_failures.len(),
+                format!("{:?}", ctx.completeness).to_lowercase(),
                 detail.join("; ")
             ),
             metric_ids: Vec::new(),
@@ -790,34 +800,52 @@ mod tests {
 
     #[test]
     fn a_failed_engine_advises_and_never_blocks() {
+        // Both completeness values a failed engine can leave behind, because the
+        // reason has to say the one the record actually carries.
+        // `payload::record_completeness` floors the record at `partial` only when
+        // nothing weaker is already there, so a result carrying an honest
+        // `unwitnessed` marker keeps `unwitnessed` — and the message used to say
+        // "partial" regardless, which put two contradicting sentences on one
+        // verdict. The words are written out here rather than recomputed from
+        // `ctx.completeness`, which would assert the emission against itself.
         let policy = Policy::default();
         let failures = [EngineFailure {
             engine_id: "clones".to_string(),
             reason: "index lock held".to_string(),
         }];
-        let mut context = ctx(&policy);
-        context.engine_failures = &failures;
-        let summary = evaluate(&[clean_result()], &context, iteration(0, 3));
-        assert_eq!(summary.verdict, Verdict::Advise);
-        let unavailable = summary
-            .reasons
-            .iter()
-            .find(|r| r.code == reason::ENGINE_UNAVAILABLE)
-            .expect("said out loud");
-        assert!(unavailable.message.contains("absent rather than"));
-        assert!(
-            unavailable.message.contains("this record is partial"),
-            "the reason states what is true of the record it is attached to"
-        );
-        assert!(
-            !unavailable.message.contains("confirmed"),
-            "and it does not promise a downstream guarantee `compare::classify` \
-             does not provide — that rule is PLAN P9's (E20)"
-        );
-        assert!(
-            !has_countable_finding(&[clean_result()], &context),
-            "an agent must not grind on someone else's broken engine"
-        );
+        for (completeness, word) in [
+            (Completeness::Partial, "partial"),
+            (Completeness::Unwitnessed, "unwitnessed"),
+        ] {
+            let mut context = ctx(&policy);
+            context.engine_failures = &failures;
+            context.completeness = completeness;
+            let summary = evaluate(&[clean_result()], &context, iteration(0, 3));
+            assert_eq!(summary.verdict, Verdict::Advise);
+            let unavailable = summary
+                .reasons
+                .iter()
+                .find(|r| r.code == reason::ENGINE_UNAVAILABLE)
+                .expect("said out loud");
+            assert!(unavailable.message.contains("absent rather than"));
+            assert!(
+                unavailable
+                    .message
+                    .contains(&format!("this record is {word}")),
+                "the reason states what is true of the record it is attached to, \
+                 and this record is {completeness:?}: {}",
+                unavailable.message
+            );
+            assert!(
+                !unavailable.message.contains("confirmed"),
+                "and it does not promise a downstream guarantee `compare::classify` \
+                 does not provide — that rule is PLAN P9's (E20)"
+            );
+            assert!(
+                !has_countable_finding(&[clean_result()], &context),
+                "an agent must not grind on someone else's broken engine"
+            );
+        }
     }
 
     #[test]
