@@ -105,6 +105,7 @@ fn regime(family: EngineFamily) -> MeasurementRegime {
 
 /// One sealed result, shaped the way an engine would leave it.
 fn result(
+    registry: &LoadedRegistry,
     engine_id: &str,
     family: EngineFamily,
     metric_id: &str,
@@ -117,7 +118,13 @@ fn result(
         engine_id: engine_id.to_string(),
         family,
         engine_class: EngineClass::StaticSafe,
-        metric_class: MetricClass::DiffActionable,
+        // Read off the shipped declaration rather than asserted here. Assembly
+        // now refuses a result that disagrees with the registry about what kind
+        // of metric it is, and a fixture that hardcoded `diff-actionable` and
+        // `deterministic` would have been testing its own opinion — the
+        // artifacts metric is neither.
+        metric_class: declared(registry, metric_id).0,
+        deterministic: declared(registry, metric_id).1,
         scope: ResultScope {
             kind: ScopeKind::Change,
             path: None,
@@ -137,7 +144,6 @@ fn result(
             does_not_predict: Vec::new(),
             stale: false,
         },
-        deterministic: true,
         digest: String::new(),
         freshness: Freshness {
             measured_at: "2026-08-17T09:00:00Z".to_string(),
@@ -148,6 +154,22 @@ fn result(
     };
     result.seal(&compare_context()).expect("seals");
     result
+}
+
+/// What the registry under test declares for a metric.
+///
+/// Read rather than asserted, because assembly now refuses a result that
+/// disagrees with the registry about what kind of metric it is. A fixture that
+/// hardcoded `diff-actionable` and `deterministic` would have been stating its
+/// own opinion over the declaration — and would have been wrong about the
+/// artifacts metric, which is neither.
+fn declared(registry: &LoadedRegistry, metric_id: &str) -> (MetricClass, bool) {
+    let decl = registry
+        .registry
+        .metrics
+        .get(metric_id)
+        .unwrap_or_else(|| panic!("the registry under test declares '{metric_id}'"));
+    (decl.class, decl.deterministic)
 }
 
 fn descriptor(engine_id: &str, family: EngineFamily) -> EngineDescriptor {
@@ -167,12 +189,13 @@ fn output(engine_id: &str, family: EngineFamily, results: Vec<MeasurementResult>
 }
 
 /// One output per family, citing claims the shipped registry declares.
-fn five_engines() -> Vec<EngineOutput> {
+fn five_engines(registry: &LoadedRegistry) -> Vec<EngineOutput> {
     vec![
         output(
             "static-metrics",
             EngineFamily::Static,
             vec![result(
+                registry,
                 "static-metrics",
                 EngineFamily::Static,
                 "static.cognitive-complexity.typescript",
@@ -184,6 +207,7 @@ fn five_engines() -> Vec<EngineOutput> {
             "clones",
             EngineFamily::Clones,
             vec![result(
+                registry,
                 "clones",
                 EngineFamily::Clones,
                 "clones.duplicated-tokens",
@@ -195,6 +219,7 @@ fn five_engines() -> Vec<EngineOutput> {
             "tamper",
             EngineFamily::Tamper,
             vec![result(
+                registry,
                 "tamper",
                 EngineFamily::Tamper,
                 "tamper.test-removal",
@@ -206,6 +231,7 @@ fn five_engines() -> Vec<EngineOutput> {
             "process",
             EngineFamily::Process,
             vec![result(
+                registry,
                 "process",
                 EngineFamily::Process,
                 "process.churn-commits",
@@ -217,6 +243,7 @@ fn five_engines() -> Vec<EngineOutput> {
             "artifacts",
             EngineFamily::Artifacts,
             vec![result(
+                registry,
                 "artifacts",
                 EngineFamily::Artifacts,
                 "artifacts.uncovered-changed-lines",
@@ -360,7 +387,7 @@ fn every_declared_engine_must_appear_exactly_once() {
     );
 
     // Four of five, and the fifth neither ran nor was reported as unavailable.
-    let mut four = five_engines();
+    let mut four = five_engines(&registry);
     four.retain(|e| e.descriptor.engine_id != "process");
     let err = prepare(bare_request(&policy, &registry, four))
         .expect_err("a silently absent engine is not a measurement");
@@ -380,11 +407,12 @@ fn an_engine_the_registry_does_not_declare_cannot_contribute() {
     // have let it stand in for `static-metrics`.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines.push(output(
         "spike-size",
         EngineFamily::Static,
         vec![result(
+            &registry,
             "spike-size",
             EngineFamily::Static,
             "static.cognitive-complexity.typescript",
@@ -404,7 +432,7 @@ fn an_engine_the_registry_does_not_declare_cannot_contribute() {
 fn an_engine_cannot_both_produce_results_and_report_a_failure() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut req = bare_request(&policy, &registry, five_engines());
+    let mut req = bare_request(&policy, &registry, five_engines(&registry));
     req.engine_failures = vec![EngineFailure {
         engine_id: "clones".to_string(),
         reason: "index lock held".to_string(),
@@ -421,7 +449,7 @@ fn an_engine_cannot_both_produce_results_and_report_a_failure() {
 fn an_engine_cannot_fail_twice() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines.retain(|e| e.descriptor.engine_id != "clones");
     let mut req = bare_request(&policy, &registry, engines);
     req.engine_failures = vec![
@@ -448,7 +476,7 @@ fn an_unknown_engine_cannot_hide_in_the_failure_list() {
     // nobody declares would let a caller satisfy the roster with an invention.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines.retain(|e| e.descriptor.engine_id != "process");
     let mut req = bare_request(&policy, &registry, engines);
     req.engine_failures = vec![EngineFailure {
@@ -500,6 +528,7 @@ fn the_expected_roster_comes_from_the_registry_and_not_from_a_constant() {
         "clones",
         EngineFamily::Clones,
         vec![result(
+            &registry,
             "clones",
             EngineFamily::Clones,
             "clones.duplicated-tokens",
@@ -543,7 +572,8 @@ expiry = "2027-01-01"
 fn five_engine_families_assemble_into_one_record() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let prepared = prepare(request(&policy, &registry, five_engines())).expect("assembles");
+    let prepared =
+        prepare(request(&policy, &registry, five_engines(&registry))).expect("assembles");
     let record = prepared.finish(advance(0, 3));
 
     assert_eq!(record.results.len(), 5);
@@ -562,10 +592,10 @@ fn five_engine_families_assemble_into_one_record() {
 fn the_record_does_not_depend_on_the_order_engines_were_registered_in() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let forwards = prepare(request(&policy, &registry, five_engines()))
+    let forwards = prepare(request(&policy, &registry, five_engines(&registry)))
         .expect("assembles")
         .finish(advance(0, 3));
-    let mut reversed = five_engines();
+    let mut reversed = five_engines(&registry);
     reversed.reverse();
     let backwards = prepare(request(&policy, &registry, reversed))
         .expect("assembles")
@@ -579,7 +609,7 @@ fn assembly_never_attests() {
     // is a record that can pass itself.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let record = prepare(request(&policy, &registry, five_engines()))
+    let record = prepare(request(&policy, &registry, five_engines(&registry)))
         .expect("assembles")
         .finish(advance(0, 3));
     assert_eq!(
@@ -595,7 +625,7 @@ fn assembly_never_attests() {
 fn a_fired_detector_reaches_the_records_signal_list() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     let tamper = engines
         .iter_mut()
         .find(|e| e.descriptor.engine_id == "tamper")
@@ -685,6 +715,7 @@ fn two_engines_sharing_a_family_stay_separate() {
             "static-metrics",
             EngineFamily::Static,
             vec![result(
+                &registry,
                 "static-metrics",
                 EngineFamily::Static,
                 "static.sloc",
@@ -696,6 +727,7 @@ fn two_engines_sharing_a_family_stay_separate() {
             "spike-size",
             EngineFamily::Static,
             vec![result(
+                &registry,
                 "spike-size",
                 EngineFamily::Static,
                 "spike.changed-files",
@@ -733,7 +765,7 @@ fn a_result_stamped_with_the_wrong_family_is_refused() {
     // set against something that knows better (PLAN wave-1 integration, note 1).
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines[0].results[0].family = EngineFamily::Clones;
     engines[0].results[0].seal(&compare_context()).unwrap();
 
@@ -750,7 +782,7 @@ fn a_regime_from_another_family_is_refused_even_when_the_stamps_agree() {
     // is inside the digest — says something else.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines[0].results[0].measurement_regime = regime(EngineFamily::Process);
     engines[0].results[0].seal(&compare_context()).unwrap();
 
@@ -765,19 +797,186 @@ fn a_regime_from_another_family_is_refused_even_when_the_stamps_agree() {
 #[test]
 fn a_result_whose_claim_the_registry_does_not_declare_is_refused() {
     // The build-failing lint, live in the measurement path: no number reaches a
-    // payload without evidence behind it.
+    // payload without evidence behind it. The refusal is now the stronger one —
+    // the registry declares exactly one claim per metric, so a claim nobody
+    // declared and a claim declared for some *other* metric are the same
+    // mistake and get the same answer.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines[0].results[0].claim_id = "andon.invented@1|any|nothing".to_string();
+    engines[0].results[0].evidence.claim_id = "andon.invented@1|any|nothing".to_string();
     engines[0].results[0].seal(&compare_context()).unwrap();
 
-    let err = prepare(request(&policy, &registry, engines)).expect_err("must refuse");
     assert_eq!(
-        err,
+        prepare(request(&policy, &registry, engines)).expect_err("must refuse"),
+        AssemblyError::MetricRebound {
+            metric_id: "static.cognitive-complexity.typescript".to_string(),
+            declared: "andon.static.cognitive@1|typescript|comprehension-time".to_string(),
+            cited: "andon.invented@1|any|nothing".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_metric_rebound_to_another_valid_claim_is_refused() {
+    // CODEX'S PROBE. A known metric citing a claim that resolves perfectly well
+    // — the clone engine's — used to assemble without complaint: a cognitive
+    // complexity number standing on evidence gathered about token duplication,
+    // carrying that claim's tier, citation and honesty lines.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    let clones_claim = "andon.clones.token-duplication@1|any|token-duplication";
+    engines[0].results[0].claim_id = clones_claim.to_string();
+    engines[0].results[0].evidence.claim_id = clones_claim.to_string();
+    engines[0].results[0].seal(&compare_context()).unwrap();
+
+    assert_eq!(
+        prepare(request(&policy, &registry, engines)).expect_err("must refuse"),
+        AssemblyError::MetricRebound {
+            metric_id: "static.cognitive-complexity.typescript".to_string(),
+            declared: "andon.static.cognitive@1|typescript|comprehension-time".to_string(),
+            cited: clones_claim.to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_result_whose_two_claim_ids_disagree_is_refused() {
+    // CODEX'S PROBE. `claim_id` is inside the digest input and
+    // `evidence.claim_id` is not, so a result can carry one claim to the
+    // verifier and a different one to the reader — and the reader's copy is what
+    // carries the tier, the citation, and the "what this does not predict"
+    // lines. Both used to be accepted on the same result.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    engines[0].results[0].evidence.claim_id =
+        "andon.clones.token-duplication@1|any|token-duplication".to_string();
+
+    assert_eq!(
+        prepare(request(&policy, &registry, engines)).expect_err("must refuse"),
+        AssemblyError::EvidenceClaimMismatch {
+            metric_id: "static.cognitive-complexity.typescript".to_string(),
+            claim_id: "andon.static.cognitive@1|typescript|comprehension-time".to_string(),
+            evidence_claim_id: "andon.clones.token-duplication@1|any|token-duplication".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_result_sealed_against_another_change_is_refused() {
+    // CODEX'S PROBE. The digest was checked for being non-empty, which proves
+    // only that something sealed something at some point. A result sealed
+    // against a different (base, head) is a measurement of a different change,
+    // and it assembled into a payload claiming this one.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    let other = CompareContext {
+        base_oid: "a".repeat(40),
+        head_oid: "b".repeat(40),
+        ..compare_context()
+    };
+    engines[0].results[0].seal(&other).expect("seals");
+
+    let err = prepare(request(&policy, &registry, engines)).expect_err("must refuse");
+    let AssemblyError::DigestMismatch {
+        metric_id,
+        base_oid,
+        ..
+    } = err
+    else {
+        panic!("expected a digest mismatch, got {err:?}");
+    };
+    assert_eq!(metric_id, "static.cognitive-complexity.typescript");
+    assert_eq!(base_oid, compare_context().base_oid);
+}
+
+#[test]
+fn a_result_edited_after_sealing_is_refused() {
+    // The same check from the other side: the digest covers the contents, so a
+    // value changed after the seal no longer matches it. `severity` and
+    // `evidence` are deliberately outside the digest input and must stay
+    // editable — `severity::apply` and `resolve_evidence` both run after this.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    engines[0].results[0].value = MetricValue::Count(9_999);
+    assert!(matches!(
+        prepare(request(&policy, &registry, engines)).expect_err("must refuse"),
+        AssemblyError::DigestMismatch { .. }
+    ));
+
+    let mut editable = five_engines(&registry);
+    editable[0].results[0].severity = Severity::Critical;
+    editable[0].results[0].evidence.stale = true;
+    prepare(request(&policy, &registry, editable))
+        .expect("the unsigned fields stay editable after sealing");
+}
+
+#[test]
+fn a_result_that_disagrees_with_its_declaration_is_refused() {
+    // `class` decides whether a finding may ever block and `deterministic`
+    // decides whether the verifier will compare it. A result carrying its own
+    // answer to either decides both for itself — the second one is E4's hole
+    // recurring one layer up.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+
+    let mut reclassed = five_engines(&registry);
+    reclassed[0].results[0].metric_class = MetricClass::ContextInformational;
+    reclassed[0].results[0].seal(&compare_context()).unwrap();
+    assert!(matches!(
+        prepare(request(&policy, &registry, reclassed)).expect_err("must refuse"),
+        AssemblyError::MetricDeclarationMismatch { field: "class", .. }
+    ));
+
+    let mut excused = five_engines(&registry);
+    excused[0].results[0].deterministic = false;
+    excused[0].results[0].seal(&compare_context()).unwrap();
+    assert!(matches!(
+        prepare(request(&policy, &registry, excused)).expect_err("must refuse"),
+        AssemblyError::MetricDeclarationMismatch {
+            field: "deterministic",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_result_naming_a_metric_no_registry_declares_is_refused() {
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    engines[0].results[0].metric_id = "static.invented".to_string();
+    engines[0].results[0].seal(&compare_context()).unwrap();
+
+    assert_eq!(
+        prepare(request(&policy, &registry, engines)).expect_err("must refuse"),
+        AssemblyError::UndeclaredMetric {
+            engine_id: "static-metrics".to_string(),
+            metric_id: "static.invented".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_declared_metric_whose_claim_is_missing_is_refused() {
+    // `LoadedRegistry`'s fields are public, so a caller can hand assembly a
+    // registry the lint would have refused. The evidence rule holds anyway.
+    let policy = Policy::default();
+    let mut registry = shipped_registry();
+    let claim_id = "andon.static.cognitive@1|typescript|comprehension-time";
+    let engines = five_engines(&registry);
+    registry.registry.claims.remove(claim_id);
+
+    assert_eq!(
+        prepare(request(&policy, &registry, engines)).expect_err("must refuse"),
         AssemblyError::UnknownClaim {
             metric_id: "static.cognitive-complexity.typescript".to_string(),
-            claim_id: "andon.invented@1|any|nothing".to_string(),
+            claim_id: claim_id.to_string(),
         }
     );
 }
@@ -786,7 +985,7 @@ fn a_result_whose_claim_the_registry_does_not_declare_is_refused() {
 fn an_unsealed_result_is_refused() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines[0].results[0].digest = String::new();
 
     let err = prepare(request(&policy, &registry, engines)).expect_err("must refuse");
@@ -799,7 +998,7 @@ fn two_results_sharing_a_pairing_key_are_refused() {
     // duplicate is a place a forged result can shadow an honest one.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     let duplicate = engines[0].results[0].clone();
     engines[0].results.push(duplicate);
 
@@ -816,7 +1015,7 @@ fn the_same_metric_at_two_scopes_is_fine() {
     // design, and only the pair has to be unique.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     let mut second = engines[0].results[0].clone();
     second.scope.kind = ScopeKind::File;
     second.scope.path = Some("src/other.ts".to_string());
@@ -833,7 +1032,7 @@ fn the_same_metric_at_two_scopes_is_fine() {
 fn an_engine_contributing_twice_is_refused() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines.push(engines[0].clone());
 
     let err = prepare(request(&policy, &registry, engines)).expect_err("must refuse");
@@ -847,7 +1046,7 @@ fn an_engine_contributing_twice_is_refused() {
 fn a_result_that_names_another_engine_is_refused() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines[0].results[0].engine_id = "clones".to_string();
     engines[0].results[0].seal(&compare_context()).unwrap();
 
@@ -896,6 +1095,7 @@ expiry = "2027-02-01"
         "tamper",
         EngineFamily::Tamper,
         vec![result(
+            &registry,
             "tamper",
             EngineFamily::Tamper,
             "tamper.renamed-detector",
@@ -919,7 +1119,7 @@ expiry = "2027-02-01"
 fn the_registry_supplies_the_honesty_lines_the_engine_lacked() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let record = prepare(request(&policy, &registry, five_engines()))
+    let record = prepare(request(&policy, &registry, five_engines(&registry)))
         .expect("assembles")
         .finish(advance(0, 3));
     assert!(
@@ -938,7 +1138,7 @@ fn a_parse_degradation_caveat_survives_evidence_resolution() {
     // which is the only line that changes how to read it.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     let health = parse_health::ParseHealth {
         error_nodes: 2,
         missing_nodes: 0,
@@ -982,7 +1182,7 @@ fn the_loader_decides_staleness_not_the_engine() {
     )
     .expect("loads");
     let policy = Policy::default();
-    let record = prepare(request(&policy, &registry, five_engines()))
+    let record = prepare(request(&policy, &registry, five_engines(&registry)))
         .expect("assembles")
         .finish(advance(0, 3));
     assert!(
@@ -998,7 +1198,7 @@ fn a_failed_engine_makes_the_record_partial() {
     let policy = Policy::default();
     let registry = shipped_registry();
     let req = failed(
-        request(&policy, &registry, five_engines()),
+        request(&policy, &registry, five_engines(&registry)),
         "clones",
         "index lock held by another process",
     );
@@ -1023,7 +1223,7 @@ fn a_failed_engine_makes_the_record_partial() {
 fn a_failed_engine_does_not_mask_a_weaker_completeness() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     engines[0].results[0].completeness = Completeness::Unwitnessed;
     engines[0].results[0].seal(&compare_context()).unwrap();
     let req = failed(
@@ -1062,7 +1262,8 @@ fn a_record_with_no_results_at_all_is_partial_when_engines_failed() {
 fn a_clean_run_has_nothing_for_the_counter_to_count() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let prepared = prepare(request(&policy, &registry, five_engines())).expect("assembles");
+    let prepared =
+        prepare(request(&policy, &registry, five_engines(&registry))).expect("assembles");
     assert!(!prepared.has_countable_finding());
 }
 
@@ -1070,7 +1271,7 @@ fn a_clean_run_has_nothing_for_the_counter_to_count() {
 fn a_fired_detector_is_something_for_the_counter_to_count() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let mut engines = five_engines();
+    let mut engines = five_engines(&registry);
     let tamper = engines
         .iter_mut()
         .find(|e| e.descriptor.engine_id == "tamper")
@@ -1093,7 +1294,7 @@ fn the_cap_in_the_record_is_the_one_the_caller_read_from_policy() {
     // carries the value that was in force, so a reader can see which cap applied.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let record = prepare(request(&policy, &registry, five_engines()))
+    let record = prepare(request(&policy, &registry, five_engines(&registry)))
         .expect("assembles")
         .finish(advance(2, policy.loop_policy.iteration_cap));
     assert_eq!(
@@ -1116,7 +1317,7 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     let cap = policy.loop_policy.iteration_cap;
 
     let firing = || {
-        let mut engines = five_engines();
+        let mut engines = five_engines(&registry);
         let tamper = engines
             .iter_mut()
             .find(|e| e.descriptor.engine_id == "tamper")
@@ -1149,7 +1350,8 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
 
     // The agent fixes it. The loop is over, so the count resets and the next
     // unrelated finding on this branch starts from one.
-    let prepared = prepare(request(&policy, &registry, five_engines())).expect("assembles");
+    let prepared =
+        prepare(request(&policy, &registry, five_engines(&registry))).expect("assembles");
     let advance = store
         .advance("feat/a", cap, prepared.has_countable_finding())
         .expect("advances");
@@ -1169,7 +1371,7 @@ fn an_unjustified_loosening_of_andons_own_policy_blocks() {
     head.severity.block_on_tamper = false;
     let change = crate::verdict::policy_change::evaluate(&policy, &head, None);
 
-    let mut req = request(&policy, &registry, five_engines());
+    let mut req = request(&policy, &registry, five_engines(&registry));
     req.policy_change = Some(change);
     let prepared = prepare(req).expect("assembles");
     assert!(
@@ -1193,7 +1395,7 @@ fn a_neutral_policy_edit_advises_and_carries_the_delta() {
     head.history.window_days = 90;
     let change = crate::verdict::policy_change::evaluate(&policy, &head, None);
 
-    let mut req = request(&policy, &registry, five_engines());
+    let mut req = request(&policy, &registry, five_engines(&registry));
     req.policy_change = Some(change);
     let record = prepare(req).expect("assembles").finish(advance(0, 3));
     assert_eq!(record.verdict.verdict, Verdict::Advise);
@@ -1216,7 +1418,7 @@ fn a_neutral_policy_edit_advises_and_carries_the_delta() {
 fn an_assembled_record_serializes_canonically_and_reproducibly() {
     let policy = Policy::default();
     let registry = shipped_registry();
-    let record = prepare(request(&policy, &registry, five_engines()))
+    let record = prepare(request(&policy, &registry, five_engines(&registry)))
         .expect("assembles")
         .finish(advance(0, 3));
     let once = crate::canonical::to_canonical_string(&record).expect("serializes");
@@ -1233,7 +1435,7 @@ fn assembly_does_not_disturb_a_sealed_digest() {
     // verifier reports `divergent` on honest work.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let engines = five_engines();
+    let engines = five_engines(&registry);
     let before: Vec<String> = engines
         .iter()
         .flat_map(|e| e.results.iter().map(|r| r.digest.clone()))
@@ -1261,7 +1463,7 @@ fn the_countable_answer_survives_the_round_trip() {
     let registry = shipped_registry();
 
     let firing = || {
-        let mut engines = five_engines();
+        let mut engines = five_engines(&registry);
         let tamper = engines
             .iter_mut()
             .find(|e| e.descriptor.engine_id == "tamper")
@@ -1274,7 +1476,7 @@ fn the_countable_answer_survives_the_round_trip() {
 
     // Both shapes, and both directions of the recovery flag that `prepare` has
     // to guess at because the counter has not been read yet.
-    for (engines, expected) in [(five_engines(), false), (firing(), true)] {
+    for (engines, expected) in [(five_engines(&registry), false), (firing(), true)] {
         let prepared = prepare(request(&policy, &registry, engines)).expect("assembles");
         assert_eq!(prepared.has_countable_finding(), expected);
 

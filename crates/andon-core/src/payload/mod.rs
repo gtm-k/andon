@@ -8,11 +8,17 @@
 //! place, for the checks that are about the *set* rather than about any one
 //! number:
 //!
-//! - **Nothing enters a payload without evidence.** Every result's `claim_id`
-//!   must resolve in the merged registry, or assembly refuses. The registry lint
-//!   has failed builds since P0; this is the same rule at the measurement
-//!   boundary, so a binary cannot report a number whose claim nobody declared
-//!   ([`registry_load`]).
+//! - **Nothing enters a payload without evidence, and none of it is rebound.**
+//!   Every result's `claim_id` must resolve in the merged registry *and* be the
+//!   claim that registry declares for its metric, with the same actionability
+//!   and the same determinism. The registry lint has failed builds since P0;
+//!   this is the same rule at the measurement boundary, so a binary cannot
+//!   report a number whose claim nobody declared — nor one standing on evidence
+//!   gathered about a different metric ([`registry_load`]).
+//! - **Every digest is recomputed here.** A non-empty `digest` proves only that
+//!   something sealed something at some point. Assembly recomputes each one from
+//!   the result's own contents against *this* payload's compare context, so a
+//!   result sealed against another change cannot ride in.
 //! - **No result may be stamped with a family it did not come from.** A
 //!   mis-stamped `family` seals consistently and passes the verifier's compare,
 //!   because both sides make the same mistake — so a wrong stamp is invisible
@@ -149,6 +155,71 @@ pub enum AssemblyError {
     UnknownTamperSignal {
         /// The metric.
         metric_id: String,
+    },
+    /// A result's digest is not the digest of what it carries, against the
+    /// tuple this payload is being assembled for.
+    #[error(
+        "result '{metric_id}' from '{engine_id}' carries a digest that is not the digest of \
+         its own contents against ({base_oid}, {head_oid})"
+    )]
+    DigestMismatch {
+        /// The engine.
+        engine_id: String,
+        /// The metric.
+        metric_id: String,
+        /// The base this payload is for.
+        base_oid: String,
+        /// The head this payload is for.
+        head_oid: String,
+    },
+    /// A result reports a metric no registry file declares.
+    #[error(
+        "result '{metric_id}' from '{engine_id}' names a metric the registry does not declare"
+    )]
+    UndeclaredMetric {
+        /// The engine.
+        engine_id: String,
+        /// The metric.
+        metric_id: String,
+    },
+    /// A result cites a claim other than the one its metric declares.
+    #[error(
+        "metric '{metric_id}' is declared against claim '{declared}' and this result cites \
+         '{cited}'"
+    )]
+    MetricRebound {
+        /// The metric.
+        metric_id: String,
+        /// What the registry declares for it.
+        declared: String,
+        /// What the result cited instead.
+        cited: String,
+    },
+    /// A result disagrees with the registry about what kind of metric it is.
+    #[error("metric '{metric_id}' is declared {field} {declared} and this result says {carried}")]
+    MetricDeclarationMismatch {
+        /// The metric.
+        metric_id: String,
+        /// Which property disagrees: `class` or `deterministic`.
+        field: &'static str,
+        /// What the registry declares.
+        declared: String,
+        /// What the result carries.
+        carried: String,
+    },
+    /// A result's top-level claim and its resolved evidence name different
+    /// claims.
+    #[error(
+        "result '{metric_id}' cites claim '{claim_id}' and carries evidence for \
+         '{evidence_claim_id}'"
+    )]
+    EvidenceClaimMismatch {
+        /// The metric.
+        metric_id: String,
+        /// The top-level claim.
+        claim_id: String,
+        /// The claim the evidence names.
+        evidence_claim_id: String,
     },
     /// An engine the registry declares contributed neither results nor a
     /// failure.
@@ -317,7 +388,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
     for output in engines {
         let descriptor = output.descriptor;
         for mut result in output.results {
-            validate(&result, &descriptor)?;
+            let resolved = validate(&result, &descriptor, &compare_context, registry)?;
 
             // The verifier pairs on exactly this key. Two results sharing it
             // make pairing ambiguous, and `crate::compare::pair_results` takes
@@ -331,7 +402,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
                 });
             }
 
-            resolve_evidence(&mut result, registry)?;
+            resolve_evidence(&mut result, resolved);
             results.push(result);
         }
     }
@@ -456,10 +527,33 @@ fn account_for_every_engine(
 }
 
 /// Every check that is about one result.
-fn validate(
+///
+/// # What "sealed" has to mean here
+///
+/// Checking that `digest` is non-empty proves that something ran `seal` at some
+/// point, over some contents, against some tuple. None of those are the question
+/// assembly is asking. A result sealed against a different `(base_oid, head_oid)`
+/// is a measurement of a different change, and it used to assemble cleanly into
+/// a payload claiming this one — so the digest is recomputed from the result's
+/// own contents against **this** payload's compare context and compared.
+///
+/// # And what the registry is authoritative for
+///
+/// A `claim_id` that resolves is not the same as a `claim_id` that belongs. The
+/// registry declares, per metric, exactly one claim and exactly one answer to
+/// "is this diff-actionable" and "is this in the compare set" — and a result may
+/// not disagree with any of the three. Before this, a known metric rebound to
+/// some *other* valid claim assembled without complaint, which is a number
+/// standing on evidence that was gathered about something else. `class` and
+/// `deterministic` matter for the same reason from the other end: they decide
+/// whether a finding may block and whether the verifier will compare it, and a
+/// result that carries its own answer decides both for itself.
+fn validate<'r>(
     result: &MeasurementResult,
     descriptor: &EngineDescriptor,
-) -> Result<(), AssemblyError> {
+    compare_context: &CompareContext,
+    registry: &'r LoadedRegistry,
+) -> Result<&'r crate::registry::ResolvedClaim, AssemblyError> {
     if result.engine_id != descriptor.engine_id {
         return Err(AssemblyError::EngineMismatch {
             metric_id: result.metric_id.clone(),
@@ -483,6 +577,59 @@ fn validate(
             metric_id: result.metric_id.clone(),
         });
     }
+    let recomputed = crate::canonical::digest(&result.digest_input(compare_context))
+        .map_err(|e| AssemblyError::PolicyHash(format!("digest: {e}")))?;
+    if recomputed != result.digest {
+        return Err(AssemblyError::DigestMismatch {
+            engine_id: descriptor.engine_id.clone(),
+            metric_id: result.metric_id.clone(),
+            base_oid: compare_context.base_oid.clone(),
+            head_oid: compare_context.head_oid.clone(),
+        });
+    }
+
+    let Some(declared) = registry.registry.metrics.get(&result.metric_id) else {
+        return Err(AssemblyError::UndeclaredMetric {
+            engine_id: descriptor.engine_id.clone(),
+            metric_id: result.metric_id.clone(),
+        });
+    };
+    if declared.claim_id != result.claim_id {
+        return Err(AssemblyError::MetricRebound {
+            metric_id: result.metric_id.clone(),
+            declared: declared.claim_id.clone(),
+            cited: result.claim_id.clone(),
+        });
+    }
+    if declared.class != result.metric_class {
+        return Err(AssemblyError::MetricDeclarationMismatch {
+            metric_id: result.metric_id.clone(),
+            field: "class",
+            declared: format!("{:?}", declared.class),
+            carried: format!("{:?}", result.metric_class),
+        });
+    }
+    if declared.deterministic != result.deterministic {
+        return Err(AssemblyError::MetricDeclarationMismatch {
+            metric_id: result.metric_id.clone(),
+            field: "deterministic",
+            declared: declared.deterministic.to_string(),
+            carried: result.deterministic.to_string(),
+        });
+    }
+    // The two statements of the claim have to agree before the loader is allowed
+    // to fill in `stale` and the honesty lines against one of them. Engines
+    // insert caveats into the array, which is why `resolve_evidence` merges
+    // rather than replaces — and a merge onto a disagreeing claim would attach
+    // one claim's honesty lines to another claim's number.
+    if result.evidence.claim_id != result.claim_id {
+        return Err(AssemblyError::EvidenceClaimMismatch {
+            metric_id: result.metric_id.clone(),
+            claim_id: result.claim_id.clone(),
+            evidence_claim_id: result.evidence.claim_id.clone(),
+        });
+    }
+
     if tamper_signals::is_tamper_flag(result)
         && tamper_signals::signal_for(&result.metric_id).is_none()
     {
@@ -490,10 +637,30 @@ fn validate(
             metric_id: result.metric_id.clone(),
         });
     }
-    Ok(())
+
+    // The registry lint refuses a registry in which a declared metric cites a
+    // claim nobody declares, and `registry_load` refuses to return one the lint
+    // would fail — so reaching this arm means a caller built a `LoadedRegistry`
+    // by hand from parts that do not agree. Its fields are public, so that is
+    // possible; the refusal is what keeps it from becoming a payload citing
+    // evidence that is not there.
+    registry
+        .registry
+        .claims
+        .get(&result.claim_id)
+        .ok_or_else(|| AssemblyError::UnknownClaim {
+            metric_id: result.metric_id.clone(),
+            claim_id: result.claim_id.clone(),
+        })
 }
 
-/// Reconcile a result's evidence against the merged registry.
+/// Reconcile a result's evidence against the claim [`validate`] resolved.
+///
+/// The claim is passed in rather than looked up again. Two lookups keyed on the
+/// same string is one lookup and one opportunity for the two to answer
+/// differently — and the second one used to carry the "no evidence" refusal,
+/// which meant the rule lived in the function that had already been told the
+/// answer.
 ///
 /// The merged registry is authoritative for the two things that are properties
 /// of the *repository* rather than of the binary:
@@ -514,24 +681,13 @@ fn validate(
 /// mechanism for that already exists and is digest-bound: `engine_version` is
 /// part of the `measurement_regime`, so the verifier reports
 /// `unwitnessed-version-skew` rather than an accusation (PREMORTEM S4).
-fn resolve_evidence(
-    result: &mut MeasurementResult,
-    registry: &LoadedRegistry,
-) -> Result<(), AssemblyError> {
-    let Some(resolved) = registry.registry.claims.get(&result.claim_id) else {
-        // The registry lint, live in the measurement path.
-        return Err(AssemblyError::UnknownClaim {
-            metric_id: result.metric_id.clone(),
-            claim_id: result.claim_id.clone(),
-        });
-    };
+fn resolve_evidence(result: &mut MeasurementResult, resolved: &crate::registry::ResolvedClaim) {
     result.evidence.stale = resolved.stale;
     for line in &resolved.claim.does_not_predict {
         if !result.evidence.does_not_predict.contains(line) {
             result.evidence.does_not_predict.push(line.clone());
         }
     }
-    Ok(())
 }
 
 /// The record-level completeness.
