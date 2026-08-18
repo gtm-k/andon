@@ -57,6 +57,7 @@ use andon_core::schema::payload::{
     ScopeKind,
 };
 use andon_core::schema::regime::MeasurementRegime;
+use andon_core::verdict::ladder::SeverityLadder;
 
 use crate::functions::functions;
 use crate::health;
@@ -355,6 +356,10 @@ impl MeasureEngine for StaticMetricsEngine {
         metrics::descriptors()
     }
 
+    fn severity_ladders(&self) -> BTreeMap<String, SeverityLadder> {
+        metrics::severity_ladders()
+    }
+
     fn regime(&self) -> MeasurementRegime {
         MeasurementRegime::Static {
             engine_version: self.version.clone(),
@@ -429,11 +434,12 @@ impl MeasureEngine for StaticMetricsEngine {
             );
             // `unwitnessed` rather than `parse-degraded`: nothing was measured
             // here at all. It is the weakest completeness there is, so a record
-            // that skipped a file cannot claim to be complete.
+            // that skipped a file cannot claim to be complete. The severity cap
+            // that follows from it is applied once, at the engine boundary
+            // (`andon_core::engine::run_engine`) — restating it here would be a
+            // second implementation of `health::severity_ceiling` that agrees
+            // until one of the two is edited.
             result.completeness = Completeness::Unwitnessed;
-            result.severity = result
-                .severity
-                .min(health::severity_ceiling(Completeness::Unwitnessed));
             results.push(result);
         }
 
@@ -553,11 +559,13 @@ impl StaticMetricsEngine {
             scope,
             value,
             delta,
-            // The engine reports facts; policy decides how serious they are, and
-            // the policy that counts is the verifier's — which is why `severity`
-            // is outside the digest input. `Info` is the honest floor for a
-            // number nobody has evaluated yet. `crate::health::severity_ceiling`
-            // is the bound P5a must respect when it does.
+            // The floor, and the only value this constructor is entitled to
+            // write. `andon_core::engine::run_engine` assigns the real
+            // pre-policy severity from the ladder `metrics::severity_ladders`
+            // declares for this metric, then policy caps it
+            // (`andon_core::verdict::severity`). A severity written here would
+            // be overwritten on the way out, which is the point: there is one
+            // declaration per metric and no second opinion at a result site.
             severity: Severity::Info,
             completeness: Completeness::Complete,
             measurement_regime: self.regime(),

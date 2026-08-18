@@ -22,8 +22,11 @@
 //! claim, which the lint permits and which is correct here: they are four views
 //! of one instrument, not four predictions.
 
+use std::collections::BTreeMap;
+
 use andon_core::engine::MetricDescriptor;
-use andon_core::schema::enums::MetricClass;
+use andon_core::schema::enums::{MetricClass, Severity};
+use andon_core::verdict::ladder::{Rung, SeverityLadder, Threshold};
 
 use crate::lang::Language;
 
@@ -154,6 +157,107 @@ pub fn descriptors() -> Vec<MetricDescriptor> {
     descriptors
 }
 
+/// Cyclomatic complexity, in the units the claim is scoped to.
+///
+/// The claim's outcome is `minimum-test-paths`: the number is the count of
+/// linearly independent paths through a function, which is the floor on how many
+/// test cases can cover it. The rungs rank that floor, and nothing else — the
+/// claim's own `does_not_predict` rules out reading them as defect density,
+/// comprehension time, or maintenance effort.
+///
+/// **The boundaries are the conventional McCabe bands (11, 21, 51), adopted as
+/// tool convention and not as a finding.** The cited paper (Landman et al. 2016)
+/// establishes that the metric is not redundant with size at method level; it
+/// does not publish a risk table, and no threshold here should be read as
+/// carrying its authority. What the rungs are is a declaration of how loud this
+/// engine is willing to be about a function needing eleven, twenty-one, or
+/// fifty-one test paths.
+const CYCLOMATIC: &[Rung] = &[
+    Rung {
+        at: Threshold::Count(11),
+        severity: Severity::Medium,
+    },
+    Rung {
+        at: Threshold::Count(21),
+        severity: Severity::High,
+    },
+    Rung {
+        at: Threshold::Count(51),
+        severity: Severity::Critical,
+    },
+];
+
+/// Cognitive complexity, in the units the claim is scoped to.
+///
+/// The claim's outcome is `comprehension-time`, validated by the cited
+/// meta-analysis against how long humans take to understand a snippet. The rungs
+/// rank how far into that scale a function has gone.
+///
+/// **15 is the SonarSource implementation's default threshold — a tool default,
+/// not a result from the literature — and 25 and 50 are project-declared
+/// extensions of it.** The meta-analysis reports a correlation, not a cut point.
+/// Recorded here rather than in the registry because a threshold is a judgement
+/// about loudness and the registry is for what the evidence says.
+const COGNITIVE: &[Rung] = &[
+    Rung {
+        at: Threshold::Count(15),
+        severity: Severity::Medium,
+    },
+    Rung {
+        at: Threshold::Count(25),
+        severity: Severity::High,
+    },
+    Rung {
+        at: Threshold::Count(50),
+        severity: Severity::Critical,
+    },
+];
+
+/// How each metric's own number becomes a pre-policy severity.
+///
+/// One entry per [`descriptors`] entry, and the only place this engine states a
+/// severity: `crate::engine`'s result constructor writes the `Info` floor and
+/// `andon_core::engine::run_engine` assigns from here on the way out.
+///
+/// Three of the five unsuffixed metrics decline to rank themselves, each for its
+/// own reason rather than by omission:
+///
+/// - **`static.sloc`** is a control variable, never a target. It is already
+///   `context-informational` for the reason `metric-families.csv` gives — almost
+///   every sophisticated metric is partly re-measuring it — and a severity
+///   ladder over a line count is an instruction to an agent to delete lines.
+/// - **`static.parse-errors` and `static.parse-missing`** are the *report of* a
+///   degradation. Ranking the report is the mistake `andon_core::parse_health`
+///   names: these counts are exact, they must stay loud, and the question of
+///   whether a rise in them is an evasion belongs to `tamper.parse-error-delta`,
+///   which is the detector written for it.
+/// - **`static.unmeasured-files`** counts what the per-file markers name. The
+///   markers carry `completeness: unwitnessed` and so cap below MED+ whatever
+///   they say; ranking the count as well would be the same fact twice.
+pub fn severity_ladders() -> BTreeMap<String, SeverityLadder> {
+    let mut ladders: BTreeMap<String, SeverityLadder> = [
+        (METRIC_SLOC, SeverityLadder::NoOpinion),
+        (METRIC_PARSE_ERRORS, SeverityLadder::NoOpinion),
+        (METRIC_PARSE_MISSING, SeverityLadder::NoOpinion),
+        (METRIC_UNMEASURED_FILES, SeverityLadder::NoOpinion),
+        (METRIC_UNMEASURED_FILE, SeverityLadder::NoOpinion),
+    ]
+    .into_iter()
+    .map(|(id, ladder)| (id.to_string(), ladder))
+    .collect();
+    for language in complexity_languages() {
+        ladders.insert(
+            cyclomatic_metric_id(language),
+            SeverityLadder::Thresholds(CYCLOMATIC),
+        );
+        ladders.insert(
+            cognitive_metric_id(language),
+            SeverityLadder::Thresholds(COGNITIVE),
+        );
+    }
+    ladders
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +309,61 @@ mod tests {
             .find(|d| d.metric_id == METRIC_SLOC)
             .expect("sloc is declared");
         assert_eq!(sloc.class, MetricClass::ContextInformational);
+    }
+
+    #[test]
+    fn every_declared_metric_declares_a_ladder_and_nothing_else_does() {
+        // The drift this pairs against: a metric added to `descriptors()` and
+        // forgotten here reaches `run_engine` with no declaration and is refused
+        // at the boundary — but only if it is ever emitted. This fails at build
+        // time instead.
+        let declared: BTreeSet<String> = descriptors().into_iter().map(|d| d.metric_id).collect();
+        let ranked: BTreeSet<String> = severity_ladders().into_keys().collect();
+        assert_eq!(declared, ranked);
+    }
+
+    #[test]
+    fn the_complexity_ladders_are_the_only_route_to_the_med_plus_band() {
+        // The shipped fact this engine is responsible for, and the one the whole
+        // repair round turns on: under the default policy `static` is the only
+        // family that can reach MED+ at all, and inside it only these six
+        // metrics can. A ladder quietly reduced to `NoOpinion` would take the
+        // band away from the entire tool.
+        let reaching: BTreeSet<String> = severity_ladders()
+            .into_iter()
+            .filter(|(_, ladder)| ladder.strongest().is_med_plus())
+            .map(|(id, _)| id)
+            .collect();
+        let expected: BTreeSet<String> = complexity_languages()
+            .into_iter()
+            .flat_map(|l| [cyclomatic_metric_id(l), cognitive_metric_id(l)])
+            .collect();
+        assert_eq!(reaching, expected);
+    }
+
+    #[test]
+    fn a_line_count_is_never_ranked() {
+        // Size as a target is PREMORTEM A4's uninstall loop with the tool's own
+        // name on it: an agent told that 400 lines is `High` deletes lines.
+        assert_eq!(
+            severity_ladders().get(METRIC_SLOC),
+            Some(&SeverityLadder::NoOpinion)
+        );
+    }
+
+    #[test]
+    fn the_parse_health_counts_are_never_ranked() {
+        // `andon_core::parse_health`: the report of a degradation is exact and
+        // must stay loud. Whether a rise in it is an evasion is
+        // `tamper.parse-error-delta`'s question, and answering it twice in two
+        // engines is how the two answers start to disagree.
+        for metric in [METRIC_PARSE_ERRORS, METRIC_PARSE_MISSING] {
+            assert_eq!(
+                severity_ladders().get(metric),
+                Some(&SeverityLadder::NoOpinion),
+                "{metric}"
+            );
+        }
     }
 
     #[test]

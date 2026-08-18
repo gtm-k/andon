@@ -41,6 +41,7 @@
 //! gives: a report of a blind spot demoted by the blind spot it reports is the
 //! one signal T3 wants loud, silenced by its own finding.
 
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use andon_core::date::Date;
@@ -55,6 +56,7 @@ use andon_core::schema::payload::{
     CacheState, EvidenceRef, Freshness, MeasurementResult, MetricValue, ResultScope, ScopeKind,
 };
 use andon_core::schema::regime::MeasurementRegime;
+use andon_core::verdict::ladder::SeverityLadder;
 
 use crate::change::{ChangeKind, ChangeView, FileChange};
 use crate::detectors::{self, Outcome};
@@ -129,6 +131,18 @@ pub fn metric_descriptors() -> Vec<MetricDescriptor> {
                 deterministic: decl.deterministic,
             }
         })
+        .collect()
+}
+
+/// This suite's severity declaration: every metric defers to its detector.
+///
+/// See the trait method for why. Public alongside [`metric_descriptors`] so the
+/// enumeration test that pins `PerResult` to this engine and no other can read
+/// it without constructing a change.
+pub fn severity_ladders() -> BTreeMap<String, SeverityLadder> {
+    metric_descriptors()
+        .into_iter()
+        .map(|d| (d.metric_id, SeverityLadder::PerResult))
         .collect()
 }
 
@@ -229,6 +243,25 @@ impl MeasureEngine for TamperEngine {
 
     fn metrics(&self) -> Vec<MetricDescriptor> {
         metric_descriptors()
+    }
+
+    /// Every metric here defers to the detector that produced it.
+    ///
+    /// This suite is the one engine whose severity is declared per *detector*
+    /// rather than per metric — `detectors::Detector::severity_when_fired`, with
+    /// `parse_error_delta` lowering its own firing per outcome — and that
+    /// declaration predates the ladder, is reviewed, and is what the muzzle rule
+    /// in `andon_core::verdict::severity` was written against. Restating it as a
+    /// threshold table would produce a second copy of a rule the whole phase
+    /// turns on, and two copies of that rule is how one of them ends up wrong
+    /// while both suites stay green.
+    ///
+    /// `SeverityLadder::PerResult` says exactly that, and the boundary still
+    /// applies the completeness ceiling on the way out — so a detector firing
+    /// over a partly-unreadable view is still capped, and still stops the line
+    /// on its flag rather than on the capped number.
+    fn severity_ladders(&self) -> BTreeMap<String, SeverityLadder> {
+        severity_ladders()
     }
 
     fn regime(&self) -> MeasurementRegime {

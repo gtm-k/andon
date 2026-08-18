@@ -32,6 +32,7 @@
 //! capped. One parked parse error must not be able to muzzle the tamper suite.
 
 pub mod iteration;
+pub mod ladder;
 pub mod policy_change;
 pub mod severity;
 

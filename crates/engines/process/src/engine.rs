@@ -73,6 +73,7 @@ use andon_core::schema::payload::{
     CacheState, EvidenceRef, Freshness, MeasurementResult, MetricValue, ResultScope, ScopeKind,
 };
 use andon_core::schema::regime::MeasurementRegime;
+use andon_core::verdict::ladder::SeverityLadder;
 
 use crate::cache::{HistoryCache, HistoryCacheError};
 use crate::complexity::ComplexitySource;
@@ -358,6 +359,165 @@ pub fn metric_descriptors() -> Vec<MetricDescriptor> {
     .collect()
 }
 
+/// How each metric's own number becomes a pre-policy severity.
+///
+/// # Direction before magnitude
+///
+/// A ladder over a history metric has to know which way is worse, and for one of
+/// these six the registry says it does not know. `andon.process.code-age@1` is
+/// carried at tier `B` with the honest note that the effect size "was not
+/// verified at primary source for this entry" — and the direction is exactly
+/// what a threshold would be asserting. Old code is stable in one reading and
+/// abandoned in another; the cited work establishes that change metrics predict
+/// defects, not that a file untouched for 400 days is worse than one untouched
+/// for 40. So [`METRIC_CODE_AGE`] declares [`SeverityLadder::NoOpinion`]: the
+/// number is reported, and this engine does not pretend to rank it.
+///
+/// The other five have a direction the claims do support — more churn, more
+/// fragmented ownership, a larger churn-by-complexity product, more habitual
+/// co-change partners left out of the change. **The cut points are
+/// project-declared**, over the default 365-day window, and none of the cited
+/// studies publishes a band this engine could adopt instead.
+///
+/// # What policy does to all of this in the shipped configuration
+///
+/// Every one of these six metrics is `context-informational` — no edit in a diff
+/// changes a file's history — and the default `.andon.toml` keeps the MED+ band
+/// for diff-actionable findings only. So `andon_core::verdict::severity::apply`
+/// caps every result from this engine at `Low` as shipped, whatever the rungs
+/// say. That is the policy half working as designed, not a reason for the engine
+/// half to under-report: an operator who turns
+/// `severity.med_plus_requires_diff_actionable` off gets these strengths, and
+/// the verifier reads the same numbers under the base commit's policy.
+mod ladders {
+    use super::*;
+    use andon_core::verdict::ladder::{Rung, Threshold};
+
+    /// Commits touching the file inside the window.
+    const CHURN_COMMITS: &[Rung] = &[
+        Rung {
+            at: Threshold::Count(10),
+            severity: Severity::Low,
+        },
+        Rung {
+            at: Threshold::Count(30),
+            severity: Severity::Medium,
+        },
+        Rung {
+            at: Threshold::Count(60),
+            severity: Severity::High,
+        },
+    ];
+
+    /// Lines added plus deleted inside the window.
+    const CHURN_LINES: &[Rung] = &[
+        Rung {
+            at: Threshold::Count(500),
+            severity: Severity::Low,
+        },
+        Rung {
+            at: Threshold::Count(2_000),
+            severity: Severity::Medium,
+        },
+        Rung {
+            at: Threshold::Count(5_000),
+            severity: Severity::High,
+        },
+    ];
+
+    /// Ownership entropy, in bits. The rungs are where the distribution stops
+    /// looking like a small team: 1.5 bits is roughly three equal authors, 2.5
+    /// roughly six, 3.5 roughly eleven. Bird et al.'s finding is about the
+    /// number of low-expertise contributors, and a spread distribution is this
+    /// engine's proxy for it — a proxy, which is why the claim carries the
+    /// difference in its own words.
+    const OWNERSHIP_ENTROPY: &[Rung] = &[
+        Rung {
+            at: Threshold::Ratio(1.5),
+            severity: Severity::Low,
+        },
+        Rung {
+            at: Threshold::Ratio(2.5),
+            severity: Severity::Medium,
+        },
+        Rung {
+            at: Threshold::Ratio(3.5),
+            severity: Severity::High,
+        },
+    ];
+
+    /// Commits multiplied by complexity. The claim is `risk-prioritisation` and
+    /// says plainly that no effect size has been measured for the product, so
+    /// these rungs rank *where to look first* and nothing else.
+    const HOTSPOT: &[Rung] = &[
+        Rung {
+            at: Threshold::Count(100),
+            severity: Severity::Low,
+        },
+        Rung {
+            at: Threshold::Count(400),
+            severity: Severity::Medium,
+        },
+        Rung {
+            at: Threshold::Count(1_000),
+            severity: Severity::High,
+        },
+    ];
+
+    /// Habitual co-change partners absent from the change under measurement.
+    /// One is worth a mention; five is a change that has probably forgotten
+    /// something. The metric is already filtered by `COUPLING_MIN_SUPPORT` and
+    /// the coupling ratio, so a partner counted here has co-changed repeatedly.
+    const CHANGE_COUPLING: &[Rung] = &[
+        Rung {
+            at: Threshold::Count(1),
+            severity: Severity::Low,
+        },
+        Rung {
+            at: Threshold::Count(3),
+            severity: Severity::Medium,
+        },
+        Rung {
+            at: Threshold::Count(5),
+            severity: Severity::High,
+        },
+    ];
+
+    /// The declaration `MeasureEngine::severity_ladders` returns.
+    pub fn all() -> BTreeMap<String, SeverityLadder> {
+        [
+            (
+                METRIC_CHURN_COMMITS,
+                SeverityLadder::Thresholds(CHURN_COMMITS),
+            ),
+            (METRIC_CHURN_LINES, SeverityLadder::Thresholds(CHURN_LINES)),
+            // Reported, deliberately unranked — see the module item above.
+            (METRIC_CODE_AGE, SeverityLadder::NoOpinion),
+            (
+                METRIC_OWNERSHIP_ENTROPY,
+                SeverityLadder::Thresholds(OWNERSHIP_ENTROPY),
+            ),
+            (METRIC_HOTSPOT, SeverityLadder::Thresholds(HOTSPOT)),
+            (
+                METRIC_CHANGE_COUPLING,
+                SeverityLadder::Thresholds(CHANGE_COUPLING),
+            ),
+        ]
+        .into_iter()
+        .map(|(id, ladder)| (id.to_string(), ladder))
+        .collect()
+    }
+}
+
+/// This engine's one severity declaration per metric.
+///
+/// Public alongside [`metric_descriptors`] and for the same reason: the pairing
+/// of the two is a property of the engine, not of any measurement, and a test
+/// that had to build a history window to read it would be testing the window.
+pub fn severity_ladders() -> BTreeMap<String, SeverityLadder> {
+    ladders::all()
+}
+
 impl MeasureEngine for ProcessEngine {
     fn descriptor(&self) -> EngineDescriptor {
         EngineDescriptor {
@@ -372,6 +532,10 @@ impl MeasureEngine for ProcessEngine {
 
     fn metrics(&self) -> Vec<MetricDescriptor> {
         metric_descriptors()
+    }
+
+    fn severity_ladders(&self) -> BTreeMap<String, SeverityLadder> {
+        severity_ladders()
     }
 
     fn regime(&self) -> MeasurementRegime {
@@ -606,9 +770,10 @@ impl ProcessEngine {
             // See the module docs: a delta would need a second window and
             // answers a question the change did not raise.
             delta: None,
-            // Never above `Info` from the engine. Severity is policy's to decide
-            // and the verifier computes its own — which is why `severity` sits
-            // outside `ResultDigestInput`.
+            // The floor, and the only value this constructor writes.
+            // `andon_core::engine::run_engine` assigns the real pre-policy
+            // severity from `ladders::all`, which is where this engine's one
+            // declaration per metric lives.
             severity: Severity::Info,
             completeness,
             measurement_regime: self.regime(),

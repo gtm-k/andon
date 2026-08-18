@@ -64,6 +64,7 @@ use andon_core::schema::payload::{
     CacheState, Freshness, MeasurementResult, MetricValue, ResultScope, ScopeKind,
 };
 use andon_core::schema::regime::MeasurementRegime;
+use andon_core::verdict::ladder::SeverityLadder;
 
 /// Engine id. Matches the `engine` field of the crate-local registry file.
 pub const ENGINE_ID: &str = "spike-size";
@@ -317,6 +318,20 @@ impl MeasureEngine for SpikeEngine {
 
     fn metrics(&self) -> Vec<MetricDescriptor> {
         metric_descriptors()
+    }
+
+    /// The spike counts sizes and has no severity opinion about any of them.
+    ///
+    /// Declared rather than left out. "This file is 412 bytes" carries no
+    /// strength an agent could act on — which is the same reason all three
+    /// metrics are `context-informational` — and the spike exists to prove the
+    /// trust path, not to rank a change. `NoOpinion` is how a metric says that
+    /// out loud; the absence of an entry would say only that somebody forgot.
+    fn severity_ladders(&self) -> BTreeMap<String, SeverityLadder> {
+        metric_descriptors()
+            .into_iter()
+            .map(|d| (d.metric_id, SeverityLadder::NoOpinion))
+            .collect()
     }
 
     fn regime(&self) -> MeasurementRegime {

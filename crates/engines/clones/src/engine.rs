@@ -34,8 +34,10 @@
 //! mechanism and the same prose the static engine uses: the per-file result of
 //! a degraded file, and all four change-scoped results whenever *any* measured
 //! file is degraded, because each of those four is computed over the set.
-//! Severity is capped by the same call — it costs nothing here, since this
-//! engine's severities never exceed `Low` to begin with.
+//! Severity is capped by the same call, and that cap now does real work: since
+//! the mini-G2 ruling this engine's ladder reaches `High` on a change thick with
+//! duplication, so a set the parser only partly read is capped back below the
+//! MED+ band rather than arriving there on a lower-bound count.
 //!
 //! # What is deliberately not measured
 //!
@@ -45,6 +47,7 @@
 //! cold-reproducible values to the compare set. They are reported through
 //! [`ClonesEngine::index_state`] for diagnostics and stop there.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use andon_core::date::Date;
@@ -59,6 +62,7 @@ use andon_core::schema::payload::{
     CacheState, EvidenceRef, Freshness, MeasurementResult, MetricValue, ResultScope, ScopeKind,
 };
 use andon_core::schema::regime::MeasurementRegime;
+use andon_core::verdict::ladder::SeverityLadder;
 use std::sync::OnceLock;
 
 use crate::detect::{self, CloneReport};
@@ -158,6 +162,116 @@ pub fn metric_descriptors() -> Vec<MetricDescriptor> {
         }
     })
     .collect()
+}
+
+/// How each metric's own number becomes a pre-policy severity.
+///
+/// # Every rung here is project-declared, and the claim says why it has to be
+///
+/// `registry/clones.toml` is tier `N` and states it plainly: no study underlies
+/// these numbers, and none of the clone literature establishes that removing a
+/// given clone improves anything. So there is no published band to adopt, and
+/// pretending otherwise would be the overstatement the registry exists to
+/// prevent. What the rungs are anchored on instead is the detector's **own**
+/// unit — `MIN_CLONE_TOKENS`, the 50-token fragment below which it reports
+/// nothing at all — so the ladder says "one minimum clone", "five", "twenty",
+/// which is a statement about this detector and not about software quality.
+///
+/// The floor is deliberately unchanged from what this engine shipped with: any
+/// confirmed duplication at all is `Low`. What is new is that a change with
+/// twenty minimum clones in it no longer reports the same strength as a change
+/// with one.
+///
+/// Nothing here declares `Critical`. A tier-N count with no remediation evidence
+/// behind it has not earned the top of the scale, and in the shipped
+/// configuration it would never be seen anyway — `N` is outside the default
+/// `med_plus_tiers`, so `andon_core::verdict::severity::apply` caps every result
+/// from this engine at `Low` until an operator admits the tier. That cap is the
+/// policy half doing its job, and it is not a reason for the engine half to
+/// under-report: the verifier reads the same numbers under a different policy.
+mod ladders {
+    use super::*;
+    use andon_core::verdict::ladder::{Rung, Threshold};
+
+    /// One minimum-length clone fragment.
+    const MIN_CLONE: u64 = fingerprint::MIN_CLONE_TOKENS as u64;
+
+    /// Token counts: one minimum clone, five, twenty.
+    const TOKENS: &[Rung] = &[
+        Rung {
+            at: Threshold::Count(1),
+            severity: Severity::Low,
+        },
+        Rung {
+            at: Threshold::Count(5 * MIN_CLONE),
+            severity: Severity::Medium,
+        },
+        Rung {
+            at: Threshold::Count(20 * MIN_CLONE),
+            severity: Severity::High,
+        },
+    ];
+
+    /// Distinct repeated sequences: one, five, twenty.
+    const GROUPS: &[Rung] = &[
+        Rung {
+            at: Threshold::Count(1),
+            severity: Severity::Low,
+        },
+        Rung {
+            at: Threshold::Count(5),
+            severity: Severity::Medium,
+        },
+        Rung {
+            at: Threshold::Count(20),
+            severity: Severity::High,
+        },
+    ];
+
+    /// Duplicated proportion of the measured set. A twentieth, a fifth, two
+    /// fifths — project-declared, and the only ladder here that is not anchored
+    /// on the detector's own token unit, because a proportion has no such unit.
+    const RATIO: &[Rung] = &[
+        Rung {
+            at: Threshold::Ratio(0.05),
+            severity: Severity::Low,
+        },
+        Rung {
+            at: Threshold::Ratio(0.20),
+            severity: Severity::Medium,
+        },
+        Rung {
+            at: Threshold::Ratio(0.40),
+            severity: Severity::High,
+        },
+    ];
+
+    /// The declaration `MeasureEngine::severity_ladders` returns.
+    pub fn all() -> BTreeMap<String, SeverityLadder> {
+        [
+            (METRIC_DUPLICATED_TOKENS, SeverityLadder::Thresholds(TOKENS)),
+            (METRIC_DUPLICATED_RATIO, SeverityLadder::Thresholds(RATIO)),
+            (
+                METRIC_FILE_DUPLICATED_TOKENS,
+                SeverityLadder::Thresholds(TOKENS),
+            ),
+            (METRIC_CLONE_GROUPS, SeverityLadder::Thresholds(GROUPS)),
+            // The longest single fragment. Ranked on the same token unit as the
+            // totals: a 1000-token copy is one clone and is not a small finding.
+            (METRIC_LARGEST_CLONE, SeverityLadder::Thresholds(TOKENS)),
+        ]
+        .into_iter()
+        .map(|(id, ladder)| (id.to_string(), ladder))
+        .collect()
+    }
+}
+
+/// This engine's one severity declaration per metric.
+///
+/// Public alongside [`metric_descriptors`] and for the same reason: the pairing
+/// of the two is a property of the engine, not of any measurement.
+pub fn severity_ladders() -> BTreeMap<String, SeverityLadder> {
+    ladders::all()
 }
 
 /// The clone-detection engine, holding the content it measured.
@@ -308,6 +422,10 @@ impl MeasureEngine for ClonesEngine {
         metric_descriptors()
     }
 
+    fn severity_ladders(&self) -> BTreeMap<String, SeverityLadder> {
+        severity_ladders()
+    }
+
     fn regime(&self) -> MeasurementRegime {
         let (window_tokens, min_tokens) = detect::parameters();
         MeasurementRegime::Clones {
@@ -368,28 +486,24 @@ impl MeasureEngine for ClonesEngine {
                 METRIC_DUPLICATED_TOKENS,
                 change_scope(),
                 MetricValue::Count(duplicated),
-                severity_for(duplicated > 0),
                 evidence_for(METRIC_DUPLICATED_TOKENS),
             ),
             self.result(
                 METRIC_DUPLICATED_RATIO,
                 change_scope(),
                 MetricValue::Ratio(ratio),
-                severity_for(duplicated > 0),
                 evidence_for(METRIC_DUPLICATED_RATIO),
             ),
             self.result(
                 METRIC_CLONE_GROUPS,
                 change_scope(),
                 MetricValue::Count(self.report.groups.len() as u64),
-                severity_for(!self.report.groups.is_empty()),
                 evidence_for(METRIC_CLONE_GROUPS),
             ),
             self.result(
                 METRIC_LARGEST_CLONE,
                 change_scope(),
                 MetricValue::Count(self.report.largest_clone_tokens()),
-                Severity::Info,
                 evidence_for(METRIC_LARGEST_CLONE),
             ),
         ];
@@ -429,7 +543,6 @@ impl MeasureEngine for ClonesEngine {
                     line_span: None,
                 },
                 MetricValue::Count(duplicated as u64),
-                severity_for(duplicated > 0),
                 evidence_for(METRIC_FILE_DUPLICATED_TOKENS),
             );
             if let Some(health) = self
@@ -446,26 +559,12 @@ impl MeasureEngine for ClonesEngine {
     }
 }
 
-/// Engine-side severity. Never above `Low`.
-///
-/// The engine knows what it found; policy decides what that is worth, from the
-/// BASE commit, in the verifier. `severity` is outside the digest input for
-/// exactly that reason, so nothing here can move a compare.
-fn severity_for(found: bool) -> Severity {
-    if found {
-        Severity::Low
-    } else {
-        Severity::Info
-    }
-}
-
 impl ClonesEngine {
     fn result(
         &self,
         metric_id: &str,
         scope: ResultScope,
         value: MetricValue,
-        severity: Severity,
         evidence: EvidenceRef,
     ) -> MeasurementResult {
         let descriptor = metric_descriptors()
@@ -486,7 +585,11 @@ impl ClonesEngine {
             // nobody has asked for yet. Absent rather than zero — a zero here
             // would claim the base was measured.
             delta: None,
-            severity,
+            // The floor, and the only value this constructor writes.
+            // `andon_core::engine::run_engine` assigns the real pre-policy
+            // severity from `ladders::all`, which is where this engine's one
+            // declaration per metric lives.
+            severity: Severity::Info,
             completeness: Completeness::Complete,
             measurement_regime: self.regime(),
             evidence,

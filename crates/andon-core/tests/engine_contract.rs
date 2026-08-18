@@ -14,6 +14,9 @@ use andon_core::schema::enums::{EngineClass, EngineFamily, MetricClass};
 use andon_core::schema::payload::MeasurementResult;
 use andon_core::schema::regime::MeasurementRegime;
 use andon_core::testing::{sample_compare_context, sample_regime, sample_result};
+use andon_core::verdict::ladder::SeverityLadder;
+
+use std::collections::BTreeMap;
 
 const CLAIM: &str = "andon.static.cognitive@1|typescript|comprehension-time";
 const METRIC: &str = "static.cognitive-complexity";
@@ -49,6 +52,13 @@ impl MeasureEngine for TestEngine {
 
     fn metrics(&self) -> Vec<MetricDescriptor> {
         self.metrics.clone()
+    }
+
+    fn severity_ladders(&self) -> BTreeMap<String, SeverityLadder> {
+        self.metrics
+            .iter()
+            .map(|d| (d.metric_id.clone(), SeverityLadder::NoOpinion))
+            .collect()
     }
 
     fn regime(&self) -> MeasurementRegime {
@@ -218,6 +228,9 @@ fn an_engine_identity_mismatch_is_caught() {
         }
         fn metrics(&self) -> Vec<MetricDescriptor> {
             self.0.metrics()
+        }
+        fn severity_ladders(&self) -> BTreeMap<String, SeverityLadder> {
+            self.0.severity_ladders()
         }
         fn regime(&self) -> MeasurementRegime {
             self.0.regime()

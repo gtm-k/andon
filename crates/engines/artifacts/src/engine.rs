@@ -55,6 +55,7 @@ use andon_core::schema::payload::{
     CacheState, EvidenceRef, Freshness, MeasurementResult, MetricValue, ResultScope, ScopeKind,
 };
 use andon_core::schema::regime::MeasurementRegime;
+use andon_core::verdict::ladder::{Rung, SeverityLadder, Threshold};
 
 use crate::hunks::{ChangedLines, HunkError};
 use crate::report::{CoverageReport, ReportError, ReportFormat};
@@ -351,6 +352,48 @@ pub fn metric_descriptors() -> Vec<MetricDescriptor> {
     }]
 }
 
+/// Uncovered changed lines, as a pre-policy severity.
+///
+/// **The rungs are project-declared.** The cited work (Inozemtseva & Holmes,
+/// ICSE 2014) is the reason this metric exists in its narrow form at all — it
+/// found coverage only weakly correlated with suite effectiveness once suite
+/// size is controlled, and concluded it should not be used as a quality target.
+/// A paper whose conclusion is "do not target this" cannot supply a band, so
+/// what the rungs rank is the literal thing the metric measures: how many lines
+/// this change added or edited that no test executed. One is a gap; fifty is a
+/// change that arrived without tests.
+///
+/// The claim is tier `C`, and `severity.max_severity_for_c_tier` caps it at
+/// `Low` under the default policy — the pairing `registry/artifacts.toml`
+/// describes as the mechanism behind "negative signal only". The ladder is what
+/// the engine found; the cap is what the operator has agreed to be stopped by.
+/// A file with no entry in the report reports `unwitnessed` and carries
+/// `MetricValue::Text`, which ranks at `Info` under any ladder — never a zero,
+/// and never a gap this engine did not see.
+const UNCOVERED_LINES: &[Rung] = &[
+    Rung {
+        at: Threshold::Count(1),
+        severity: Severity::Low,
+    },
+    Rung {
+        at: Threshold::Count(10),
+        severity: Severity::Medium,
+    },
+    Rung {
+        at: Threshold::Count(50),
+        severity: Severity::High,
+    },
+];
+
+/// This engine's one severity declaration for its one metric.
+pub fn severity_ladders() -> BTreeMap<String, SeverityLadder> {
+    [(
+        METRIC_UNCOVERED_CHANGED_LINES.to_string(),
+        SeverityLadder::Thresholds(UNCOVERED_LINES),
+    )]
+    .into()
+}
+
 impl MeasureEngine for ArtifactsEngine {
     fn descriptor(&self) -> EngineDescriptor {
         EngineDescriptor {
@@ -363,6 +406,10 @@ impl MeasureEngine for ArtifactsEngine {
 
     fn metrics(&self) -> Vec<MetricDescriptor> {
         metric_descriptors()
+    }
+
+    fn severity_ladders(&self) -> BTreeMap<String, SeverityLadder> {
+        severity_ladders()
     }
 
     fn regime(&self) -> MeasurementRegime {
@@ -520,6 +567,10 @@ impl ArtifactsEngine {
             // is the head.
             delta: None,
             value,
+            // The floor, and the only value this constructor writes.
+            // `andon_core::engine::run_engine` assigns the real pre-policy
+            // severity from `UNCOVERED_LINES`, the one declaration this engine's
+            // one metric has.
             severity: Severity::Info,
             completeness,
             measurement_regime: self.regime(),

@@ -382,14 +382,83 @@ fn two_runs_of_the_same_change_produce_identical_digests() {
 fn every_metric_is_context_informational_so_none_of_them_can_block() {
     // PREMORTEM A4: policy may only escalate a diff-actionable metric to MED+.
     // No edit in a diff changes a file's history, so none of these may be one.
+    //
+    // The second assertion is the one that moved. It used to read
+    // `severity == Info` on the raw engine output, which was true because this
+    // engine hardcoded `Info` at its single result site and could not have said
+    // anything else — an assertion that could never fail, on a phase where the
+    // whole MED+ band turned out to be unreachable. Since the mini-G2 ruling the
+    // engine ranks its own numbers, so the property worth pinning is the one the
+    // test's name always claimed: whatever the ladder says, **policy** keeps
+    // every result from this family out of the MED+ band, because the class
+    // rule caps it. Delete the class rule from `severity::ceiling` and this
+    // reddens; hardcode `Info` back into the engine and
+    // `the_ladders_rank_what_the_claims_support` reddens instead.
+    use andon_core::policy::Policy;
+    use andon_core::schema::enums::MetricClass;
+
     let (repo, base, head) = fixture("class");
-    for result in measure(&repo, &base, &head, 365) {
+    let mut results = measure(&repo, &base, &head, 365);
+    for result in &results {
         assert_eq!(
             result.metric_class,
-            andon_core::schema::enums::MetricClass::ContextInformational,
+            MetricClass::ContextInformational,
             "{} must stay context-informational",
             result.metric_id
         );
-        assert_eq!(result.severity, andon_core::schema::enums::Severity::Info);
     }
+    andon_core::verdict::severity::apply(&mut results, &Policy::default());
+    for result in &results {
+        assert!(
+            !result.severity.is_med_plus(),
+            "{} reached {:?} after policy; a history metric must never stop the line",
+            result.metric_id,
+            result.severity
+        );
+        assert!(
+            !andon_core::verdict::severity::stops_the_line(result, &Policy::default().severity),
+            "{} stops the line",
+            result.metric_id
+        );
+    }
+}
+
+#[test]
+fn the_ladders_rank_what_the_claims_support() {
+    // The other half of the pair above, and the half that would have caught the
+    // dead band: this engine's declarations must be able to say something other
+    // than `Info`, or the cap being tested above is a cap over nothing.
+    use andon_core::schema::enums::Severity;
+    use andon_core::verdict::ladder::SeverityLadder;
+
+    let ladders = andon_engine_process::engine::severity_ladders();
+    let declared: std::collections::BTreeSet<String> =
+        andon_engine_process::engine::metric_descriptors()
+            .into_iter()
+            .map(|d| d.metric_id)
+            .collect();
+    assert_eq!(
+        declared,
+        ladders
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<String>>(),
+        "one ladder per declared metric, no more and no fewer"
+    );
+
+    let ranking: Vec<&String> = ladders
+        .iter()
+        .filter(|(_, ladder)| ladder.strongest() > Severity::Info)
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(
+        ranking.len(),
+        5,
+        "five of the six rank their own numbers: {ranking:?}"
+    );
+    assert_eq!(
+        ladders.get("process.code-age-days"),
+        Some(&SeverityLadder::NoOpinion),
+        "the one claim whose direction is not established stays unranked"
+    );
 }
