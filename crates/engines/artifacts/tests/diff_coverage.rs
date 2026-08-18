@@ -408,3 +408,28 @@ fn a_broken_report_beside_a_working_one_is_still_reported() {
         .iter()
         .any(|r| r.value == MetricValue::Text(REASON_NO_REPORT.to_string())));
 }
+
+#[test]
+fn the_one_ladder_this_engine_declares_still_ranks() {
+    // CONTENT, not keys. `andon-core`'s
+    // `every_shipped_metric_declares_exactly_one_ladder` compares the metric ids
+    // a ladder exists for against the ids this engine declares, and says nothing
+    // about what the ladder holds. This engine declares exactly one metric, so
+    // setting its ladder to `NoOpinion` silences the whole family — and it did,
+    // with the entire workspace green.
+    use andon_core::schema::enums::Severity;
+
+    let ladders = severity_ladders();
+    assert_eq!(ladders.len(), 1, "one metric, one ladder");
+    let ladder = ladders[METRIC_UNCOVERED_CHANGED_LINES];
+    assert!(
+        ladder.strongest() > Severity::Info,
+        "the coverage gap this engine measures has a strength, or the tier ceiling \
+         below it is a ceiling over nothing"
+    );
+    assert_eq!(
+        ladder.strongest(),
+        Severity::High,
+        "and the top of the scale is where the module item says it is"
+    );
+}

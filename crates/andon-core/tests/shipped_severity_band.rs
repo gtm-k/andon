@@ -539,6 +539,59 @@ fn every_shipped_metric_declares_exactly_one_ladder() {
 }
 
 #[test]
+fn the_metrics_with_no_severity_opinion_are_exactly_these() {
+    // The test above compares KEY SETS: which metric ids have a ladder, on both
+    // sides. It says nothing about what any ladder holds, and neither did
+    // anything else here — so a ladder reduced to `NoOpinion` was a silent
+    // change. Setting the artifacts engine's sole ladder to `NoOpinion`, or the
+    // clone engine's `clone-groups`, took a family's strength opinion away with
+    // 859 tests green, which is the dead band the mini-G2 ruling exists to
+    // prevent arriving one metric at a time.
+    //
+    // `the_static_family_can_still_reach_the_med_plus_band` could not catch it
+    // either: it is a 1-of-N assertion over the one family policy lets through,
+    // so the other four could go silent underneath it without reddening.
+    //
+    // Each engine also states this over its own metrics, where the *reason* for
+    // an abstention lives. What can only be said here is the whole list at once:
+    // this is everything the shipped tool declines to rank, and it is short.
+    let declining: BTreeSet<(&str, String)> = shipped_ladders()
+        .into_iter()
+        .flat_map(|(engine_id, ladders)| {
+            ladders
+                .into_iter()
+                .filter(|(_, ladder)| ladder.strongest() == Severity::Info)
+                .map(move |(metric_id, _)| (engine_id, metric_id))
+        })
+        .collect();
+
+    let expected: BTreeSet<(&str, String)> = [
+        // A control variable, never a target: a ladder over a line count is an
+        // instruction to an agent to delete lines (PREMORTEM A4).
+        ("static-metrics", "static.sloc"),
+        // The *report of* a degradation. Exact, must stay loud, and whether a
+        // rise in it is an evasion is `tamper.parse-error-delta`'s question.
+        ("static-metrics", "static.parse-errors"),
+        ("static-metrics", "static.parse-missing"),
+        // The markers already carry `completeness: unwitnessed` and cap below
+        // MED+ whatever they say; ranking the count is the same fact twice.
+        ("static-metrics", "static.unmeasured-files"),
+        ("static-metrics", "static.unmeasured-file"),
+        // The one history claim whose direction is not established.
+        ("process", "process.code-age-days"),
+    ]
+    .into_iter()
+    .map(|(engine, metric)| (engine, metric.to_string()))
+    .collect();
+
+    assert_eq!(
+        declining, expected,
+        "a metric joining this list is a family going quieter and has to be read as one; \
+         a metric leaving it is a new judgement that has to be argued for"
+    );
+}
+
+#[test]
 fn per_result_ladders_are_the_tamper_suite_and_nothing_else() {
     // `PerResult` is the one way out of the declaration table, and the argument
     // for it is specific to the tamper suite: its severity is declared per

@@ -876,4 +876,38 @@ mod tests {
             assert!(normalization_revision.contains(&format!("{name}@{version}")));
         }
     }
+
+    #[test]
+    fn every_clone_metric_ranks_its_own_number() {
+        // CONTENT, not keys. `andon-core`'s
+        // `every_shipped_metric_declares_exactly_one_ladder` compares the metric
+        // ids a ladder exists for against the ids this engine declares —
+        // presence on both sides, and never a word about what the ladder says.
+        // So setting `clones.clone-groups` to `NoOpinion` took this engine's
+        // opinion away one metric at a time with the whole workspace green,
+        // which is the dead band the mini-G2 ruling exists to prevent, arriving
+        // by the back door.
+        let ladders = severity_ladders();
+        let declared: std::collections::BTreeSet<String> = metric_descriptors()
+            .into_iter()
+            .map(|d| d.metric_id)
+            .collect();
+        let ranking: std::collections::BTreeSet<String> = ladders
+            .iter()
+            .filter(|(_, ladder)| ladder.strongest() > Severity::Info)
+            .map(|(id, _)| id.clone())
+            .collect();
+        assert_eq!(
+            ranking, declared,
+            "every clone metric ranks its own number — none of the five declines"
+        );
+
+        // And the top of the scale, which the module item above argues for: a
+        // tier-N count with no remediation evidence behind it has not earned
+        // `Critical`, and a ladder that quietly reached it would be this engine
+        // over-reporting under a policy that admitted the tier.
+        for (metric_id, ladder) in &ladders {
+            assert_eq!(ladder.strongest(), Severity::High, "{metric_id}");
+        }
+    }
 }
