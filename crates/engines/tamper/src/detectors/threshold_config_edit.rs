@@ -119,7 +119,16 @@ const STRICT_WHEN_TRUE: &[&str] = &[
     "usedefineforclassfields",
     "block_on_tamper",
     "block_on_test_failure",
-    "med_plus_requires_diff_actionable",
+    // `med_plus_requires_diff_actionable` is deliberately absent, and it used to
+    // be here. Read as a key name it looks like a strictness flag; read against
+    // what the field does it is the opposite — it *restricts* the MED+ band to
+    // metrics the agent can act on, so turning it off lets MORE findings block.
+    // Turning it off is an unwise tightening (PREMORTEM A4's uninstall loop),
+    // not a gaming move, and firing here put a tamper signal in the payload for
+    // an honest edit. `andon_core::verdict::policy_change::direction_of` is
+    // authoritative for `.andon.toml`, and
+    // `the_detector_and_the_direction_table_agree_about_every_policy_field`
+    // fails if this list ever contradicts it again.
     "disallow_untyped_defs",
     "check_untyped_defs",
     "warn_unused_ignores",

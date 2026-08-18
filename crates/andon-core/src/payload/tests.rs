@@ -354,6 +354,79 @@ fn advance(count: u32, cap: u32) -> Advance {
     }
 }
 
+// --- the justification seam ------------------------------------------------
+
+#[test]
+fn a_self_report_cannot_mint_a_verified_justification() {
+    // The binary under measurement cannot mark its own excuse as checked. Same
+    // argument as `assembly_never_attests`, applied to the other field that
+    // turns a block into an advise: a record that could do both would be a
+    // record that passes itself.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut req = request(&policy, &registry, five_engines(&registry));
+    req.policy_change = Some(crate::verdict::policy_change::PolicyChange {
+        deltas: Vec::new(),
+        justification: Some(crate::verdict::policy_change::Justification::Verified {
+            reference: "andon-ledger#12".to_string(),
+            summary: "we checked our own homework".to_string(),
+        }),
+    });
+    assert_eq!(
+        prepare(req).expect_err("a self-report cannot verify anything"),
+        AssemblyError::UnverifiableJustification {
+            reference: "andon-ledger#12".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_self_report_may_carry_an_unverified_justification_and_it_suppresses_nothing() {
+    // The honest half. An agent that has a ledger reference should say so — the
+    // reader needs it, and P9's verifier is what turns it into the verified
+    // form. What it must not do is act as though anyone had checked it.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut head = policy.clone();
+    head.severity.block_on_tamper = false;
+    let mut req = request(&policy, &registry, five_engines(&registry));
+    req.policy_change = Some(crate::verdict::policy_change::evaluate(
+        &policy,
+        &head,
+        Some(crate::verdict::policy_change::Justification::Unverified {
+            reference: "andon-ledger#12".to_string(),
+            summary: "queued for review".to_string(),
+        }),
+    ));
+    let record = prepare(req).expect("assembles").finish(advance(0, 3));
+    assert_eq!(record.verdict.verdict, Verdict::Block);
+    assert!(record
+        .verdict
+        .reasons
+        .iter()
+        .any(|r| r.message.contains("andon-ledger#12")));
+}
+
+#[test]
+fn a_verifier_may_carry_a_verified_justification() {
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut head = policy.clone();
+    head.severity.block_on_tamper = false;
+    let mut req = request(&policy, &registry, five_engines(&registry));
+    req.record_kind = RecordKind::Attestation;
+    req.policy_change = Some(crate::verdict::policy_change::evaluate(
+        &policy,
+        &head,
+        Some(crate::verdict::policy_change::Justification::Verified {
+            reference: "andon-ledger#12".to_string(),
+            summary: "read from the ledger by the verifier".to_string(),
+        }),
+    ));
+    let record = prepare(req).expect("assembles").finish(advance(0, 3));
+    assert_eq!(record.verdict.verdict, Verdict::Advise);
+}
+
 // --- the roster ------------------------------------------------------------
 
 #[test]

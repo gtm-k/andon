@@ -37,7 +37,7 @@ pub mod policy_change;
 pub mod severity;
 
 use crate::policy::Policy;
-use crate::schema::enums::{Completeness, Severity, Verdict};
+use crate::schema::enums::{Completeness, Severity, TamperSignal, Verdict};
 use crate::schema::payload::{IterationState, MeasurementResult, VerdictReason, VerdictSummary};
 
 use policy_change::PolicyChange;
@@ -106,7 +106,7 @@ pub struct VerdictContext<'a> {
 pub fn has_countable_finding(results: &[MeasurementResult], ctx: &VerdictContext) -> bool {
     results
         .iter()
-        .any(|r| severity::counts_toward_iteration(r, ctx.policy))
+        .any(|r| severity::counts_toward_iteration(r, ctx))
         || ctx.policy_change.is_some_and(|c| c.stops_the_line())
 }
 
@@ -122,7 +122,6 @@ pub fn evaluate(
     iteration: IterationState,
 ) -> VerdictSummary {
     let mut reasons = Vec::new();
-    let policy = ctx.policy;
 
     // --- tamper flags -------------------------------------------------------
     // One reason per fired detector, because "which one fired" is the first
@@ -138,7 +137,7 @@ pub fn evaluate(
         // this loop would be a copy that could drift, and the drift would be
         // silent — the tests for one would keep passing while the other decided
         // the verdict.
-        let blocking = severity::stops_the_line(result, &policy.severity);
+        let blocking = severity::stops_the_line(result, ctx);
         let mut message = format!(
             "{} fired: {}",
             result.metric_id,
@@ -148,6 +147,21 @@ pub fn evaluate(
                 "reported, advisory by policy"
             }
         );
+        // A threshold edit that did not stop the line did so for a reason, and
+        // the reason is a ledger entry somebody can go and read. Naming it is the
+        // difference between "the tool let this through" and "the tool let this
+        // through because of this".
+        if !blocking {
+            if let Some(justification) = ctx
+                .policy_change
+                .and_then(|c| c.justification.as_ref())
+                .filter(|_| {
+                    severity::fired_signal(result) == Some(TamperSignal::ThresholdConfigEdit)
+                })
+            {
+                message.push_str(&format!("; {}", justification.describe()));
+            }
+        }
         // The muzzle, said out loud. Without this line a reader sees a `Low`
         // severity beside a blocking verdict and reads it as a bug.
         if blocking && result.completeness != Completeness::Complete {
@@ -177,9 +191,11 @@ pub fn evaluate(
     }
 
     // --- metric findings ----------------------------------------------------
-    let blocking_metrics = metric_ids(results.iter().filter(|r| {
-        severity::fired_signal(r).is_none() && severity::stops_the_line(r, &policy.severity)
-    }));
+    let blocking_metrics = metric_ids(
+        results
+            .iter()
+            .filter(|r| severity::fired_signal(r).is_none() && severity::stops_the_line(r, ctx)),
+    );
     if !blocking_metrics.is_empty() {
         let worst = worst_severity(results, &blocking_metrics);
         reasons.push(VerdictReason {
@@ -195,7 +211,7 @@ pub fn evaluate(
 
     let advisory_metrics = metric_ids(results.iter().filter(|r| {
         severity::fired_signal(r).is_none()
-            && !severity::stops_the_line(r, &policy.severity)
+            && !severity::stops_the_line(r, ctx)
             && r.severity > Severity::Info
     }));
     if !advisory_metrics.is_empty() {
@@ -213,21 +229,39 @@ pub fn evaluate(
     // --- policy edits -------------------------------------------------------
     if let Some(change) = ctx.policy_change.filter(|c| !c.is_empty()) {
         let deltas: Vec<String> = change.deltas.iter().map(|d| d.describe()).collect();
+        // The justification rides on every policy-change reason, verified or
+        // not. It used to appear in none of them: a caller could suppress a
+        // block with a string, and the payload did not even record what the
+        // string was — so a reader had no way to see that a loosening had been
+        // excused, let alone by what.
+        let cited = change
+            .justification
+            .as_ref()
+            .map(|j| format!("; {}", j.describe()))
+            .unwrap_or_default();
         reasons.push(VerdictReason {
             code: reason::POLICY_CHANGE.to_string(),
             severity: Severity::Low,
-            message: format!("policy edited in this change: {}", deltas.join("; ")),
+            message: format!("policy edited in this change: {}{cited}", deltas.join("; ")),
             metric_ids: Vec::new(),
         });
         if change.stops_the_line() {
             let loosened: Vec<String> = change.loosenings().map(|d| d.describe()).collect();
-            reasons.push(VerdictReason {
-                code: reason::POLICY_CHANGE_LOOSENING.to_string(),
-                severity: Severity::High,
-                message: format!(
+            let why = match change.justification.as_ref() {
+                Some(unverified) => format!(
+                    "policy loosened and the justification offered has not been checked: {}; {}",
+                    loosened.join("; "),
+                    unverified.describe()
+                ),
+                None => format!(
                     "policy loosened with no ledgered justification: {}",
                     loosened.join("; ")
                 ),
+            };
+            reasons.push(VerdictReason {
+                code: reason::POLICY_CHANGE_LOOSENING.to_string(),
+                severity: Severity::High,
+                message: why,
                 metric_ids: Vec::new(),
             });
         }
@@ -501,14 +535,41 @@ mod tests {
     }
 
     #[test]
-    fn a_loosened_threshold_edit_is_advisory_on_its_own() {
-        // `tamper.threshold-config-edit` fires; nothing else does. PLAN B6 says
-        // that must not stop the line by itself.
+    fn a_loosened_threshold_edit_blocks_until_something_accounts_for_it() {
+        // CODEX'S PROBE, at the verdict. `tamper.threshold-config-edit` fires on
+        // a real loosening in `.eslintrc.json`; nothing else does. The probe
+        // reported `left: Advise, right: Block` — the exemption was keyed on the
+        // enum variant, and the justification route behind it only ever read
+        // `.andon.toml`, so a loosening in any other configuration file could
+        // take the exemption with nowhere to be ruled on.
         let policy = Policy::default();
         let result = tamper_flag("tamper.threshold-config-edit", true);
-        let summary = evaluate(&[result], &ctx(&policy), iteration(1, 3));
-        assert_eq!(summary.verdict, Verdict::Advise);
-        assert_eq!(summary.reasons[0].code, reason::TAMPER_SIGNAL_ADVISORY);
+        let summary = evaluate(
+            std::slice::from_ref(&result),
+            &ctx(&policy),
+            iteration(1, 3),
+        );
+        assert_eq!(summary.verdict, Verdict::Block);
+        assert_eq!(summary.reasons[0].code, reason::TAMPER_SIGNAL);
+
+        // B6's exit, and the message says what it was.
+        let change = policy_change::PolicyChange {
+            deltas: Vec::new(),
+            justification: Some(policy_change::Justification::Verified {
+                reference: "andon-ledger#12".to_string(),
+                summary: "eslint rule relaxed for the codemod".to_string(),
+            }),
+        };
+        let mut context = ctx(&policy);
+        context.policy_change = Some(&change);
+        let excused = evaluate(&[result], &context, iteration(1, 3));
+        assert_eq!(excused.verdict, Verdict::Advise);
+        assert_eq!(excused.reasons[0].code, reason::TAMPER_SIGNAL_ADVISORY);
+        assert!(
+            excused.reasons[0].message.contains("andon-ledger#12"),
+            "the reason names what excused it: {}",
+            excused.reasons[0].message
+        );
     }
 
     #[test]
@@ -542,7 +603,7 @@ mod tests {
         let change = policy_change::evaluate(
             &policy,
             &head,
-            Some(policy_change::Justification {
+            Some(policy_change::Justification::Verified {
                 reference: "andon-ledger#12".to_string(),
                 summary: "tamper blocking suspended for the corpus refresh".to_string(),
             }),
@@ -555,6 +616,56 @@ mod tests {
             .reasons
             .iter()
             .any(|r| r.code == reason::POLICY_CHANGE_LOOSENING));
+        let advisory = summary
+            .reasons
+            .iter()
+            .find(|r| r.code == reason::POLICY_CHANGE)
+            .expect("the delta is reported either way");
+        assert!(
+            advisory.message.contains("andon-ledger#12"),
+            "the payload has to say what excused the loosening: {}",
+            advisory.message
+        );
+    }
+
+    #[test]
+    fn an_unverified_justification_is_reported_and_suppresses_nothing() {
+        // CODEX'S PROBE. The reference `trust me` and the summary `not checked
+        // against any ledger` turned a block into an advise, and neither string
+        // reached the emitted reason — so the payload could not even show a
+        // reader that a loosening had been excused, let alone by what.
+        let policy = Policy::default();
+        let mut head = policy.clone();
+        head.severity.block_on_tamper = false;
+        let change = policy_change::evaluate(
+            &policy,
+            &head,
+            Some(policy_change::Justification::Unverified {
+                reference: "trust me".to_string(),
+                summary: "not checked against any ledger".to_string(),
+            }),
+        );
+        assert!(change.stops_the_line());
+
+        let mut context = ctx(&policy);
+        context.policy_change = Some(&change);
+        let summary = evaluate(&[clean_result()], &context, iteration(1, 3));
+        assert_eq!(summary.verdict, Verdict::Block);
+        let loosening = summary
+            .reasons
+            .iter()
+            .find(|r| r.code == reason::POLICY_CHANGE_LOOSENING)
+            .expect("an unchecked claim does not suppress");
+        assert!(
+            loosening.message.contains("trust me"),
+            "{}",
+            loosening.message
+        );
+        assert!(
+            loosening.message.contains("UNVERIFIED"),
+            "the reader has to be told nobody checked it: {}",
+            loosening.message
+        );
     }
 
     #[test]

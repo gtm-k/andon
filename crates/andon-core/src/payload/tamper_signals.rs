@@ -65,10 +65,14 @@ pub fn signal_for(metric_id: &str) -> Option<TamperSignal> {
 /// serializer, and a list whose order depends on which engine ran first is a
 /// record that differs between two honest runs.
 pub fn fired_signals(results: &[MeasurementResult]) -> Vec<TamperSignal> {
+    // Through `severity::fired_signal`, which is the verdict's own answer to
+    // "did this detector fire". Written out again here, the two agreed until one
+    // was edited — and the record's signal list could then omit a detector the
+    // verdict was naming, which is the payload contradicting itself about the
+    // one field the trust model turns on.
     let mut fired: Vec<TamperSignal> = results
         .iter()
-        .filter(|r| is_tamper_flag(r) && r.value == MetricValue::Flag(true))
-        .filter_map(|r| signal_for(&r.metric_id))
+        .filter_map(crate::verdict::severity::fired_signal)
         .collect();
     fired.sort_by_key(|signal| signal_rank(*signal));
     fired.dedup();

@@ -407,7 +407,15 @@ fn every_metric_is_context_informational_so_none_of_them_can_block() {
             result.metric_id
         );
     }
-    andon_core::verdict::severity::apply(&mut results, &Policy::default());
+    let policy = Policy::default();
+    andon_core::verdict::severity::apply(&mut results, &policy);
+    let ctx = andon_core::verdict::VerdictContext {
+        policy: &policy,
+        policy_change: None,
+        engine_failures: &[],
+        stale_claim_ids: &[],
+        iteration_state_recovered: false,
+    };
     for result in &results {
         assert!(
             !result.severity.is_med_plus(),
@@ -416,7 +424,7 @@ fn every_metric_is_context_informational_so_none_of_them_can_block() {
             result.severity
         );
         assert!(
-            !andon_core::verdict::severity::stops_the_line(result, &Policy::default().severity),
+            !andon_core::verdict::severity::stops_the_line(result, &ctx),
             "{} stops the line",
             result.metric_id
         );

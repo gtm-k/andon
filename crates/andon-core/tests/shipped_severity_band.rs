@@ -309,11 +309,19 @@ fn the_static_family_can_still_reach_the_med_plus_band() {
 
     // And it must actually stop the line, not merely carry the number: the band
     // is only worth anything if `stops_the_line` agrees.
+    let policy = Policy::default();
+    let ctx = andon_core::verdict::VerdictContext {
+        policy: &policy,
+        policy_change: None,
+        engine_failures: &[],
+        stale_claim_ids: &[],
+        iteration_state_recovered: false,
+    };
     assert!(
         measured
             .results
             .iter()
-            .any(|r| severity::stops_the_line(r, &Policy::default().severity)),
+            .any(|r| severity::stops_the_line(r, &ctx)),
         "a MED+ finding that does not stop the line is a band with nothing behind it"
     );
 }

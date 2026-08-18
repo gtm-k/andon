@@ -18,14 +18,31 @@
 //! govern the PR that edits it; this finding is about telling a reviewer what
 //! moved, not about stopping the edit from taking effect.
 //!
-//! # Where "ledgered justification" comes from at P5a
+//! # Where "ledgered justification" comes from, and what an unverified one buys
 //!
-//! It is supplied by the caller ([`Justification`]) and **unverified here**. P8
-//! builds the ledger that makes it a durable record, and P9's verifier reads it
-//! from the trusted side. Until then this module owns the *rule* and not the
-//! *transport*, which keeps the rule testable now and leaves exactly one seam to
-//! reconnect later. The type carries a `reference` for that reason: whatever
-//! ends up being authoritative, the finding says where it claimed to come from.
+//! P8 builds the ledger that makes a justification a durable record and P9's
+//! verifier reads it from the trusted side. Neither exists yet, and the first
+//! version of this module handled that by accepting whatever the caller passed
+//! and letting it suppress blocking — so the string `trust me` turned a
+//! `block` into an `advise`, and the string never reached the emitted reason
+//! either. Deferring the transport is not a reason to make unverified text
+//! verdict-authoritative in the meantime; it is a reason to say which kind of
+//! justification this is.
+//!
+//! So [`Justification`] has two forms. An **unverified** one is reported and
+//! changes nothing: the reader sees what was claimed and sees that nobody
+//! checked it. A **verified** one is the ledger's answer, and only it suppresses
+//! blocking.
+//!
+//! Minting a verified justification is not a matter of discipline. A self-report
+//! is written by the binary under measurement, and a binary that could mark its
+//! own excuse as checked is a binary that could pass itself — the same argument
+//! that keeps [`crate::payload`] from setting its own attestation value. So
+//! `crate::payload::prepare` refuses a verified justification on a
+//! `RecordKind::SelfReport` outright. The agent-side path cannot reach it; the
+//! verifier, which writes attestation records, can. That is the seam P8 and P9
+//! reconnect to, and until they do nothing in this workspace produces one
+//! outside a test.
 //!
 //! # The direction table, and where it deliberately disagrees with a detector
 //!
@@ -33,15 +50,21 @@
 //! classifies the same file with generic heuristics over key names, and the two
 //! disagree in one place on purpose:
 //!
-//! `severity.med_plus_requires_diff_actionable` appears in that detector's
-//! `STRICT_WHEN_TRUE` list, so turning it off reads there as "strictness turned
+//! `severity.med_plus_requires_diff_actionable` reads to a generic key-name
+//! heuristic as a strictness flag, so turning it off reads as "strictness turned
 //! off". Read against what the field *does*, it is the opposite: the flag
 //! restricts MED+ to metrics the agent can act on, so turning it off lets **more**
 //! findings block. That is a tightening — an unwise one, since it is the
-//! uninstall loop of PREMORTEM A4, but not a gaming move. The generic heuristic
-//! cannot know that and this table can, so for `.andon.toml` this table is
-//! authoritative. The detector's firing is still reported; it simply does not
-//! block on its own (`super::severity::signal_stops_the_line`).
+//! uninstall loop of PREMORTEM A4, but not a gaming move.
+//!
+//! This was a live disagreement rather than a hypothetical one: the field was in
+//! the detector's `STRICT_WHEN_TRUE` list, so an honest tightening put a tamper
+//! signal in the payload. The detector was corrected, and
+//! `tamper::detectors::threshold_config_edit`'s
+//! `the_detector_and_the_direction_table_agree_about_every_policy_field` now
+//! walks every `Policy` field in both directions and fails if the two ever
+//! disagree again. For `.andon.toml` this table is authoritative; the test is
+//! what keeps the other one from needing to be.
 //!
 //! # Unrecognised fields advise and never block
 //!
@@ -97,26 +120,98 @@ impl PolicyDelta {
     }
 }
 
-/// A recorded reason for loosening policy.
+/// A recorded reason for loosening a quality gate.
 ///
-/// Unverified at P5a — see the module documentation. Carried rather than reduced
-/// to a boolean so that the finding can say *what* was cited, which is the part
-/// a reviewer needs and a boolean throws away.
+/// Two forms, and the difference is the whole of it: one has been checked
+/// against the ledger and one is a caller's assertion. See the module
+/// documentation.
+///
+/// Carried rather than reduced to a boolean so that the finding can say *what*
+/// was cited and *whether anyone checked it* — both of which a boolean throws
+/// away, and the second of which is the part that decides the verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Justification {
-    /// Where the justification was recorded: a ledger note ref, a commit
-    /// trailer, an issue. Free text at P5a because the transport is P8's.
-    pub reference: String,
-    /// What was said.
-    pub summary: String,
+pub enum Justification {
+    /// Supplied by the caller and checked against nothing.
+    ///
+    /// Reported, never authoritative. A loosening carrying only this still stops
+    /// the line, and the reason says so in as many words.
+    Unverified {
+        /// Where the caller says the justification was recorded.
+        reference: String,
+        /// What the caller says it says.
+        summary: String,
+    },
+    /// Read from the ledger by a party in a position to check it.
+    ///
+    /// The only form that suppresses blocking. `crate::payload::prepare` refuses
+    /// one on a self-report, so the binary under measurement cannot mint its own.
+    Verified {
+        /// The ledger reference that was resolved.
+        reference: String,
+        /// What it says.
+        summary: String,
+    },
 }
 
-/// Everything the verdict needs to know about a policy edit.
+impl Justification {
+    /// Where the justification claims to come from.
+    pub fn reference(&self) -> &str {
+        match self {
+            Justification::Unverified { reference, .. }
+            | Justification::Verified { reference, .. } => reference,
+        }
+    }
+
+    /// What it says.
+    pub fn summary(&self) -> &str {
+        match self {
+            Justification::Unverified { summary, .. } | Justification::Verified { summary, .. } => {
+                summary
+            }
+        }
+    }
+
+    /// Whether anyone checked it.
+    pub fn is_verified(&self) -> bool {
+        matches!(self, Justification::Verified { .. })
+    }
+
+    /// The justification as a reader should see it, verification status
+    /// included.
+    ///
+    /// The status is in the sentence rather than beside it, because a reference
+    /// with no word about whether it was checked reads as though it was.
+    pub fn describe(&self) -> String {
+        if self.is_verified() {
+            format!(
+                "justified by {} (verified against the ledger): {}",
+                self.reference(),
+                self.summary()
+            )
+        } else {
+            format!(
+                "cites {} (UNVERIFIED — nothing has checked this): {}",
+                self.reference(),
+                self.summary()
+            )
+        }
+    }
+}
+
+/// What this change says about the quality gates it is measured by.
+///
+/// Two things, and the second is why a `PolicyChange` with no deltas is still
+/// worth carrying: the `.andon.toml` fields that moved, and the justification
+/// offered for loosening a gate. The justification covers the change rather than
+/// the file — the tamper suite's `threshold-config-edit` fires over ESLint,
+/// mypy, coverage and tsconfig too, and a loosening there needs the same exit
+/// this module gives an `.andon.toml` loosening or it has none at all
+/// ([`super::severity::signal_stops_the_line`]).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PolicyChange {
     /// Every field that moved, in path order.
     pub deltas: Vec<PolicyDelta>,
-    /// The justification the caller supplied, if any.
+    /// The justification offered for any loosening in this change.
     pub justification: Option<Justification>,
 }
 
@@ -133,11 +228,25 @@ impl PolicyChange {
             .filter(|d| d.direction == Direction::Loosening)
     }
 
+    /// Whether a verified justification covers this change.
+    ///
+    /// The single question both blocking routes ask — this module's own
+    /// loosenings, and the tamper suite's `threshold-config-edit` firing over a
+    /// configuration file this module cannot parse. One answer, so the two
+    /// cannot drift into disagreeing about the same change.
+    pub fn is_justified(&self) -> bool {
+        self.justification
+            .as_ref()
+            .is_some_and(Justification::is_verified)
+    }
+
     /// Whether this edit stops the line.
     ///
-    /// Loosening without a ledgered justification, and nothing else.
+    /// Loosening without a **verified** ledgered justification, and nothing
+    /// else. An unverified one is reported and does not suppress: it is a claim
+    /// about a ledger nobody has read.
     pub fn stops_the_line(&self) -> bool {
-        self.justification.is_none() && self.loosenings().next().is_some()
+        !self.is_justified() && self.loosenings().next().is_some()
     }
 }
 
@@ -387,7 +496,7 @@ mod tests {
     use crate::schema::enums::{EvidenceTier, Severity};
 
     fn justified() -> Justification {
-        Justification {
+        Justification::Verified {
             reference: "refs/notes/andon-measure@abcdef".to_string(),
             summary: "perf budget raised for the 100k-file fixture; measured".to_string(),
         }

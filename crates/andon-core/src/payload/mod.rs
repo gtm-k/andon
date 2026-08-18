@@ -248,6 +248,14 @@ pub enum AssemblyError {
         /// The engine in both lists.
         engine_id: String,
     },
+    /// A self-report carried a justification marked as verified.
+    #[error(
+        "this is a self-report and it carries a justification marked verified ({reference});          only a verifier writing an attestation record can mint one"
+    )]
+    UnverifiableJustification {
+        /// The reference the justification claimed.
+        reference: String,
+    },
     /// The policy in force could not be hashed for the record.
     ///
     /// Carried as text rather than as the source error so that this enum stays
@@ -382,6 +390,24 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
     engines.sort_by(|a, b| a.descriptor.engine_id.cmp(&b.descriptor.engine_id));
 
     account_for_every_engine(&engines, &engine_failures, &registry.expected_engines)?;
+
+    // The binary under measurement cannot mark its own excuse as checked. A
+    // self-report that could would be a record that passes itself — the same
+    // argument that keeps this module from setting its own attestation value,
+    // applied to the one other field that turns a `block` into an `advise`. The
+    // verifier writes attestation records and reads the ledger from the trusted
+    // side, so it is the party that may (`crate::verdict::policy_change`).
+    if record_kind == RecordKind::SelfReport {
+        if let Some(verified) = policy_change
+            .as_ref()
+            .and_then(|c| c.justification.as_ref())
+            .filter(|j| j.is_verified())
+        {
+            return Err(AssemblyError::UnverifiableJustification {
+                reference: verified.reference().to_string(),
+            });
+        }
+    }
 
     let mut results: Vec<MeasurementResult> = Vec::new();
     let mut pairing_keys: BTreeSet<(String, String)> = BTreeSet::new();

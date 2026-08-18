@@ -52,16 +52,32 @@
 //! error; it would never stop the line for a tamper signal on any change at all.
 //! The flag is not a refinement of the severity path. It is the only path.
 //!
-//! # The one detector that does not stop the line
+//! # The one detector whose firing is conditional, and how wide the condition is
 //!
-//! `tamper.threshold-config-edit` fires on a loosened quality threshold, and it
-//! is advisory by design — PLAN round-1 B6, and the detector's own module says
-//! so: a tool that blocks on policy edits has made legitimate policy evolution
-//! impossible, and a project that cannot change its own thresholds changes tools
-//! instead. Folding it into the blanket fired-flag rule would recreate exactly
-//! the designed-in false positive B6 ruled out. It routes through
-//! [`super::policy_change`] instead, which blocks only on loosening that carries
-//! no ledgered justification.
+//! `tamper.threshold-config-edit` fires on a loosened quality threshold. PLAN
+//! round-1 B6 says a tool that blocks on policy edits has made legitimate policy
+//! evolution impossible, and a project that cannot change its own thresholds
+//! changes tools instead — so this one is not folded into the blanket
+//! fired-flag rule.
+//!
+//! The first version of that exemption was keyed on the enum variant alone: a
+//! `ThresholdConfigEdit` firing never stopped the line, full stop, and
+//! [`super::policy_change`] was named as the route that would block an
+//! unjustified loosening instead. But `policy_change` parses `.andon.toml` and
+//! nothing else, while the detector fires over ESLint, tsconfig, mypy, ruff,
+//! coverage configuration and a dozen more. So a real loosening in
+//! `.eslintrc.json` fired, took the exemption, and could only ever advise —
+//! there was no route behind the exemption for it to be handed to. Codex's probe
+//! moved `error` to `warn` in `.eslintrc.json` and got `advise` where `block`
+//! was required.
+//!
+//! The exemption is now keyed on the thing B6 actually cares about: **whether a
+//! verified ledgered justification covers this change**. A loosening with one
+//! advises, wherever it is; a loosening without one stops the line, wherever it
+//! is. `.andon.toml` keeps its richer treatment on top — `policy_change` knows
+//! the direction of every field and reports the delta — and the two now ask one
+//! question ([`super::policy_change::PolicyChange::is_justified`]) rather than
+//! two that could disagree.
 
 use crate::parse_health;
 use crate::policy::{Policy, SeverityPolicy};
@@ -69,6 +85,7 @@ use crate::schema::enums::{EvidenceTier, MetricClass, Severity, TamperSignal};
 use crate::schema::payload::{MeasurementResult, MetricValue};
 
 use crate::payload::tamper_signals;
+use crate::verdict::VerdictContext;
 
 /// The strongest severity policy allows this result to reach.
 ///
@@ -114,15 +131,21 @@ pub fn apply(results: &mut [MeasurementResult], policy: &Policy) {
 ///
 /// Two disjoint routes, and the first does not consult `severity`:
 ///
-/// 1. **A fired tamper flag**, when policy blocks on tamper — except
-///    `threshold-config-edit`, which is [`super::policy_change`]'s to rule on.
-///    Keyed on the flag so that a completeness demotion cannot muzzle the suite.
+/// 1. **A fired tamper flag**, when policy blocks on tamper — with
+///    `threshold-config-edit` conditional on a verified justification, per the
+///    module documentation. Keyed on the flag so that a completeness demotion
+///    cannot muzzle the suite.
 /// 2. **A MED+ finding**, after the ceilings above. Under the conservative
 ///    default that also requires a diff-actionable metric, which
 ///    [`ceiling`] has already enforced by capping everything else at `Low`.
-pub fn stops_the_line(result: &MeasurementResult, policy: &SeverityPolicy) -> bool {
+///
+/// Takes the whole [`VerdictContext`] rather than the severity policy alone
+/// because the first route now has a question policy cannot answer: whether this
+/// *change* carries a justification. One implementation, read by the verdict and
+/// by the iteration counter alike.
+pub fn stops_the_line(result: &MeasurementResult, ctx: &VerdictContext) -> bool {
     if let Some(signal) = fired_signal(result) {
-        return policy.block_on_tamper && signal_stops_the_line(signal);
+        return ctx.policy.severity.block_on_tamper && signal_stops_the_line(signal, ctx);
     }
     result.severity.is_med_plus()
 }
@@ -135,15 +158,16 @@ pub fn fired_signal(result: &MeasurementResult) -> Option<TamperSignal> {
     tamper_signals::signal_for(&result.metric_id)
 }
 
-/// Whether a fired signal is one that stops the line.
+/// Whether a fired signal is one that stops the line, in this change.
 ///
-/// Six of the seven do. `ThresholdConfigEdit` does not, for B6's reason; it
-/// becomes a `policy-change` finding, which blocks only on unjustified
-/// loosening. `BaseFabrication` is the verifier's, raised by
-/// [`crate::compare`] rather than by a detector, and never appears as a result
-/// here — it is listed so that adding a variant forces a decision rather than
-/// silently taking a default.
-pub fn signal_stops_the_line(signal: TamperSignal) -> bool {
+/// Six of the seven do unconditionally. `ThresholdConfigEdit` stops the line
+/// unless a **verified** ledgered justification covers the change — B6's rule,
+/// applied to every configuration file the detector reads rather than only to
+/// the one [`super::policy_change`] can parse. `BaseFabrication` is the
+/// verifier's, raised by [`crate::compare`] rather than by a detector, and never
+/// appears as a result here — it is listed so that adding a variant forces a
+/// decision rather than silently taking a default.
+pub fn signal_stops_the_line(signal: TamperSignal, ctx: &VerdictContext) -> bool {
     match signal {
         TamperSignal::SuppressionDensity
         | TamperSignal::TestRemoval
@@ -152,8 +176,13 @@ pub fn signal_stops_the_line(signal: TamperSignal) -> bool {
         | TamperSignal::LookupTableBlowup
         | TamperSignal::ParseErrorDelta
         | TamperSignal::BaseFabrication => true,
-        // PLAN round-1 B6. Routed to `policy_change`, not ignored.
-        TamperSignal::ThresholdConfigEdit => false,
+        // PLAN round-1 B6, with the exit B6 requires: a loosening a project can
+        // account for is policy evolution, and one it cannot is a gate being
+        // quietly moved. The exit is a justification somebody checked, not the
+        // name of the file the threshold happened to live in.
+        TamperSignal::ThresholdConfigEdit => !ctx
+            .policy_change
+            .is_some_and(super::policy_change::PolicyChange::is_justified),
     }
 }
 
@@ -162,13 +191,30 @@ pub fn signal_stops_the_line(signal: TamperSignal) -> bool {
 /// PREMORTEM A4: an agent must not burn its loop budget on findings it cannot
 /// act on inside its own change. Context-informational findings are exempt
 /// unless the operator opts in with `loop.count_context_informational`.
-pub fn counts_toward_iteration(result: &MeasurementResult, policy: &Policy) -> bool {
-    if result.severity == Severity::Info && fired_signal(result).is_none() {
+///
+/// # A fired flag counts when it stops the line, and not merely when it fired
+///
+/// This used to count **every** fired tamper flag, which quietly disagreed with
+/// the verdict about one of them: a threshold edit the change had accounted for
+/// advised rather than blocked, and still pushed the agent toward
+/// `escalate_to_human` on a finding nobody was asking it to fix. The exemption
+/// was honoured in one place and not the other.
+///
+/// So the question is [`stops_the_line`] — the same call the verdict makes, so
+/// there is no second answer to keep in step. A degraded tamper firing still
+/// counts, because the flag route still stops the line for it: the muzzle rule's
+/// second consequence, and the reason this cannot simply read `severity`.
+pub fn counts_toward_iteration(result: &MeasurementResult, ctx: &VerdictContext) -> bool {
+    if fired_signal(result).is_some() {
+        if !stops_the_line(result, ctx) {
+            return false;
+        }
+    } else if result.severity == Severity::Info {
         return false;
     }
     match result.metric_class {
         MetricClass::DiffActionable => true,
-        MetricClass::ContextInformational => policy.loop_policy.count_context_informational,
+        MetricClass::ContextInformational => ctx.policy.loop_policy.count_context_informational,
     }
 }
 
@@ -177,6 +223,26 @@ mod tests {
     use super::*;
     use crate::schema::enums::{Completeness, EngineFamily};
     use crate::testing::sample_result;
+    use crate::verdict::policy_change::{Justification, PolicyChange};
+
+    /// A context carrying nothing but the policy: no policy edit, no failures.
+    fn ctx(policy: &Policy) -> VerdictContext<'_> {
+        VerdictContext {
+            policy,
+            policy_change: None,
+            engine_failures: &[],
+            stale_claim_ids: &[],
+            iteration_state_recovered: false,
+        }
+    }
+
+    /// A context carrying a policy edit and the justification offered for it.
+    fn ctx_with<'a>(policy: &'a Policy, change: &'a PolicyChange) -> VerdictContext<'a> {
+        VerdictContext {
+            policy_change: Some(change),
+            ..ctx(policy)
+        }
+    }
 
     fn tamper_flag(metric_id: &str, fired: bool) -> MeasurementResult {
         let mut result = sample_result();
@@ -212,7 +278,7 @@ mod tests {
             result.severity
         );
         assert!(
-            stops_the_line(&result, &SeverityPolicy::default()),
+            stops_the_line(&result, &ctx(&Policy::default())),
             "but the fired flag, not the capped severity, decides the line"
         );
     }
@@ -245,10 +311,10 @@ mod tests {
             "capped by tier, not by parse"
         );
         assert!(
-            stops_the_line(&result, &policy.severity),
+            stops_the_line(&result, &ctx(&policy)),
             "and the firing still stops the line"
         );
-        assert!(counts_toward_iteration(&result, &policy));
+        assert!(counts_toward_iteration(&result, &ctx(&policy)));
     }
 
     #[test]
@@ -258,31 +324,120 @@ mod tests {
         let mut result = tamper_flag("tamper.test-removal", false);
         result.severity = Severity::Info;
         result.completeness = Completeness::ParseDegraded;
-        assert!(!stops_the_line(&result, &SeverityPolicy::default()));
+        assert!(!stops_the_line(&result, &ctx(&Policy::default())));
     }
 
     #[test]
-    fn a_loosened_threshold_does_not_stop_the_line_on_the_flag_alone() {
-        // PLAN round-1 B6: a tool that blocks on policy edits has made policy
-        // evolution impossible. This one routes through `policy_change`.
+    fn a_loosened_threshold_stops_the_line_unless_something_accounts_for_it() {
+        // PLAN round-1 B6 has two halves and the first version of this rule kept
+        // only one. A tool that blocks on every policy edit has made policy
+        // evolution impossible — but the exemption B6 asks for is "the project
+        // can account for this", not "the signal is called
+        // ThresholdConfigEdit". Keyed on the variant alone, a real loosening in
+        // `.eslintrc.json` took the exemption and could only ever advise,
+        // because the route it was nominally handed to parses `.andon.toml` and
+        // nothing else.
+        let policy = Policy::default();
         let result = tamper_flag("tamper.threshold-config-edit", true);
-        assert!(!stops_the_line(&result, &SeverityPolicy::default()));
+        assert!(
+            stops_the_line(&result, &ctx(&policy)),
+            "a loosening nobody has accounted for stops the line"
+        );
         assert_eq!(
             fired_signal(&result),
             Some(TamperSignal::ThresholdConfigEdit),
             "it is still reported as a fired signal"
         );
+
+        // And the exit B6 requires, which is a justification somebody checked.
+        let unverified = PolicyChange {
+            deltas: Vec::new(),
+            justification: Some(Justification::Unverified {
+                reference: "trust me".to_string(),
+                summary: "not checked against any ledger".to_string(),
+            }),
+        };
+        assert!(
+            stops_the_line(&result, &ctx_with(&policy, &unverified)),
+            "an unverified claim is not an account of anything"
+        );
+
+        let verified = PolicyChange {
+            deltas: Vec::new(),
+            justification: Some(Justification::Verified {
+                reference: "andon-ledger#12".to_string(),
+                summary: "eslint rule relaxed for the codemod, restored in #13".to_string(),
+            }),
+        };
+        assert!(
+            !stops_the_line(&result, &ctx_with(&policy, &verified)),
+            "policy evolution the ledger records must stay possible"
+        );
+    }
+
+    #[test]
+    fn a_justified_threshold_edit_does_not_burn_the_loop_budget_either() {
+        // The exemption used to be honoured at the verdict and not at the
+        // counter: the edit advised rather than blocked, and still pushed the
+        // agent toward `escalate_to_human` on a finding nobody was asking it to
+        // fix. Both now ask `stops_the_line`, so there is no second answer.
+        let policy = Policy::default();
+        let result = tamper_flag("tamper.threshold-config-edit", true);
+        let verified = PolicyChange {
+            deltas: Vec::new(),
+            justification: Some(Justification::Verified {
+                reference: "andon-ledger#12".to_string(),
+                summary: "accounted for".to_string(),
+            }),
+        };
+        assert!(counts_toward_iteration(&result, &ctx(&policy)));
+        assert!(!counts_toward_iteration(
+            &result,
+            &ctx_with(&policy, &verified)
+        ));
+    }
+
+    #[test]
+    fn the_other_six_detectors_are_not_excusable_by_a_justification() {
+        // The exemption is one detector's, and it exists because policy
+        // evolution is legitimate. Deleting a test is not policy evolution, and
+        // a ledger entry saying it was must not turn the firing off.
+        let policy = Policy::default();
+        let verified = PolicyChange {
+            deltas: Vec::new(),
+            justification: Some(Justification::Verified {
+                reference: "andon-ledger#12".to_string(),
+                summary: "we meant to".to_string(),
+            }),
+        };
+        for metric_id in [
+            "tamper.test-removal",
+            "tamper.suppression-density",
+            "tamper.coverage-exclusion-drift",
+            "tamper.assertion-free-test",
+            "tamper.lookup-table-blowup",
+            "tamper.parse-error-delta",
+        ] {
+            let result = tamper_flag(metric_id, true);
+            assert!(
+                stops_the_line(&result, &ctx_with(&policy, &verified)),
+                "{metric_id} took an exemption that is not its"
+            );
+        }
     }
 
     #[test]
     fn policy_can_switch_tamper_blocking_off() {
         let result = tamper_flag("tamper.test-removal", true);
-        let permissive = SeverityPolicy {
-            block_on_tamper: false,
-            ..SeverityPolicy::default()
+        let permissive_policy = Policy {
+            severity: SeverityPolicy {
+                block_on_tamper: false,
+                ..SeverityPolicy::default()
+            },
+            ..Policy::default()
         };
-        assert!(!stops_the_line(&result, &permissive));
-        assert!(stops_the_line(&result, &SeverityPolicy::default()));
+        assert!(!stops_the_line(&result, &ctx(&permissive_policy)));
+        assert!(stops_the_line(&result, &ctx(&Policy::default())));
     }
 
     #[test]
@@ -292,7 +447,7 @@ mod tests {
         result.severity = Severity::Critical;
         apply(std::slice::from_mut(&mut result), &Policy::default());
         assert_eq!(result.severity, Severity::Low);
-        assert!(!stops_the_line(&result, &SeverityPolicy::default()));
+        assert!(!stops_the_line(&result, &ctx(&Policy::default())));
     }
 
     #[test]
@@ -344,9 +499,9 @@ mod tests {
         result.metric_class = MetricClass::ContextInformational;
         result.severity = Severity::Low;
         let mut policy = Policy::default();
-        assert!(!counts_toward_iteration(&result, &policy));
+        assert!(!counts_toward_iteration(&result, &ctx(&policy)));
         policy.loop_policy.count_context_informational = true;
-        assert!(counts_toward_iteration(&result, &policy));
+        assert!(counts_toward_iteration(&result, &ctx(&policy)));
     }
 
     #[test]
@@ -357,13 +512,13 @@ mod tests {
         let mut result = tamper_flag("tamper.test-removal", true);
         result.severity = Severity::Info;
         result.completeness = Completeness::ParseDegraded;
-        assert!(counts_toward_iteration(&result, &Policy::default()));
+        assert!(counts_toward_iteration(&result, &ctx(&Policy::default())));
     }
 
     #[test]
     fn an_info_result_does_not_count_toward_the_iteration() {
         let mut result = sample_result();
         result.severity = Severity::Info;
-        assert!(!counts_toward_iteration(&result, &Policy::default()));
+        assert!(!counts_toward_iteration(&result, &ctx(&Policy::default())));
     }
 }
