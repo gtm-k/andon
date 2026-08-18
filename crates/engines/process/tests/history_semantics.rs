@@ -472,3 +472,100 @@ fn the_ladders_rank_what_the_claims_support() {
         "the one claim whose direction is not established stays unranked"
     );
 }
+
+#[test]
+fn the_history_rungs_are_pinned_at_their_boundaries() {
+    // `the_ladders_rank_what_the_claims_support` proves the ladders are not
+    // `NoOpinion`; nothing proved the numbers on them. Moving a rung to a figure
+    // no repository could reach — disabling the ladder while leaving it looking
+    // declared — left every test in the workspace green.
+    use andon_core::schema::enums::Severity;
+    use andon_core::schema::payload::MetricValue;
+    use andon_engine_process::engine::*;
+
+    let cases: &[(&str, MetricValue, Severity)] = &[
+        // Commits touching the file inside the window: ten, thirty, sixty.
+        (METRIC_CHURN_COMMITS, MetricValue::Count(9), Severity::Info),
+        (METRIC_CHURN_COMMITS, MetricValue::Count(10), Severity::Low),
+        (METRIC_CHURN_COMMITS, MetricValue::Count(29), Severity::Low),
+        (
+            METRIC_CHURN_COMMITS,
+            MetricValue::Count(30),
+            Severity::Medium,
+        ),
+        (
+            METRIC_CHURN_COMMITS,
+            MetricValue::Count(59),
+            Severity::Medium,
+        ),
+        (METRIC_CHURN_COMMITS, MetricValue::Count(60), Severity::High),
+        // Lines added plus deleted: five hundred, two thousand, five thousand.
+        (METRIC_CHURN_LINES, MetricValue::Count(499), Severity::Info),
+        (METRIC_CHURN_LINES, MetricValue::Count(500), Severity::Low),
+        (
+            METRIC_CHURN_LINES,
+            MetricValue::Count(2_000),
+            Severity::Medium,
+        ),
+        (
+            METRIC_CHURN_LINES,
+            MetricValue::Count(5_000),
+            Severity::High,
+        ),
+        // Ownership entropy in bits: roughly three, six, eleven equal authors.
+        (
+            METRIC_OWNERSHIP_ENTROPY,
+            MetricValue::Ratio(1.49),
+            Severity::Info,
+        ),
+        (
+            METRIC_OWNERSHIP_ENTROPY,
+            MetricValue::Ratio(1.5),
+            Severity::Low,
+        ),
+        (
+            METRIC_OWNERSHIP_ENTROPY,
+            MetricValue::Ratio(2.5),
+            Severity::Medium,
+        ),
+        (
+            METRIC_OWNERSHIP_ENTROPY,
+            MetricValue::Ratio(3.5),
+            Severity::High,
+        ),
+        // Commits multiplied by complexity: where to look first, and no more.
+        (METRIC_HOTSPOT, MetricValue::Count(99), Severity::Info),
+        (METRIC_HOTSPOT, MetricValue::Count(100), Severity::Low),
+        (METRIC_HOTSPOT, MetricValue::Count(400), Severity::Medium),
+        (METRIC_HOTSPOT, MetricValue::Count(1_000), Severity::High),
+        // Habitual co-change partners absent from the change: one, three, five.
+        (
+            METRIC_CHANGE_COUPLING,
+            MetricValue::Count(0),
+            Severity::Info,
+        ),
+        (METRIC_CHANGE_COUPLING, MetricValue::Count(1), Severity::Low),
+        (
+            METRIC_CHANGE_COUPLING,
+            MetricValue::Count(3),
+            Severity::Medium,
+        ),
+        (
+            METRIC_CHANGE_COUPLING,
+            MetricValue::Count(5),
+            Severity::High,
+        ),
+        // The one claim whose direction is not established stays flat, whatever
+        // number it carries.
+        (METRIC_CODE_AGE, MetricValue::Count(10_000), Severity::Info),
+    ];
+
+    let ladders = severity_ladders();
+    for (metric_id, value, expected) in cases {
+        let got = ladders[*metric_id]
+            .severity_for(value)
+            .expect("the declared ladder applies to the value the metric emits")
+            .expect("not a per-result ladder");
+        assert_eq!(got, *expected, "{metric_id} at {value:?}");
+    }
+}

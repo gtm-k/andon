@@ -910,4 +910,117 @@ mod tests {
             assert_eq!(ladder.strongest(), Severity::High, "{metric_id}");
         }
     }
+
+    #[test]
+    fn the_clone_rungs_are_pinned_at_their_boundaries() {
+        // No threshold value in this engine was pinned anywhere. Moving the
+        // token rungs to figures no change could reach — disabling the ladder
+        // outright — left every test in the workspace green.
+        //
+        // The token literals are written out rather than derived from
+        // `fingerprint::MIN_CLONE_TOKENS`, deliberately: the rungs are five and
+        // twenty minimum clones, so a change to the token unit moves them, and
+        // it should move them in a diff somebody reads rather than silently.
+        assert_eq!(
+            fingerprint::MIN_CLONE_TOKENS,
+            50,
+            "the rungs below are 5x and 20x this"
+        );
+
+        let cases: &[(&str, MetricValue, Severity)] = &[
+            // Tokens covered by a clone: one minimum clone, five, twenty.
+            (
+                METRIC_DUPLICATED_TOKENS,
+                MetricValue::Count(0),
+                Severity::Info,
+            ),
+            (
+                METRIC_DUPLICATED_TOKENS,
+                MetricValue::Count(1),
+                Severity::Low,
+            ),
+            (
+                METRIC_DUPLICATED_TOKENS,
+                MetricValue::Count(249),
+                Severity::Low,
+            ),
+            (
+                METRIC_DUPLICATED_TOKENS,
+                MetricValue::Count(250),
+                Severity::Medium,
+            ),
+            (
+                METRIC_DUPLICATED_TOKENS,
+                MetricValue::Count(999),
+                Severity::Medium,
+            ),
+            (
+                METRIC_DUPLICATED_TOKENS,
+                MetricValue::Count(1_000),
+                Severity::High,
+            ),
+            // The same table, and the mapping to it is part of what is pinned.
+            (
+                METRIC_FILE_DUPLICATED_TOKENS,
+                MetricValue::Count(250),
+                Severity::Medium,
+            ),
+            (
+                METRIC_LARGEST_CLONE,
+                MetricValue::Count(1_000),
+                Severity::High,
+            ),
+            // Distinct repeated sequences: one, five, twenty.
+            (METRIC_CLONE_GROUPS, MetricValue::Count(0), Severity::Info),
+            (METRIC_CLONE_GROUPS, MetricValue::Count(1), Severity::Low),
+            (METRIC_CLONE_GROUPS, MetricValue::Count(4), Severity::Low),
+            (METRIC_CLONE_GROUPS, MetricValue::Count(5), Severity::Medium),
+            (
+                METRIC_CLONE_GROUPS,
+                MetricValue::Count(19),
+                Severity::Medium,
+            ),
+            (METRIC_CLONE_GROUPS, MetricValue::Count(20), Severity::High),
+            // Duplicated proportion: a twentieth, a fifth, two fifths.
+            (
+                METRIC_DUPLICATED_RATIO,
+                MetricValue::Ratio(0.04),
+                Severity::Info,
+            ),
+            (
+                METRIC_DUPLICATED_RATIO,
+                MetricValue::Ratio(0.05),
+                Severity::Low,
+            ),
+            (
+                METRIC_DUPLICATED_RATIO,
+                MetricValue::Ratio(0.19),
+                Severity::Low,
+            ),
+            (
+                METRIC_DUPLICATED_RATIO,
+                MetricValue::Ratio(0.20),
+                Severity::Medium,
+            ),
+            (
+                METRIC_DUPLICATED_RATIO,
+                MetricValue::Ratio(0.39),
+                Severity::Medium,
+            ),
+            (
+                METRIC_DUPLICATED_RATIO,
+                MetricValue::Ratio(0.40),
+                Severity::High,
+            ),
+        ];
+
+        let ladders = severity_ladders();
+        for (metric_id, value, expected) in cases {
+            let got = ladders[*metric_id]
+                .severity_for(value)
+                .expect("the declared ladder applies to the value the metric emits")
+                .expect("not a per-result ladder");
+            assert_eq!(got, *expected, "{metric_id} at {value:?}");
+        }
+    }
 }

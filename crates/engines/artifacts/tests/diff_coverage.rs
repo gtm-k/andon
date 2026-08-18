@@ -433,3 +433,38 @@ fn the_one_ladder_this_engine_declares_still_ranks() {
         "and the top of the scale is where the module item says it is"
     );
 }
+
+#[test]
+fn the_uncovered_line_rungs_are_pinned_at_their_boundaries() {
+    // No threshold value in this engine was pinned anywhere: moving the rungs to
+    // figures no diff could reach — disabling the ladder outright — left every
+    // test in the workspace green. One line, ten, fifty.
+    use andon_core::schema::enums::Severity;
+
+    let ladder = severity_ladders()[METRIC_UNCOVERED_CHANGED_LINES];
+    let cases: &[(MetricValue, Severity)] = &[
+        (MetricValue::Count(0), Severity::Info),
+        (MetricValue::Count(1), Severity::Low),
+        (MetricValue::Count(9), Severity::Low),
+        (MetricValue::Count(10), Severity::Medium),
+        (MetricValue::Count(49), Severity::Medium),
+        (MetricValue::Count(50), Severity::High),
+    ];
+    for (value, expected) in cases {
+        let got = ladder
+            .severity_for(value)
+            .expect("a count ladder over a count")
+            .expect("not a per-result ladder");
+        assert_eq!(got, *expected, "{value:?}");
+    }
+
+    // A file with no entry in the report reports `unwitnessed` and carries text.
+    // Ranking that would be the fabricated zero the engine exists to refuse.
+    assert_eq!(
+        ladder
+            .severity_for(&MetricValue::Text(REASON_NO_REPORT.to_string()))
+            .expect("text ranks under every ladder")
+            .expect("not a per-result ladder"),
+        Severity::Info
+    );
+}

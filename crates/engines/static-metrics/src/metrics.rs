@@ -342,6 +342,55 @@ mod tests {
     }
 
     #[test]
+    fn the_complexity_rungs_are_pinned_at_their_boundaries() {
+        // The band assertions prove the ladders are not `NoOpinion`; nothing
+        // proved the numbers on them. Moving the cyclomatic rungs to
+        // 5000/6000/7000 — disabling the metric on any realistic code while
+        // leaving it looking declared — left every test in the workspace green.
+        //
+        // Both boundaries, both directions: an off-by-one here moves every
+        // threshold in the tool by one unit, and the value one below each rung
+        // is the only assertion that can see it.
+        use andon_core::schema::payload::MetricValue;
+
+        let bands: &[(u64, Severity)] = &[
+            (10, Severity::Info),
+            (11, Severity::Medium),
+            (20, Severity::Medium),
+            (21, Severity::High),
+            (50, Severity::High),
+            (51, Severity::Critical),
+        ];
+        let cognitive_bands: &[(u64, Severity)] = &[
+            (14, Severity::Info),
+            (15, Severity::Medium),
+            (24, Severity::Medium),
+            (25, Severity::High),
+            (49, Severity::High),
+            (50, Severity::Critical),
+        ];
+
+        let ladders = severity_ladders();
+        for language in complexity_languages() {
+            // Every language shares the two tables, and that sharing is part of
+            // what is pinned: a per-language rung would be a threshold nobody
+            // declared in the one place thresholds are declared.
+            for (metric_id, cases) in [
+                (cyclomatic_metric_id(language), bands),
+                (cognitive_metric_id(language), cognitive_bands),
+            ] {
+                for (value, expected) in cases {
+                    let got = ladders[&metric_id]
+                        .severity_for(&MetricValue::Count(*value))
+                        .expect("a count ladder over a count")
+                        .expect("not a per-result ladder");
+                    assert_eq!(got, *expected, "{metric_id} at {value}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_line_count_is_never_ranked() {
         // Size as a target is PREMORTEM A4's uninstall loop with the tool's own
         // name on it: an agent told that 400 lines is `High` deletes lines.
