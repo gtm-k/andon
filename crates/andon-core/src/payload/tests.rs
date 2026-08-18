@@ -4,17 +4,25 @@
 //!
 //! `andon-core` is the contract crate: every engine depends on it and it depends
 //! on none of them, which is what keeps the payload schema stable while engines
-//! move. A test that imported the real five would invert that — a development
-//! dependency is legal in cargo and would still put the engine crates into this
-//! crate's build graph, for a test whose subject is the assembler rather than
-//! any engine.
-//!
-//! So the outputs here are built from the contract's own types: all five
+//! move. The subject of these tests is the assembler, not any engine, so the
+//! outputs are built from the contract's own types: all five
 //! [`MeasurementRegime`] variants are constructible in this crate, and the claim
 //! ids are the ones the shipped `registry/` actually declares — so
 //! `five_engine_families_assemble_into_one_record` fails if a shipped registry
-//! stops resolving a shipped metric. Wiring the real engines is P5b's CLI, by
-//! design and by dependency direction.
+//! stops resolving a shipped metric.
+//!
+//! # One question this file cannot answer, and where it moved to
+//!
+//! Synthetic outputs can prove that the assembler refuses what it should refuse.
+//! They cannot answer whether anything a *shipped engine actually emits* can
+//! reach the MED+ band — and the answer, through six phases of review, was no.
+//! Nothing here could have caught that, because every input was chosen by the
+//! test.
+//!
+//! `tests/shipped_severity_band.rs` asks that question, over real engines
+//! measuring a real repository, through a dev-dependency cycle onto the five
+//! engine crates. The cycle is confined to that file's purpose: it never enters
+//! the built library, and these tests stay synthetic on the reasoning above.
 
 use std::collections::BTreeMap;
 

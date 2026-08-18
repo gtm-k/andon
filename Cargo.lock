@@ -15,6 +15,11 @@ dependencies = [
 name = "andon-core"
 version = "0.1.0"
 dependencies = [
+ "andon-engine-artifacts",
+ "andon-engine-clones",
+ "andon-engine-process",
+ "andon-engine-tamper",
+ "andon-static-metrics",
  "proptest",
  "schemars",
  "serde",

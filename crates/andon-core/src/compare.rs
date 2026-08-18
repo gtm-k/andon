@@ -523,7 +523,7 @@ mod tests {
             "an omission is not tampering"
         );
         let compare = out.compare.expect("compare detail survives the demotion");
-        assert_eq!(compare.matched, vec!["static.cognitive-complexity"]);
+        assert_eq!(compare.matched, vec!["sample.metric"]);
         assert_eq!(compare.unpaired, vec!["static.cyclomatic-complexity"]);
     }
 
@@ -594,18 +594,12 @@ mod tests {
         let compare = out.compare.expect("the compare happened");
         assert_eq!(
             compare.mismatched,
-            vec![
-                "static.cognitive-complexity",
-                "static.cyclomatic-complexity"
-            ],
+            vec!["sample.metric", "static.cyclomatic-complexity"],
             "the forged results must be named, not silently skipped"
         );
         assert_eq!(
             compare.flag_disagreements,
-            vec![
-                "static.cognitive-complexity",
-                "static.cyclomatic-complexity"
-            ],
+            vec!["sample.metric", "static.cyclomatic-complexity"],
             "the dodge itself must be visible"
         );
     }
@@ -630,7 +624,7 @@ mod tests {
         let out = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
         assert_eq!(out.attestation, Attestation::Divergent);
         let compare = out.compare.expect("the compare happened");
-        assert_eq!(compare.matched, vec!["static.cognitive-complexity"]);
+        assert_eq!(compare.matched, vec!["sample.metric"]);
         assert_eq!(compare.mismatched, vec!["static.cyclomatic-complexity"]);
         assert_eq!(
             compare.flag_disagreements,
@@ -660,13 +654,13 @@ mod tests {
         let compare = out.compare.expect("the compare happened");
         assert_eq!(
             compare.matched,
-            vec!["static.cognitive-complexity"],
+            vec!["sample.metric"],
             "the verifier's flag decides membership, so the pair is compared"
         );
         assert!(compare.mismatched.is_empty());
         assert_eq!(
             compare.flag_disagreements,
-            vec!["static.cognitive-complexity"],
+            vec!["sample.metric"],
             "and the disagreement is visible even though nothing else moved"
         );
     }
@@ -687,10 +681,7 @@ mod tests {
         assert_eq!(out.attestation, Attestation::Confirmed);
         let compare = out.compare.expect("the compare happened");
         assert!(compare.matched.is_empty() && compare.mismatched.is_empty());
-        assert_eq!(
-            compare.flag_disagreements,
-            vec!["static.cognitive-complexity"]
-        );
+        assert_eq!(compare.flag_disagreements, vec!["sample.metric"]);
     }
 
     #[test]

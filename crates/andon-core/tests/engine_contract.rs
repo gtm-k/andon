@@ -19,7 +19,7 @@ use andon_core::verdict::ladder::SeverityLadder;
 use std::collections::BTreeMap;
 
 const CLAIM: &str = "andon.static.cognitive@1|typescript|comprehension-time";
-const METRIC: &str = "static.cognitive-complexity";
+const METRIC: &str = "sample.metric";
 
 struct TestEngine {
     class: EngineClass,
@@ -135,7 +135,7 @@ engine = "static-metrics"
 family = "static"
 
 [[metric]]
-metric_id = "static.cognitive-complexity"
+metric_id = "sample.metric"
 claim_id = "andon.static.cognitive@1|typescript|comprehension-time"
 class = "diff-actionable"
 deterministic = true

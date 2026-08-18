@@ -424,10 +424,7 @@ mod tests {
         let summary = evaluate(&[result], &ctx(&policy), iteration(1, 3));
         assert_eq!(summary.verdict, Verdict::Block);
         assert_eq!(summary.reasons[0].code, reason::SEVERITY_MED_PLUS);
-        assert_eq!(
-            summary.reasons[0].metric_ids,
-            vec!["static.cognitive-complexity"]
-        );
+        assert_eq!(summary.reasons[0].metric_ids, vec!["sample.metric"]);
     }
 
     #[test]

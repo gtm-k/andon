@@ -294,7 +294,7 @@ mod tests {
         .expect("records compare");
         assert!(!compared.agreed());
         let report = compared.problems.join("\n");
-        assert!(report.contains("static.cognitive-complexity"), "{report}");
+        assert!(report.contains("sample.metric"), "{report}");
         assert!(report.contains("windows="), "{report}");
     }
 

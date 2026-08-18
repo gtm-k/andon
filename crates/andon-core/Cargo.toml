@@ -23,6 +23,29 @@ proptest = "1"
 # gitconfig — and each needs its own directory that disappears afterwards.
 tempfile = "3"
 
+# THE FIVE SHIPPED ENGINES, AS DEV-DEPENDENCIES, AND WHY THE CYCLE IS THE POINT
+# -----------------------------------------------------------------------------
+# Every engine depends on this crate. These entries point back at them, which is
+# a dependency cycle — permitted by cargo because it closes through
+# `[dev-dependencies]` and so never enters the built library.
+#
+# It exists for `tests/shipped_severity_band.rs`, and it is the smallest thing
+# that could have caught the defect this repair round was opened for. Nothing in
+# the workspace could see all five engines at once: each phase tested its own
+# engine, this crate tested assembly against fixtures it built itself, and the
+# question "can anything a shipped engine actually emits reach the MED+ band"
+# had no crate to be asked in. It went unasked through six phases of review.
+#
+# The alternative — a new test-only workspace member — would put the assertion
+# somewhere other than beside the assembly code whose contract it checks, and
+# would need a manifest and a place in the graph to earn nothing. The cost of
+# this form is that `cargo test -p andon-core` builds the engines first.
+andon-engine-artifacts = { path = "../engines/artifacts" }
+andon-engine-clones = { path = "../engines/clones" }
+andon-engine-process = { path = "../engines/process" }
+andon-engine-tamper = { path = "../engines/tamper" }
+andon-static-metrics = { path = "../engines/static-metrics" }
+
 # The perf-fixture generator. An example rather than a crate: it is developer
 # tooling for one gate, and a new workspace member would need a manifest, a
 # licence header, and a place in the dependency graph to earn nothing.

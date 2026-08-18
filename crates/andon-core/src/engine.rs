@@ -396,7 +396,7 @@ mod tests {
             result_family: EngineFamily::Clones,
             ..Stamper::default()
         });
-        assert!(reason.contains("static.cognitive-complexity"), "{reason}");
+        assert!(reason.contains("sample.metric"), "{reason}");
         assert!(reason.contains("Clones"), "{reason}");
     }
 
@@ -468,7 +468,7 @@ mod tests {
             ..Stamper::default()
         });
         assert!(reason.contains("declares no severity ladder"), "{reason}");
-        assert!(reason.contains("static.cognitive-complexity"), "{reason}");
+        assert!(reason.contains("sample.metric"), "{reason}");
     }
 
     #[test]
