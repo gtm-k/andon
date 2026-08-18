@@ -387,6 +387,8 @@ impl Prepared {
             ..self.invocation
         };
 
+        // Read before the context moves into the record.
+        let witnessable = self.compare_context.head_kind.is_witnessable();
         MeasurementRecord {
             schema_version: SCHEMA_VERSION,
             record_kind: self.record_kind,
@@ -402,7 +404,27 @@ impl Prepared {
             // fired signals ride along because the deterministic tamper channel
             // is agent-visible by design (PRE-DECISIONS, trust model); the
             // verifier recomputes them regardless.
+            //
+            // # The one value a record may set about itself
+            //
+            // A record measured against an uncommitted head says so, and that is
+            // safe for the reason the rule exists: the danger is a record
+            // granting itself trust, and this grants itself *less*. Both values
+            // answer `counts_downstream()` false, so nothing downstream moves;
+            // what changes is that a reader is told this record can never be
+            // witnessed rather than that it merely has not been yet.
+            //
+            // Nor is it a claim taken on faith. `head_kind` is inside every
+            // result's digest input, so a record lying about being uncommitted
+            // sealed its results against the lie — and `compare::classify` reads
+            // the same field before it reads anything else, so the record and
+            // the verifier cannot disagree about what this record is.
             attestation: AttestationBlock {
+                value: if witnessable {
+                    crate::schema::enums::Attestation::Unwitnessed
+                } else {
+                    crate::schema::enums::Attestation::UnwitnessedUncommitted
+                },
                 tamper_signals: tamper_signals::fired_signals(&self.results),
                 ..AttestationBlock::default()
             },

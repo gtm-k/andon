@@ -38,7 +38,7 @@
 use andon_core::engine::{run_engine, MeasureContext};
 use andon_core::policy::Policy;
 use andon_core::schema::enums::{Completeness, Severity};
-use andon_core::schema::payload::{CompareContext, MeasurementResult, MetricValue};
+use andon_core::schema::payload::{CompareContext, HeadKind, MeasurementResult, MetricValue};
 use andon_engine_tamper::change::{ChangeView, FileChange};
 use andon_engine_tamper::TamperEngine;
 
@@ -88,6 +88,7 @@ fn context() -> MeasureContext {
             base_oid: "0".repeat(40),
             head_oid: "1".repeat(40),
             git_version: "git version 2.51.0".to_string(),
+            head_kind: HeadKind::Commit,
             base_resolution: "explicit".to_string(),
         },
         policy: Policy::default(),

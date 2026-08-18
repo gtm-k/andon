@@ -12,7 +12,16 @@ use super::regime::MeasurementRegime;
 use crate::canonical::{self, CanonicalError};
 
 /// The version of this schema. Bumped by a plan change, never by a phase.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// **2 since the uncommitted-tree representation (P5b, mini-G2 ruling).** This
+/// is a real migration rather than a v1 definition change, and the distinction
+/// is the one `schemas/README.md` draws: the pre-release carve-out covers *an
+/// additive field with a default*, and this is not that. [`CompareContext`]'s
+/// `head_oid` used to mean "a commit OID" unconditionally, and now means "the
+/// head's identity, of the kind [`CompareContext::head_kind`] names". A v1
+/// consumer that read `head_oid` and handed it to `git cat-file` was correct
+/// then and is wrong now, which is what a version number exists to tell it.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// One `andon measure` run, or one verifier recompute of the same change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -57,18 +66,77 @@ pub struct ToolIdentity {
     pub attested_release: bool,
 }
 
+/// What kind of thing the head of a measured range is.
+///
+/// # Why this exists rather than a commit OID standing in for a working tree
+///
+/// The state the product exists for is an agent that has just written a change
+/// and not committed it. Measuring it needs a head, and the working tree has no
+/// commit OID — so there were only ever two honest options, and the tempting
+/// third one is a vulnerability.
+///
+/// The tempting one: write `HEAD`'s OID into `head_oid` and carry on. That
+/// produces a record which passes the verifier's tuple-equality check while
+/// describing bytes that were never committed, so the verifier recomputes the
+/// *commit*, gets different numbers, and reports `divergent` on honest work.
+/// That is the R2-4 laundering path from one side and PREMORTEM Story 1's false
+/// accusation from the other, and P1's `git::resolve` refused to build a
+/// `CompareContext` from a dirty endpoint precisely to keep it shut.
+///
+/// So the head says what it **is**. An uncommitted head carries the content
+/// hash of its own snapshot, which no commit OID can collide with in practice
+/// and which nothing downstream will mistake for one, because this field says
+/// not to. [`crate::compare::classify`] reads it before it reads anything else
+/// and refuses to compare, so a dirty record can never be accused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum HeadKind {
+    /// A commit. The only kind a verifier can check out and recompute.
+    Commit,
+    /// An uncommitted working tree, including anything staged. `head_oid` is the
+    /// content hash of the dirty snapshot, never a commit OID.
+    UncommittedWorktree,
+    /// The index alone — staged content, with unstaged edits excluded.
+    /// `head_oid` is the content hash of that snapshot.
+    UncommittedIndex,
+}
+
+impl HeadKind {
+    /// Whether a verifier could ever recompute this head.
+    ///
+    /// False for both uncommitted kinds, permanently and for a reason no future
+    /// verifier removes: CI cannot check out somebody's working tree. It is not
+    /// "no recompute happened yet"; it is "no recompute is possible", and
+    /// [`Attestation::UnwitnessedUncommitted`] is how a record says so.
+    pub fn is_witnessable(self) -> bool {
+        matches!(self, HeadKind::Commit)
+    }
+}
+
 /// The git tuple every measurement is pinned to.
 ///
 /// `base_oid` and `head_oid` are required, never optional: a record that cannot
 /// say what it measured cannot be compared, and an uncomparable record that
 /// looks comparable is how a fabricated base gets laundered (PLAN B3, R2-4).
+///
+/// The **base is always a commit**. A dirty base is refused everywhere — by
+/// `git::resolve`, by `ChangedSet::enumerate`, and here by contract — because
+/// "compared against uncommitted content" is a comparison nothing can stand in
+/// for. Only the head has a kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CompareContext {
-    /// Full 40-character base commit OID.
+    /// Full 40-character base commit OID. Always a commit.
     pub base_oid: String,
-    /// Full 40-character head commit OID. The PR head SHA, never the synthetic
-    /// merge ref (PLAN B3).
+    /// The head's identity, of the kind [`Self::head_kind`] names: a full
+    /// 40-character commit OID for `commit` — the PR head SHA, never the
+    /// synthetic merge ref (PLAN B3) — or the content hash of an uncommitted
+    /// snapshot otherwise.
+    ///
+    /// **Read `head_kind` before interpreting this.** It was unconditionally a
+    /// commit OID at `schema_version` 1, which is why 2 exists.
     pub head_oid: String,
+    /// What `head_oid` identifies.
+    pub head_kind: HeadKind,
     /// `git --version` output of the git that resolved this tuple.
     pub git_version: String,
     /// How the base was arrived at, e.g. `merge-base`, `explicit`, `worktree`.
@@ -180,6 +248,7 @@ impl MeasurementResult {
             schema_version: SCHEMA_VERSION,
             base_oid: &ctx.base_oid,
             head_oid: &ctx.head_oid,
+            head_kind: ctx.head_kind,
             engine_id: &self.engine_id,
             metric_id: &self.metric_id,
             claim_id: &self.claim_id,
@@ -229,6 +298,13 @@ pub struct ResultDigestInput<'a> {
     pub base_oid: &'a str,
     /// Head of the measured change.
     pub head_oid: &'a str,
+    /// What `head_oid` identifies.
+    ///
+    /// Bound because it is a fact about the measurement rather than about the
+    /// compare: "these numbers came off an uncommitted tree" is part of what was
+    /// measured, and a digest that omitted it would let a commit measurement and
+    /// a working-tree measurement of the same bytes seal identically.
+    pub head_kind: HeadKind,
     /// Engine that produced the number.
     pub engine_id: &'a str,
     /// Which metric.

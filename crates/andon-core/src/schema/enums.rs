@@ -60,6 +60,26 @@ pub enum Attestation {
     /// rebase, not an attack. A non-tamper outcome that is still **not a pass**:
     /// the record stays self-reported and never counts downstream (PLAN R2-4).
     UnwitnessedBaseMismatch,
+    /// The head was an uncommitted tree, so no verifier can ever witness it.
+    ///
+    /// # Why this is not the generic `unwitnessed`
+    ///
+    /// `unwitnessed` is documented above as *"No CI recompute happened. Neutral,
+    /// not negative"* — a statement about the past, and one that stops being
+    /// true the moment CI runs. This one is a statement about what is possible:
+    /// CI cannot check out somebody's working tree, so a record measured against
+    /// one is **permanently** unwitnessable, and no future run changes that.
+    ///
+    /// Collapsing the two would tell an operator to wait for an attestation that
+    /// is never coming, which is the actor-observability defect the
+    /// `unwitnessed-*` family already exists to avoid: `unwitnessed-version-skew`
+    /// and `unwitnessed-base-mismatch` are both specific causes kept out of the
+    /// generic bucket for exactly this reason.
+    ///
+    /// Like the rest of the family it is **not an accusation** and **not a
+    /// pass**. A measurement of uncommitted work is real, useful to its author,
+    /// and outside the trust boundary by construction (P5b mini-G2 ruling).
+    UnwitnessedUncommitted,
 }
 
 impl Attestation {

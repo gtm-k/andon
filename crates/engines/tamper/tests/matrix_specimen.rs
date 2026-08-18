@@ -65,7 +65,7 @@ fn all_seven_detectors_fire_on_the_specimen() {
 fn the_specimen_produces_the_result_count_the_matrix_patch_asserts() {
     use andon_core::engine::{run_engine, MeasureContext};
     use andon_core::policy::Policy;
-    use andon_core::schema::payload::CompareContext;
+    use andon_core::schema::payload::{CompareContext, HeadKind};
 
     let engine = TamperEngine::for_view(change());
     let results = run_engine(
@@ -75,6 +75,7 @@ fn the_specimen_produces_the_result_count_the_matrix_patch_asserts() {
                 base_oid: "a".repeat(40),
                 head_oid: "b".repeat(40),
                 git_version: "git version 2.51.0".to_string(),
+                head_kind: HeadKind::Commit,
                 base_resolution: "explicit".to_string(),
             },
             policy: Policy::default(),

@@ -551,64 +551,83 @@ fn dirty_repo() -> common::Built {
 }
 
 #[test]
-fn uncommitted_work_is_refused_and_never_reported_as_a_pass() {
-    // The worst available answer, and the one this replaced: measure the last
-    // merged change instead, print PASS, exit 0. The caller reads a verdict
-    // about bytes that are not the ones they asked about, and a hook keyed on
-    // the exit code lets the change through.
+fn uncommitted_work_is_measured_rather_than_stepped_around() {
+    // What this replaced, and why the replacement is the point.
     //
-    // The capability itself is blocked upstream — `andon_core::git::resolve`
-    // refuses to build a `CompareContext` from a dirty endpoint, and every
-    // result is sealed against one — so the honest answer available to this
-    // crate is a refusal that names the limitation.
-    let repo = dirty_repo();
+    // This test used to assert a *refusal*. That was the honest answer while the
+    // schema had no way to say "measured against an uncommitted tree" — the
+    // alternative on offer was measuring the last merged change and printing
+    // PASS, which tells the caller a verdict about bytes that are not the ones
+    // they asked about. The mini-G2 ruling took the other road: the schema grew
+    // the representation, so the refusal is no longer the best available answer
+    // and this asserts the capability instead.
+    let repo = stranger_repo();
+    let git = Git::open(repo.path()).expect("a repository");
+    std::fs::write(repo.path().join("src").join("greet.ts"), COMPLEX_TS).expect("write");
+    git.cmd(["add", "--all", "."]).output().expect("git add");
+
     let output = run(&[
         "measure",
         "--repo",
         repo.path().to_str().expect("utf-8"),
         "--no-color",
     ]);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
+    let rendered = stdout(&output);
+    assert!(
+        !rendered.contains("last merged change"),
+        "uncommitted work was stepped around rather than measured:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("uncommitted working tree"),
+        "the header does not say what was measured:\n{rendered}"
+    );
     assert_eq!(
         output.status.code(),
-        Some(1),
-        "uncommitted work must not produce a verdict exit code; a hook cannot tell a verdict \
-         about other bytes from a verdict about these ones.\nstdout: {}\nstderr: {stderr}",
-        stdout(&output)
-    );
-    assert!(
-        !stdout(&output).contains("PASS"),
-        "a pass was reported over unmeasured uncommitted work"
-    );
-    // The refusal names what it is about, and what actually works.
-    assert!(stderr.contains("src/greet.ts"), "{stderr}");
-    assert!(stderr.contains("commit the change"), "{stderr}");
-    assert!(stderr.contains("--last-merged"), "{stderr}");
-    // And it does not send the reader down a path that cannot work: staging
-    // leaves an index endpoint, which is dirty too and errors identically.
-    assert!(
-        !stderr.contains("git add"),
-        "the refusal suggests staging, which does not help: {stderr}"
+        Some(2),
+        "a complex function staged and uncommitted did not stop the line:\n{rendered}"
     );
 }
 
 #[test]
-fn staging_the_change_does_not_turn_the_refusal_into_a_measurement() {
-    // Pinned because it is the first thing a reader tries, and because a future
-    // edit reaching for `Revision::Index` would look like it worked — an index
-    // endpoint is a dirty endpoint and `compare_context` refuses it the same way.
-    let repo = dirty_repo();
+fn staged_bytes_are_read_and_unstaged_ones_say_why_they_are_not() {
+    // The boundary that remains, stated exactly rather than left to be
+    // discovered. Engines read blobs, and a staged edit has one — so staged
+    // content is measured. An edit that exists only on disk has no object for
+    // any engine to read (P1's advisory lane, PREMORTEM T1), so it is not
+    // measured, and the tool says so with the one command that fixes it.
+    let repo = stranger_repo();
     let git = Git::open(repo.path()).expect("a repository");
-    git.cmd(["add", "--all", "."]).output().expect("git add");
-    let output = run(&[
+    std::fs::write(repo.path().join("src").join("greet.ts"), COMPLEX_TS).expect("write");
+
+    let unstaged = stdout(&run(&[
         "measure",
         "--repo",
         repo.path().to_str().expect("utf-8"),
         "--no-color",
-    ]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Staging does not change this"));
+        "--exit-zero",
+    ]));
+    assert!(
+        unstaged.contains("edited but not staged"),
+        "an unmeasured edit was passed over in silence:\n{unstaged}"
+    );
+    assert!(unstaged.contains("git add"), "{unstaged}");
+
+    git.cmd(["add", "--all", "."]).output().expect("git add");
+    let staged = stdout(&run(&[
+        "measure",
+        "--repo",
+        repo.path().to_str().expect("utf-8"),
+        "--no-color",
+        "--exit-zero",
+    ]));
+    assert!(
+        !staged.contains("edited but not staged"),
+        "staging did not make the bytes readable:\n{staged}"
+    );
+    assert!(
+        staged.contains("BLOCK"),
+        "the staged complexity was not measured:\n{staged}"
+    );
 }
 
 #[test]
@@ -749,12 +768,18 @@ fn uncommitted_work_is_disclosed_even_when_committed_changes_were_measured() {
     )
     .expect("write");
 
+    // `--head HEAD` pins a commit head, which is the case this note is for: the
+    // caller asked about two commits, and their uncommitted edits are outside
+    // the answer. Without it the head would be the working tree and the note
+    // would be false — which is the whole reason it reads `head_kind`.
     let rendered = stdout(&run(&[
         "measure",
         "--repo",
         repo.path().to_str().expect("utf-8"),
         "--base",
         &repo.base_oid,
+        "--head",
+        "HEAD",
         "--no-color",
         "--exit-zero",
     ]));
@@ -764,4 +789,138 @@ fn uncommitted_work_is_disclosed_even_when_committed_changes_were_measured() {
 {rendered}"
     );
     assert!(rendered.contains("src/late.ts"), "{rendered}");
+}
+
+#[test]
+fn a_measurement_of_uncommitted_work_reaches_a_verdict_end_to_end() {
+    // THE POSITIVE CONTROL, in the shape P5a learned the hard way.
+    //
+    // Every other guard around this feature asserts a bad state is unreachable:
+    // no synthesized tuple, no accusation, no false claim of a clean tree. A
+    // suite made only of prohibitions passes most easily on a tool that does
+    // nothing — which is how the MED+ dead band and the confirmation gate both
+    // shipped behind hundreds of green tests. So this one asserts the good state
+    // is reachable: a change written and staged but not committed is measured by
+    // the real binary, on a real repository, and comes back with a verdict that
+    // stops the line.
+    let repo = stranger_repo();
+    let git = Git::open(repo.path()).expect("a repository");
+    // A function nobody could test in fifteen cases, written and staged and not
+    // committed — the state an agent is in for most of its loop.
+    std::fs::write(repo.path().join("src").join("classify.ts"), COMPLEX_TS).expect("write");
+    git.cmd(["add", "--all", "."]).output().expect("git add");
+
+    let (record, output) = measure_json(repo.path(), &["--exit-zero"]);
+
+    // It measured the working tree, and says so in the record rather than only
+    // on screen.
+    use andon_core::schema::payload::HeadKind;
+    assert_eq!(
+        record.compare_context.head_kind,
+        HeadKind::UncommittedWorktree,
+        "the head was not the working tree, so this asserts nothing about uncommitted work"
+    );
+    assert!(!record.compare_context.head_kind.is_witnessable());
+
+    // Every engine still ran. A capability that quietly lost a family would pass
+    // a verdict assertion on its own.
+    let engines: std::collections::BTreeSet<&str> = record
+        .results
+        .iter()
+        .map(|r| r.engine_id.as_str())
+        .collect();
+    assert_eq!(engines.len(), 5, "{engines:?}");
+
+    // The uncommitted bytes were actually read — the point of the whole thing.
+    // Without this the test would pass over a record full of "could not read"
+    // markers, which is exactly the half-built state this feature passed through.
+    let complexity: Vec<&_> = record
+        .results
+        .iter()
+        .filter(|r| r.metric_id.starts_with("static.cognitive-complexity"))
+        .filter(|r| r.scope.path.as_deref() == Some("src/classify.ts"))
+        .collect();
+    assert!(
+        !complexity.is_empty(),
+        "no complexity was measured on the uncommitted file; the engines saw the path but not \
+         its bytes"
+    );
+
+    // And it reached a verdict that acts. `--exit-zero` was passed so the
+    // process code cannot mask a panic, so the verdict is read from the record.
+    assert_eq!(
+        record.verdict.verdict,
+        andon_core::schema::enums::Verdict::Block,
+        "a function this complex, staged and uncommitted, did not stop the line: {:?}",
+        record.verdict.reasons
+    );
+    assert!(output.status.success(), "--exit-zero was passed");
+
+    // The trust half is honest and specific: permanently unwitnessable, and not
+    // collapsed into the generic value that means "not yet".
+    assert_eq!(
+        record.attestation.value,
+        andon_core::schema::enums::Attestation::UnwitnessedUncommitted
+    );
+    assert!(!record.attestation.value.counts_downstream());
+}
+
+/// A function nobody could test in fifteen cases.
+const COMPLEX_TS: &[u8] = br#"
+export function classify(a: number, b: number, c: number): string {
+  if (a > 0) {
+    if (b > 0) {
+      if (c > 0) { return "aaa"; }
+      return "aab";
+    }
+    if (c > 0) { return "aba"; }
+    return "abb";
+  }
+  if (b > 0) {
+    if (c > 0) { return "baa"; }
+    return "bab";
+  }
+  if (c > 0) {
+    if (a < -10) { return "bba"; }
+    return "bbb";
+  }
+  if (a > 1000) { return "big-a"; }
+  if (b > 1000) { return "big-b"; }
+  if (c > 1000) { return "big-c"; }
+  if (a > 2000) { return "huge-a"; }
+  if (a < -100 && b < -100) { return "ccc"; }
+  return "none";
+}
+"#;
+
+#[test]
+fn an_uncommitted_head_is_never_confused_with_a_commit() {
+    // The no-synthesis rule, checked on the wire rather than in a doc comment.
+    // A record whose `head_oid` held HEAD's commit OID would pass a verifier's
+    // tuple check while describing bytes that were never committed — the R2-4
+    // laundering path, and false `divergent` on honest work from the other side.
+    let repo = stranger_repo();
+    let git = Git::open(repo.path()).expect("a repository");
+    std::fs::write(
+        repo.path().join("src").join("extra.ts"),
+        b"export const e = 1;\n",
+    )
+    .expect("write");
+    git.cmd(["add", "--all", "."]).output().expect("git add");
+
+    let (record, _) = measure_json(repo.path(), &["--exit-zero"]);
+    let head_commit = git
+        .cmd(["rev-parse", "HEAD"])
+        .text()
+        .expect("rev-parse")
+        .trim()
+        .to_string();
+    assert_ne!(
+        record.compare_context.head_oid, head_commit,
+        "the record wrote HEAD's commit OID as the head of an uncommitted measurement"
+    );
+    assert_ne!(
+        record.compare_context.head_oid,
+        record.compare_context.base_oid
+    );
 }

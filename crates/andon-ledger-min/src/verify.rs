@@ -456,7 +456,14 @@ fn rank(value: Attestation) -> u8 {
         Attestation::Unwitnessed => 2,
         Attestation::UnwitnessedVersionSkew => 3,
         Attestation::UnwitnessedBaseMismatch => 4,
-        Attestation::Divergent => 5,
+        // Ranked below `divergent` and above the rest of its family. It is not
+        // an accusation, so it must not outrank one; and it is the only value
+        // that can never improve — every other `unwitnessed-*` describes a
+        // recompute that has not happened or did not line up, while this one
+        // describes a head no verifier can ever check out. Worst-of should
+        // prefer a record that might still be confirmed over one that cannot.
+        Attestation::UnwitnessedUncommitted => 5,
+        Attestation::Divergent => 6,
     }
 }
 
@@ -482,7 +489,11 @@ fn verdict_for(attestation: Attestation, escalated: bool) -> Verdict {
         // becoming an accusation.
         Attestation::Unwitnessed
         | Attestation::UnwitnessedVersionSkew
-        | Attestation::UnwitnessedBaseMismatch => Verdict::Advise,
+        | Attestation::UnwitnessedBaseMismatch
+        // Neutral for the same reason as the rest of the family: a measurement
+        // of uncommitted work is real and useful to its author, and it is
+        // outside the trust boundary by construction rather than by suspicion.
+        | Attestation::UnwitnessedUncommitted => Verdict::Advise,
     }
 }
 

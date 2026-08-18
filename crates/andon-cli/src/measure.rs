@@ -253,18 +253,46 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
     let (engines, engine_failures, mut engine_notes) =
         run_all_engines(&git, &resolution, &changed, &policy, &ctx);
 
-    // Uncommitted work that this measurement does not describe. On the fallback
-    // path the substitution already says it; on every other path — a branch with
-    // commits ahead of its fork point, an explicit `--base` — nothing did, and a
-    // reader had no way to know their newest edits were not in these numbers.
-    // An actor can only act on what they can observe.
-    if !resolution.uncommitted.is_empty() && resolution.substitution.is_none() {
-        engine_notes.push(format!(
-            "{} path(s) have uncommitted content and are NOT described by this measurement, \
-             which covers committed content only: {}. Commit them and re-run to measure them.",
-            resolution.uncommitted.len(),
-            resolution.uncommitted.join(", ")
-        ));
+    // What this measurement does and does not cover. Which sentence is true
+    // depends on what the head turned out to be, so this asks rather than
+    // asserts — the same rule that stopped the fallback claiming a clean tree
+    // over a dirty one. An actor can only act on what they can observe.
+    if resolution.substitution.is_none() {
+        if resolution.compare_context.head_kind.is_witnessable() {
+            // A commit head: any uncommitted work is outside these numbers, and
+            // a reader looking at a verdict cannot know that unless it is said.
+            if !resolution.uncommitted.is_empty() {
+                engine_notes.push(format!(
+                    "{} path(s) have uncommitted content and are NOT described by this \
+                     measurement, which covers committed content only: {}. Commit them and \
+                     re-run to measure them.",
+                    resolution.uncommitted.len(),
+                    resolution.uncommitted.join(", ")
+                ));
+            }
+        } else {
+            // An uncommitted head: the working tree IS what was measured, so the
+            // sentence above would be false. The remaining gap is narrower and
+            // it is P1's advisory-lane boundary — engines read committed and
+            // staged blobs, and bytes that exist only on disk have no object for
+            // them to read. Each engine already emits a per-file marker saying
+            // so; this says it once, at the top, with the thing that fixes it.
+            let unstaged: Vec<&str> = changed
+                .entries
+                .iter()
+                .filter(|e| e.dst_mode.is_some() && e.readable_blob().is_none())
+                .map(|e| e.path.as_str())
+                .collect();
+            if !unstaged.is_empty() {
+                engine_notes.push(format!(
+                    "{} path(s) are edited but not staged, so their bytes are not in the object \
+                     database and no engine could read them: {}. `git add` them and re-run; \
+                     staged content IS measured.",
+                    unstaged.len(),
+                    unstaged.join(", ")
+                ));
+            }
+        }
     }
 
     let policy_change = detect_policy_change(&git, &changed).map_err(MeasureError::Policy)?;

@@ -5,7 +5,7 @@
 //! merge base against a trusted branch, the index, or the working tree — and
 //! only the first two produce something the CI verifier can recompute.
 //!
-//! # Why a dirty endpoint cannot become a `CompareContext`
+//! # Why a dirty endpoint cannot become a *comparable* `CompareContext`
 //!
 //! [`crate::schema::payload::CompareContext`] requires a `base_oid` and a
 //! `head_oid`, and P0 made them non-optional deliberately: a record that cannot
@@ -16,20 +16,34 @@
 //! that were never committed, which is the laundering path R2-4 exists to close.
 //!
 //! So [`ResolvedRange::compare_context`] returns an error for a dirty endpoint,
-//! and there is no other way to build one from a resolution. A working-tree
-//! measurement is advisory in the same sense its content is: real, useful to the
-//! author, and never a thing CI is asked to witness.
+//! and always will. A working-tree measurement is advisory in the same sense its
+//! content is: real, useful to the author, and never a thing CI is asked to
+//! witness.
 //!
-//! **Forward contract for P5a:** assembling a record from a dirty endpoint must
-//! not synthesize a tuple. Either the record is not emitted, or the schema grows
-//! a representation for "measured against an uncommitted tree" — a plan change,
-//! not a phase decision.
+//! # The forward contract, and how it was discharged
+//!
+//! This module used to end: *"assembling a record from a dirty endpoint must not
+//! synthesize a tuple. Either the record is not emitted, or the schema grows a
+//! representation for 'measured against an uncommitted tree' — a plan change,
+//! not a phase decision."*
+//!
+//! **The plan change was made** (P5b mini-G2 ruling). The schema grew
+//! [`crate::schema::payload::HeadKind`], `schema_version` went to 2, and
+//! [`ResolvedRange::wire_context`] is the second, opt-in accessor that builds a
+//! context for a dirty head — carrying the snapshot's own content hash, never
+//! `HEAD`'s OID. The no-synthesis rule is unchanged and is now enforced by the
+//! type rather than by a refusal: there is no arrangement in which a dirty head
+//! is labelled `commit`.
+//!
+//! `compare_context` kept its refusal on purpose. Its callers are the ones that
+//! need a witnessable range, and a relaxation would have started them emitting
+//! records CI can never check, silently.
 
 use serde::Serialize;
 
 use super::command::{Git, GitError};
 use super::status::{DirtySnapshot, SnapshotMode};
-use crate::schema::payload::CompareContext;
+use crate::schema::payload::{CompareContext, HeadKind};
 
 /// What the caller asked to measure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,6 +288,11 @@ impl ResolvedRange {
         Ok(CompareContext {
             base_oid: base_oid.clone(),
             head_oid: head_oid.clone(),
+            // Both endpoints destructured as commits above, so this arm is the
+            // only one reachable — stated rather than defaulted, because a
+            // `..Default::default()` here would silently mislabel the day this
+            // function learns another endpoint kind.
+            head_kind: HeadKind::Commit,
             git_version: self.git_version.clone(),
             base_resolution: resolution.clone(),
         })
@@ -282,6 +301,52 @@ impl ResolvedRange {
     /// True when this range can be witnessed by the verifier at all.
     pub fn is_comparable(&self) -> bool {
         self.base.is_commit() && self.head.is_commit()
+    }
+
+    /// The wire context for this range, whatever kind of head it has.
+    ///
+    /// # Why this is a second function and not a relaxation of the first
+    ///
+    /// [`Self::compare_context`] still errors on a dirty endpoint, and it must:
+    /// its callers are the ones that need a *witnessable* range, and several of
+    /// them — `andon-ledger-min`'s measure path, the engines' record builders —
+    /// would silently start emitting records CI can never check if it quietly
+    /// started succeeding. A caller that requires witnessability should not have
+    /// to remember to ask a second question.
+    ///
+    /// So the capability is opt-in by name. This one produces a context for an
+    /// uncommitted head too, marked [`HeadKind::UncommittedWorktree`] or
+    /// [`HeadKind::UncommittedIndex`], with the snapshot's own content hash in
+    /// `head_oid` — never `HEAD`'s OID, which is the synthesis the module
+    /// documentation forbids and the reason this took a schema change to do
+    /// (P5b mini-G2 ruling; `schema_version` 2).
+    ///
+    /// The **base is still refused** when dirty. "Compared against uncommitted
+    /// content" is a comparison nothing can stand in for, and `ChangedSet`
+    /// refuses it on the same grounds.
+    pub fn wire_context(&self) -> Result<CompareContext, ResolveError> {
+        let Endpoint::Commit {
+            oid: base_oid,
+            resolution,
+        } = &self.base
+        else {
+            return Err(ResolveError::NotComparable {
+                side: "base",
+                kind: self.base.kind(),
+            });
+        };
+        let (head_oid, head_kind) = match &self.head {
+            Endpoint::Commit { oid, .. } => (oid.clone(), HeadKind::Commit),
+            Endpoint::Index { digest, .. } => (digest.clone(), HeadKind::UncommittedIndex),
+            Endpoint::Worktree { digest, .. } => (digest.clone(), HeadKind::UncommittedWorktree),
+        };
+        Ok(CompareContext {
+            base_oid: base_oid.clone(),
+            head_oid,
+            head_kind,
+            git_version: self.git_version.clone(),
+            base_resolution: resolution.clone(),
+        })
     }
 }
 

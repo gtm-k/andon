@@ -37,7 +37,7 @@
 //! which this module returns a range it cannot justify.
 
 use andon_core::git::{ChangedSet, Git, ResolveError, ResolvedRange, Revision};
-use andon_core::schema::payload::CompareContext;
+use andon_core::schema::payload::{CompareContext, HeadKind};
 
 /// The `base_resolution` written when the no-diff fallback fired.
 ///
@@ -199,9 +199,30 @@ fn summarize(paths: &[String]) -> String {
 /// Resolve a range, applying the base ladder and the no-diff fallback.
 pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailure> {
     let head_spec = request.head.clone().unwrap_or_else(|| "HEAD".to_string());
-    let head = Revision::Rev(head_spec.clone());
-    // Read once, before any branch, so every outcome can disclose it.
+    // Read once, before any branch, so every outcome can use it.
     let uncommitted = uncommitted_paths(git)?;
+
+    // THE HEAD IS THE WORKING TREE WHEN THERE IS WORK IN IT.
+    //
+    // This is the state the product exists for — an agent that has just written
+    // a change and not committed it — and it was invisible: the head was always
+    // `HEAD`, so `diff-tree base..HEAD` saw committed content only, and a
+    // deeply nested function sitting uncommitted read `pass` while the identical
+    // bytes committed read `block`.
+    //
+    // A named `--head` always wins: a caller who pinned both ends asked about
+    // two commits, and answering about their working tree instead would be the
+    // silent substitution this module exists to prevent. `--last-merged` also
+    // opts out, because it is a request for the committed history.
+    let head = if uncommitted.is_empty() || request.head.is_some() || request.last_merged {
+        Revision::Rev(head_spec.clone())
+    } else {
+        // Worktree rather than Index: E6's honest union covers staged and
+        // unstaged together, and an agent that wrote a file without staging it
+        // has still written it. `git add` is not a step this tool should require
+        // before it will look.
+        Revision::Worktree
+    };
 
     // An explicit base is obeyed exactly, including when it yields an empty
     // change. A caller who named both ends asked a specific question, and
@@ -210,14 +231,12 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
     if let Some(spec) = &request.base {
         let base = parse_base(spec);
         let range = ResolvedRange::resolve(git, &base, &head)?;
-        let compare_context = range.compare_context()?;
+        // `wire_context` rather than `compare_context`: the head may be the
+        // working tree, and the schema now has a representation for that which
+        // does not synthesize a commit OID (P5b mini-G2 ruling).
+        let compare_context = range.wire_context()?;
         let changed = ChangedSet::enumerate(git, &range)?;
-        let how = format!(
-            "{} → {} ({})",
-            short(&compare_context.base_oid),
-            short(&compare_context.head_oid),
-            compare_context.base_resolution
-        );
+        let how = describe(&compare_context, &compare_context.base_resolution);
         return Ok(Resolution {
             range,
             compare_context,
@@ -243,14 +262,10 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
             // the right one, and the failure is reported only if none is.
             continue;
         };
-        let compare_context = range.compare_context()?;
+        let compare_context = range.wire_context()?;
         let changed = ChangedSet::enumerate(git, &range)?;
         if !changed.is_empty() {
-            let how = format!(
-                "{} → {} (fork point against {candidate})",
-                short(&compare_context.base_oid),
-                short(&compare_context.head_oid),
-            );
+            let how = describe(&compare_context, &format!("fork point against {candidate}"));
             return Ok(Resolution {
                 range,
                 compare_context,
@@ -262,9 +277,11 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
         }
     }
 
-    // Nothing has been *committed* ahead of the fork point. Two very different
-    // situations reach this line, and telling them apart is the whole of the
-    // decision below.
+    // Reaching here with a dirty tree means the working-tree head produced no
+    // changed set at all — a bare repository with no worktree to resolve, or a
+    // snapshot git reported and then could not diff. The representation cannot
+    // describe those, so the refusal remains for them, and that is now the only
+    // thing it covers: an ordinary dirty tree is measured above.
     if !uncommitted.is_empty() && !request.last_merged {
         return Err(ResolveFailure::UncommittedWork { paths: uncommitted });
     }
@@ -301,6 +318,30 @@ fn uncommitted_paths(git: &Git) -> Result<Vec<String>, ResolveFailure> {
         .filter(|path| !path.is_empty())
         .map(|path| path.to_string())
         .collect())
+}
+
+/// One line naming the range, with the head's kind said out loud.
+///
+/// A content hash and a commit OID are both forty-odd hex characters, and a
+/// reader glancing at a header has no way to tell them apart. So the header says
+/// which it is — an uncommitted head is the single most important fact about
+/// what these numbers describe, and it must not be inferable only from the JSON.
+fn describe(ctx: &CompareContext, how_base: &str) -> String {
+    match ctx.head_kind {
+        HeadKind::Commit => format!(
+            "{} → {} ({how_base})",
+            short(&ctx.base_oid),
+            short(&ctx.head_oid)
+        ),
+        HeadKind::UncommittedWorktree => format!(
+            "{} → your uncommitted working tree ({how_base})",
+            short(&ctx.base_oid)
+        ),
+        HeadKind::UncommittedIndex => format!(
+            "{} → your staged changes ({how_base})",
+            short(&ctx.base_oid)
+        ),
+    }
 }
 
 /// `HEAD~1..HEAD`, labelled as the substitution it is.

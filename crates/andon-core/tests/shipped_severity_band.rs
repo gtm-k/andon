@@ -930,3 +930,81 @@ fn a_record_this_tool_really_produces_can_still_be_confirmed() {
     assert!(compare.mismatched.is_empty() && compare.unpaired.is_empty());
     assert!(compare.tuple_equal && compare.regime_equal);
 }
+
+#[test]
+fn an_uncommitted_head_is_never_classified_as_a_disagreement() {
+    // The false-accusation guard for the uncommitted lane, over records this
+    // tool really produces rather than over hand-built shapes.
+    //
+    // A record measured against a working tree carries a content hash where a
+    // commit OID would be. Without the step-0 check in `compare::classify` the
+    // tuple comparison finds it unequal, asks how the base relates to the
+    // trusted branch, and reports `unwitnessed-base-mismatch` — or, if the base
+    // had also moved, `base-fabrication` and `divergent`. That is a tamper
+    // accusation against somebody who did nothing but forget to commit, and this
+    // project ranks false accusation above missed detection.
+    use andon_core::compare::{self, BaseRelation, CompareInputs};
+    use andon_core::schema::enums::Attestation;
+    use andon_core::schema::payload::HeadKind;
+
+    let measured = measure_everything();
+    let record = assemble(&measured);
+    assert!(
+        record.compare_context.head_kind.is_witnessable(),
+        "the fixture is a commit range; the dirty case is derived from it below"
+    );
+
+    // The same record, relabelled as what an uncommitted measurement is: a
+    // content hash for a head, and the kind that says so.
+    let mut dirty = record.clone();
+    dirty.compare_context.head_kind = HeadKind::UncommittedWorktree;
+    dirty.compare_context.head_oid = "c".repeat(64);
+
+    // Every hostile-looking arrangement of the inputs, because the point is that
+    // none of them can reach an accusation.
+    for base_relation in [
+        BaseRelation::Equal,
+        BaseRelation::Ancestor,
+        BaseRelation::NotAncestor,
+        BaseRelation::Unknown,
+    ] {
+        for head_equal in [true, false] {
+            let classification = compare::classify(
+                Some(&dirty),
+                &record,
+                CompareInputs {
+                    base_relation,
+                    head_equal,
+                    fork_tier: false,
+                },
+            );
+            assert_eq!(
+                classification.attestation,
+                Attestation::UnwitnessedUncommitted,
+                "{base_relation:?}/{head_equal} classified an uncommitted head as something else"
+            );
+            assert!(
+                classification.tamper_signals.is_empty(),
+                "{base_relation:?}/{head_equal} raised a tamper signal over uncommitted work"
+            );
+            assert!(
+                classification.compare.is_none(),
+                "a compare was reported over a head nothing can recompute"
+            );
+        }
+    }
+
+    // And the control in the other direction: the commit record this fixture
+    // really produces still earns a real classification, so the check above is
+    // not passing because `classify` stopped working.
+    let confirmed = compare::classify(
+        Some(&record),
+        &record,
+        CompareInputs {
+            base_relation: BaseRelation::Equal,
+            head_equal: true,
+            fork_tier: false,
+        },
+    );
+    assert_eq!(confirmed.attestation, Attestation::Confirmed);
+}

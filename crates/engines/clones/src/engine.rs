@@ -627,6 +627,7 @@ mod tests {
                 base_oid: "0".repeat(40),
                 head_oid: "1".repeat(40),
                 git_version: "git version 2.51.0".to_string(),
+                head_kind: andon_core::schema::payload::HeadKind::Commit,
                 base_resolution: "explicit".to_string(),
             },
             policy: Policy::default(),

@@ -128,13 +128,35 @@ P1.5 and P9 build against a function rather than re-deriving it from prose.
 The verifier resolves the base itself and never takes the record's word for it —
 for the base, for the regime, or for what belongs in the compare set.
 
+**Step 0, before the tuple: `head_kind`.** A head can be a commit or an
+uncommitted tree, and only the first is something a verifier can check out. A
+record measured against a working tree carries the content hash of its snapshot
+in `head_oid` — never `HEAD`'s commit OID, which would pass the tuple check while
+describing bytes that were never committed. `classify` reads `head_kind` before
+anything else and returns `unwitnessed-uncommitted` without attempting a compare;
+reaching the tuple check with a content hash would report
+`unwitnessed-base-mismatch`, or `base-fabrication` and `divergent` if the base had
+also moved, which is a tamper accusation against somebody who forgot to commit.
+
+`head_kind` is inside `ResultDigestInput`, so it is a measurement fact rather
+than compare metadata: "these numbers came off an uncommitted tree" is part of
+what was measured, and a record that lied about it sealed its results against the
+lie.
+
 ## Vocabularies
 
 `verdict`: `pass | advise | block | escalate_to_human`
 
 `attestation`: `confirmed | confirmed-static | divergent | unwitnessed |
-unwitnessed-version-skew | unwitnessed-base-mismatch`. Only the first two count
-downstream (`Attestation::counts_downstream`).
+unwitnessed-version-skew | unwitnessed-base-mismatch | unwitnessed-uncommitted`.
+Only the first two count downstream (`Attestation::counts_downstream`).
+
+The `unwitnessed-*` family is four specific causes kept out of one generic
+bucket, and `unwitnessed-uncommitted` is the one that can never improve: the
+other three describe a recompute that has not happened or did not line up, while
+this one describes a head no verifier can ever check out. Telling an operator to
+wait for an attestation that is not coming is the actor-observability defect the
+family exists to avoid.
 
 `completeness`: `complete | partial | parse-degraded | unwitnessed`. Missing data
 is said out loud, never reported as a zero.
@@ -166,7 +188,7 @@ change.
 
 ## Versioning
 
-`schema_version` is `1`. A change to any published type is a plan change, not a
+`schema_version` is `2`. A change to any published type is a plan change, not a
 phase decision: `schemas/*` is P0-owned, and later phases touch it only where
 their PLAN.md row says so, serialized, with a version bump and a changelog line.
 
@@ -175,6 +197,21 @@ field with a default is a v1 definition change and not a v1 → v2 migration. Th
 is the precedent P0 set with `CompareOutcome.flag_disagreements` (decision log,
 2026-08-17). It ends at the first release, after which the sentence above is the
 whole rule.
+
+### v1 → v2
+
+| Schema | Change | Phase | Why |
+|---|---|---|---|
+| `payload-v1` | `CompareContext.head_kind` added, required; `head_oid` widened from "a commit OID" to "the head's identity, of the kind `head_kind` names"; `Attestation::unwitnessed-uncommitted` added; `head_kind` bound into `ResultDigestInput` | P5b (mini-G2 ruling) | The state the product exists for is an agent that has written a change and not committed it, and it could not be represented: the working tree has no commit OID, and writing `HEAD`'s in its place is the R2-4 laundering path that produces false `divergent` verdicts on honest work. So the head says what it is. |
+
+**Why this is a migration and not a v1 definition change.** The carve-out below
+covers *an additive field with a default*, which is what
+`CompareOutcome.flag_disagreements` was: nothing that already existed changed
+meaning. Here an existing required field did. A v1 consumer that read `head_oid`
+and handed it to `git cat-file` was correct at v1 and is wrong at v2, and telling
+it so is what a version number is for. Every per-result digest moves, because
+`schema_version` and `head_kind` are both inside `ResultDigestInput`; the golden
+set was re-recorded in the same commit.
 
 ### Changes to the v1 definition
 

@@ -167,6 +167,12 @@ pub fn attestation_line(attestation: Attestation) -> &'static str {
             "the base this was measured against is not the one CI trusts — a stale base or a \
              rebase. Not an accusation, and not a pass"
         }
+        Attestation::UnwitnessedUncommitted => {
+            "measured against your uncommitted working tree, so no CI recompute is possible — \
+             not now and not later, because CI cannot check out your working tree. Real, useful, \
+             and outside the trust boundary by construction. Commit the change to make it \
+             attestable"
+        }
     }
 }
 

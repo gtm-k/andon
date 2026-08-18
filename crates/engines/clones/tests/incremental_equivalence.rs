@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 
 use andon_core::engine::{run_engine, MeasureContext};
 use andon_core::policy::Policy;
-use andon_core::schema::payload::{CompareContext, MeasurementResult};
+use andon_core::schema::payload::{CompareContext, HeadKind, MeasurementResult};
 use andon_engine_clones::index::{FileInput, Index};
 use andon_engine_clones::ClonesEngine;
 use proptest::prelude::*;
@@ -183,6 +183,7 @@ fn context() -> MeasureContext {
             base_oid: "a".repeat(40),
             head_oid: "b".repeat(40),
             git_version: "git version 2.51.0".to_string(),
+            head_kind: HeadKind::Commit,
             base_resolution: "explicit".to_string(),
         },
         policy: Policy::default(),

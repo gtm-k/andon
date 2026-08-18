@@ -62,6 +62,7 @@ pub fn sample_compare_context() -> CompareContext {
         base_oid: "1".repeat(40),
         head_oid: "2".repeat(40),
         git_version: "2.39.0".to_string(),
+        head_kind: HeadKind::Commit,
         base_resolution: "merge-base".to_string(),
     }
 }

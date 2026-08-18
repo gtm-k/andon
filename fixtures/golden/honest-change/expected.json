@@ -75,7 +75,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "9f5d4b5e88532e83e7073383b8f87537c9a4a3774f7f46e3bcae89cffad95dff"
+      "digest": "50bbd865d07bb0fa58cfd47e7cd31f669623a72210c6a50da9cdc0a5b3bd420e"
     },
     {
       "metric_id": "clones.duplicated-token-ratio",
@@ -90,7 +90,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "a46d8294b4b6e3e7ecf0664cf8f0c26d3d9a4ae5f9817420002fcf0c3b540879"
+      "digest": "af9fc9222bbbcf3dbd1ed7c51433476529c6970f322c986e970046f04df9ca19"
     },
     {
       "metric_id": "clones.duplicated-tokens",
@@ -105,7 +105,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "38dba2a9a19e767ffbff6a47719166841aa1e42cfbd4e6a74baf448a6ece615f"
+      "digest": "7593786ea18813ebf1c85aac82bd14fd7aed13645c18eca9d97f7151ab3a98e6"
     },
     {
       "metric_id": "clones.file-duplicated-tokens",
@@ -120,7 +120,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "ea64195df6f2345a0e4af7dd1568742d548ac1efb891a47e2f297d1c83782445"
+      "digest": "28561dc329c14d422ad8d7ec9c929f882288ac75a9d921afa19c1ffd452233ac"
     },
     {
       "metric_id": "clones.file-duplicated-tokens",
@@ -135,7 +135,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "629f2ffe0b424da9878f3c5b341bd8a8e221db2d1a069fea95c169a140a23eb1"
+      "digest": "b0aaf8f0a80fb42fe5e5172fff8104e92633f01527afac9018d67f585f9d5dba"
     },
     {
       "metric_id": "clones.largest-clone-tokens",
@@ -150,7 +150,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "e79de80f04d2a075c21b7ab2ce189bb1805922fdb52106b9b413764a3ed4eb9c"
+      "digest": "cca57e01ec2e1c0011bd348f22fc42a834bed48857367d16362be8af252c31ae"
     },
     {
       "metric_id": "process.change-coupling",
@@ -165,7 +165,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "ec6d0a873e0962b5dd0eb8db8e2467614d27285ef4eb3ee2457b07df091c02f9"
+      "digest": "077259639a442cf49cc16b2f4cba2c574a70303721209b7d56cb4208fbaf0271"
     },
     {
       "metric_id": "process.change-coupling",
@@ -180,7 +180,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "085d75393e91aad9dd5ae5059f9af89ae77675778b688e8bc5f761c1eb4bad01"
+      "digest": "7a0936f9044d6a169e0e7929364d756c6685e9c09133d3442389ca0e64c65a02"
     },
     {
       "metric_id": "process.change-coupling",
@@ -195,7 +195,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "34cd9dea7076ca97ac6d68925db3f87a79ebbfc7ebab75d9a8c7732fccfabba2"
+      "digest": "73c3aa22331b189f3a366cc2e3f189d30c75a10e87a987513c56e2cc9d77d9b0"
     },
     {
       "metric_id": "process.churn-commits",
@@ -210,7 +210,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "a3ca94a9817b37fa1c9d4cc8ef7ae346c676c09e35893be53e6e0d00560db4bd"
+      "digest": "d1ec532f99c5ffd6cce5b7802c6aae10861bec4487ca76324361ea1fbd22c035"
     },
     {
       "metric_id": "process.churn-commits",
@@ -225,7 +225,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "d0ebebd1f1319b08c7145c8a7e79fecdb92fe00d47636e0ae3002557cf172289"
+      "digest": "6946a74920fb57138adc6af71a178de38f238beaec9494ef95150f891269f029"
     },
     {
       "metric_id": "process.churn-commits",
@@ -240,7 +240,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "860c58bc5593eff47915df60bd9b1a5da8b57292cf80b94303c6d50916960ba1"
+      "digest": "2f7080c48a90a62664284b8f40c6580901b432dd542453ff18bf037e4e9ff3e9"
     },
     {
       "metric_id": "process.churn-lines",
@@ -255,7 +255,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "5a20136585bd11ffc95ee76e389a2fa0ec6d04f9f6030823fa93d02bd25807f7"
+      "digest": "687fa0331ea314520ca3982de9679ea546f739f9d6b837138a22df83be1ff05d"
     },
     {
       "metric_id": "process.churn-lines",
@@ -270,7 +270,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "992363c87cbeee3680e36c3c1170f6a2de0bbb72ebdd213bde78b6effe35de36"
+      "digest": "80363fc7898e6d3b1b3412f961972c73658958a9ca7c6cb282902db2b0f49946"
     },
     {
       "metric_id": "process.churn-lines",
@@ -285,7 +285,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "d1c15cb253583a050f50e3e1884795c891f933abb7889fa0b4a836a8b809bd68"
+      "digest": "1438b4846bdcb4123f83691688f1f92e43adaf434fb66da1526fd2c0b7085dae"
     },
     {
       "metric_id": "process.code-age-days",
@@ -300,7 +300,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "34a51002721450cfa423409d6b25445b4d191fe15cb52138184ee711e8e81e22"
+      "digest": "54dd17f6b23f13ee1d055a997a08f965e9497c41758648eef300a182eac9d7e9"
     },
     {
       "metric_id": "process.code-age-days",
@@ -315,7 +315,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "c720b5b95c487ad93fdff7659dc06b493f021e5d8f352343d8755309e434a2fe"
+      "digest": "745c848a4a8e662743d16346bbab2ee7de9c072572122a107584c042a959ea40"
     },
     {
       "metric_id": "process.code-age-days",
@@ -330,7 +330,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "431c20311d1ebea965e1151fe71bc500142d1fc8a5e20ede5c7fe6282a25bbeb"
+      "digest": "a187fab31e86357a08e8567a58602be126975668ab2e3cd1f06abf444b32cc84"
     },
     {
       "metric_id": "process.hotspot",
@@ -345,7 +345,7 @@
       "completeness": "unwitnessed",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "58c17c120434a98e6f9f1509b4614547889002ca9585991811777fcb8863f331"
+      "digest": "b97ed9dc15994808b66cf9575ac950cc253e2ee7747f501c312930a7608d4ef3"
     },
     {
       "metric_id": "process.hotspot",
@@ -360,7 +360,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "410438e799ec4103c45e9fcf2b1fc5e322fd63c29027e697fa38a4c2653bdac7"
+      "digest": "7a7a7bf7e623f566a48dbcce320b0d48ea627f41dd13bf61b89706d6952d9358"
     },
     {
       "metric_id": "process.hotspot",
@@ -375,7 +375,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "40624c7ac6aad5fbe19cfc62ee527c7861453c926b27d870af116895922666ad"
+      "digest": "d75ac3170631a8056eca34c93f75510130572156077ea06e6ced99a683bfa0df"
     },
     {
       "metric_id": "process.ownership-entropy",
@@ -390,7 +390,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "339868894547904a95d58d24b44d75adb4933ad21db010cb6d3e9b24bc641b37"
+      "digest": "945c6eed6ac4d9e67ed9fe52ee3ba2ae436f41955658244afb251478b7def468"
     },
     {
       "metric_id": "process.ownership-entropy",
@@ -405,7 +405,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "e226190cb7f03ba0368fe20e6f32d42a421a51ae91a91a806f8d895ebd74cdea"
+      "digest": "e6644d9ac0102262d81154461531cb01f1feec13fd9137e5a38fee8ce2a24913"
     },
     {
       "metric_id": "process.ownership-entropy",
@@ -420,7 +420,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "e47120c27266095f726451872b143afd11eb5eeec5f96cd492d16ef6541e0ae7"
+      "digest": "2e4121d5b34d62398811f8d1e0f911a1612faa695a9bf60ebcdda08fa898195f"
     },
     {
       "metric_id": "static.cognitive-complexity.typescript",
@@ -435,7 +435,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "a701009722aef6cea1cea6fe0c23c3d41f4f34be86894041503269a23f00e2e6"
+      "digest": "a1723cd4c9f4c56a322af13bace1dca7c2b5531b15932a41d6579870082012ba"
     },
     {
       "metric_id": "static.cognitive-complexity.typescript",
@@ -450,7 +450,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "a0c53c7ea1a05cae6d8b14c1e21121431af99cb62f448cf3fbba7aa34c321e03"
+      "digest": "d8f8d184d9da30eacd1f58f7045a8f823bd57589220316bd4e5ff376d8eb6ff4"
     },
     {
       "metric_id": "static.cyclomatic-complexity.typescript",
@@ -465,7 +465,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "0966144c60b7162f908522ed9270e98464bf773c999fb7ca62aec5cd03696d4d"
+      "digest": "1376204d44fbad137f10473de9c25ff2acd01176bee55fed1d0d95530bf6609a"
     },
     {
       "metric_id": "static.cyclomatic-complexity.typescript",
@@ -480,7 +480,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "a2744a9cc72a1e2188cf11a6de43053bb0a4fcef3f776ad9e9322cb1666bc390"
+      "digest": "f4d236a87ba5fb0b41d00612743218629ef9f3d9566eef610adffe2aef86a5e4"
     },
     {
       "metric_id": "static.parse-errors",
@@ -495,7 +495,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "dffdf2e99adad93ade02a02d7247d158ee74067d2187b1b85954d83336d8282b"
+      "digest": "081808f04663d474697e7a0c6bf2eb7abb02df6b793a29518fcb5487660ecdd3"
     },
     {
       "metric_id": "static.parse-errors",
@@ -510,7 +510,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "7ff7c3446217f885b9810cc459e1d2182213e37f0ffb39521335047e5c859a31"
+      "digest": "432ea0ddc82e19b0a715f92192d5fa14667377cc989d0c318926d9aa273274f0"
     },
     {
       "metric_id": "static.parse-missing",
@@ -525,7 +525,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "2cfbefb523ae5bb5b14015548f0b24a58738021c134ee0427c6c3163056fcfaa"
+      "digest": "87942aa5ea1b7b6dd4482d5affcdd2357d2a87922f2856212d70c1d3ff9dbf92"
     },
     {
       "metric_id": "static.parse-missing",
@@ -540,7 +540,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "86cf42b07e41fa6ec55e449c186af47e124851857c0e9b7225e1fa0615df94bd"
+      "digest": "f9e4bf0a835780aed859c375c576c21e3902454b00d2375f497abfe00c66b7cb"
     },
     {
       "metric_id": "static.sloc",
@@ -555,7 +555,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "1c2f8677482f54361dab88478b3cbeb7168528c2cb6f3af82fd4f3154fd5d298"
+      "digest": "aaa1145899b4e041b677567933df2cafba3f45042199422d4ac5fbc6f72ea5a5"
     },
     {
       "metric_id": "static.sloc",
@@ -570,7 +570,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "80048b74fe54b9f81af1d20b880f13ae9f72da24c6613dc3202a40da8a34f859"
+      "digest": "15200a35423ad1e3cc3ef462c9bdc204bbf2168c5f08785dd0677080a7bb7cae"
     },
     {
       "metric_id": "static.sloc",
@@ -585,7 +585,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "525e8315ca6053df665aa83393c76049b295533ab128e911c5e41f21ba8963bb"
+      "digest": "26d7123328f415806f80b944c732a632e20679792a2a1ba8f04791113c8a5415"
     },
     {
       "metric_id": "static.sloc",
@@ -600,7 +600,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "f5ae15183d35ad8c620eced4007b9a3b9d0bd3c7282a02e130c17515515d2af5"
+      "digest": "28fed1dd7215fe826eb78e004e6be4311116ccefd7fd656132fbfa00733f371e"
     },
     {
       "metric_id": "static.unmeasured-files",
@@ -615,7 +615,7 @@
       "completeness": "complete",
       "metric_class": "contextinformational",
       "deterministic": true,
-      "digest": "7eba86a41d984e021684c6870d9c6bd8fb409e90b4c9486dbe0b3bfe647660a4"
+      "digest": "e54c6fe5b6f330f0c5e0da684618ebce15398dffc302f94ab3369ae28740839c"
     },
     {
       "metric_id": "tamper.assertion-free-test",
@@ -630,7 +630,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "83f016d46cbb4d44a3c2031b3a9a569b69bbb16bec473d0ac4e4d42201ceaba1"
+      "digest": "94804ae033f9eac9c01679f13e77df2a476d51bb2a44ca1e87939afd93e2ae13"
     },
     {
       "metric_id": "tamper.assertion-free-test.magnitude",
@@ -645,7 +645,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "7d8524f7c1186447f6e85bab9e0167fd39cb549dacf523131df59f88a8c9e742"
+      "digest": "c494b9b552bd455602d7b33616f215178ef236f24707ec5f9ca242a7618240bf"
     },
     {
       "metric_id": "tamper.coverage-exclusion-drift",
@@ -660,7 +660,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "b0a23222cead80bbcd2b407c1de8bebf841976ed50de49f0778466fe3940b7b0"
+      "digest": "ba6386cbbcb3bfe38185370077ee204a656421d56e37080030ce4c43a67fd45d"
     },
     {
       "metric_id": "tamper.coverage-exclusion-drift.magnitude",
@@ -675,7 +675,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "17bf87bcc82cc9734800c45dfbb2bc2f8001fd085dd10c54f0e4ff25d740c47c"
+      "digest": "12a4aed898d0c41a0af8ffb468383a1f43aba3122442657f53b1b68594ce7e40"
     },
     {
       "metric_id": "tamper.lookup-table-blowup",
@@ -690,7 +690,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "4af7146e537d62ba796030e3659468549630664863943347d6b3bd64428f373e"
+      "digest": "a671fe6c0b784d72204040f981196dd3ac71b8a9ad8cc2bd0e551918086f462b"
     },
     {
       "metric_id": "tamper.lookup-table-blowup.magnitude",
@@ -705,7 +705,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "227769142e48d5255705e2b82a07f0899992ac61f300c3ed626dfcb8b40d731d"
+      "digest": "d2ddf5dbe80b7b6a6100cb18b9c83381b5a012926f2bdc9681b7620dfd83c4c9"
     },
     {
       "metric_id": "tamper.parse-error-delta",
@@ -720,7 +720,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "5a891a0e00e498824f3fb82e5aafdcdd7e3f7faa6ebceb4a98cf0711bd7bc2d2"
+      "digest": "40c9945b89c4274f3377a7a9cc5ec04904934c44635462ea06e24f5b21668977"
     },
     {
       "metric_id": "tamper.parse-error-delta.magnitude",
@@ -735,7 +735,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "91473a18e33d8d050458622035df03f94317b7f269ebba2719d37f1e3ae1460b"
+      "digest": "e4d1f226bee03746923a97d7dc0ac74fdd8317ab6ded18c0855b72348a21ca50"
     },
     {
       "metric_id": "tamper.suppression-density",
@@ -750,7 +750,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "e2e4b64c76daa3d5c3d7a2e7b6b0923143a2cc070eda871c2196745f68015d8e"
+      "digest": "f92d6027207beff89ee07b9f2609bf6dd237030bd0956c613679d65898b4fab3"
     },
     {
       "metric_id": "tamper.suppression-density.magnitude",
@@ -765,7 +765,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "937ba07406c0abe03172416779208f6e95ac8da3267816c94cb47e0d7b644e93"
+      "digest": "0223f4f532b6797ef89e5bd6a44d94787252ebad2904b97fdcfc9d56056c3c97"
     },
     {
       "metric_id": "tamper.test-removal",
@@ -780,7 +780,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "53472c28b7a35991c577541fa2113f37ff299cc076668ff7b43bd8e5b8ed0b4c"
+      "digest": "fb09db3f43a5833797537209523045053a1596989d1a9ad311634e61a460baf8"
     },
     {
       "metric_id": "tamper.test-removal.magnitude",
@@ -795,7 +795,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "27a7f82587f2243b35f6766eaa173685048e449eb5f1877e6c44470a38e05109"
+      "digest": "db0d87c24bc3b6d9a3c6dba1f3b4650dd4f2273f7dd33fd17e3d49dd7868768c"
     },
     {
       "metric_id": "tamper.threshold-config-edit",
@@ -810,7 +810,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "8def8975a465538d51274450fef93fdb41c09cedb46e63dc633d200f473133a5"
+      "digest": "1455adbf2b374963ea8c1055a2e394495607d0c185df61c8af19a4834291d2bb"
     },
     {
       "metric_id": "tamper.threshold-config-edit.magnitude",
@@ -825,7 +825,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "5e2effc4b0c34006095144193f38b6aa2dccf8bc70a373198b9b21322d63a323"
+      "digest": "06bba7ede753d7ee69ed21dd0ab78db8d50021d60d40a649d749399833988ffe"
     }
   ]
 }
