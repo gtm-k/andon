@@ -278,6 +278,88 @@ mod tests {
     use super::*;
     use crate::policy::DEFAULT_ITERATION_CAP;
 
+    #[test]
+    fn the_write_is_atomic_and_leaves_nothing_behind() {
+        // The rename is what makes a crash mid-write leave the old counter
+        // rather than half a new one, and nothing exercised it. What is
+        // checkable without crashing a process is the shape the argument rests
+        // on: the temporary is gone when the write returns, the destination
+        // parses, and a stale temporary left by an earlier crash is overwritten
+        // rather than read.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = IterationStore::open(dir.path()).expect("opens");
+        let temp = store.path().with_extension("json.tmp");
+
+        // A stale temporary from a crash that never got as far as the rename.
+        std::fs::write(&temp, b"{ this is not json").expect("plant a stale temporary");
+
+        store
+            .advance("feat/a", 3, LoopOutcome::Countable)
+            .expect("advances");
+
+        assert!(
+            !temp.exists(),
+            "the temporary outlived the write: {}",
+            temp.display()
+        );
+        let bytes = std::fs::read(store.path()).expect("the destination exists");
+        let parsed: StateFile = serde_json::from_slice(&bytes).expect("and it parses");
+        assert_eq!(parsed.layout_version, ITERATION_STATE_VERSION);
+        assert_eq!(parsed.branches.get("feat/a"), Some(&1));
+
+        // And the count survived the stale temporary, which is the point: a
+        // half-written file under the temporary name is not state.
+        assert_eq!(store.peek("feat/a", 3).count, 1);
+    }
+
+    #[test]
+    fn the_test_failure_knob_is_declared_and_unread() {
+        // `severity.block_on_test_failure` gates nothing yet — no engine
+        // produces a test result until the sandbox does (P7). Pinned so that the
+        // claim in its own documentation cannot quietly become false: flipping it
+        // must change no verdict this workspace can reach.
+        use crate::policy::Policy;
+        use crate::schema::enums::{Severity, Verdict};
+        use crate::testing::sample_result;
+        use crate::verdict::{evaluate, VerdictContext};
+
+        let mut result = sample_result();
+        result.severity = Severity::High;
+
+        let strict = Policy::default();
+        let permissive = Policy {
+            severity: crate::policy::SeverityPolicy {
+                block_on_test_failure: false,
+                ..strict.severity.clone()
+            },
+            ..strict.clone()
+        };
+        let iteration = IterationState {
+            count: 1,
+            cap: 3,
+            escalated: false,
+        };
+        fn context(policy: &Policy) -> VerdictContext<'_> {
+            VerdictContext {
+                policy,
+                policy_change: None,
+                engine_failures: &[],
+                stale_claim_ids: &[],
+                iteration_state_recovered: false,
+                completeness: crate::schema::enums::Completeness::Complete,
+                registry_skew: &[],
+            }
+        }
+        let a = evaluate(std::slice::from_ref(&result), &context(&strict), iteration);
+        let b = evaluate(
+            std::slice::from_ref(&result),
+            &context(&permissive),
+            iteration,
+        );
+        assert_eq!(a, b, "nothing reads this field yet");
+        assert_eq!(a.verdict, Verdict::Block, "and the case is a live one");
+    }
+
     fn store() -> (tempfile::TempDir, IterationStore) {
         let dir = tempfile::tempdir().expect("a temp dir");
         let store = IterationStore::open(dir.path()).expect("opens");

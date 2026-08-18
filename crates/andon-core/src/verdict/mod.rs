@@ -70,6 +70,8 @@ pub mod reason {
     pub const ITERATION_STATE_RESET: &str = "iteration-state-reset";
     /// The measurement did not see everything it set out to.
     pub const MEASUREMENT_INCOMPLETE: &str = "measurement-incomplete";
+    /// The binary's compiled registry and the loaded one disagree about a claim.
+    pub const EVIDENCE_REGISTRY_SKEW: &str = "evidence-registry-skew";
 }
 
 /// An engine that was asked to measure and could not.
@@ -101,6 +103,10 @@ pub struct VerdictContext<'a> {
     pub stale_claim_ids: &'a [String],
     /// True when the iteration counter restarted from unusable state.
     pub iteration_state_recovered: bool,
+    /// Claims the binary's compiled registry and the loaded registry grade
+    /// differently. Reported, never blocking — see
+    /// [`crate::payload::prepare`]'s evidence resolution.
+    pub registry_skew: &'a [String],
 }
 
 /// Whether this measurement gives the agent something to act on.
@@ -122,9 +128,14 @@ pub fn has_countable_finding(results: &[MeasurementResult], ctx: &VerdictContext
 /// Reach a verdict.
 ///
 /// `results` must already have been through [`severity::apply`] — the severities
-/// read here are post-policy ones. [`crate::payload::assemble`] sequences that
+/// read here are post-policy ones. [`crate::payload::prepare`] sequences that
 /// for callers; this entry point exists for the verifier, which composes its own
 /// axis on top (PLAN P9's two-axis rule).
+///
+/// The link used to point at `crate::payload::assemble`, which has never
+/// existed: the entry point is `prepare` and it always was. A broken intra-doc
+/// link is a reader sent to a function that is not there, on the one sentence
+/// that says which order these two steps go in.
 pub fn evaluate(
     results: &[MeasurementResult],
     ctx: &VerdictContext,
@@ -316,6 +327,25 @@ pub fn evaluate(
             metric_ids: Vec::new(),
         });
     }
+    if !ctx.registry_skew.is_empty() {
+        // A notice, because a tier disagreement means the binary is older or
+        // newer than the checkout and not that any number is wrong. What it must
+        // not be is invisible: the severity ceiling is computed from the tier
+        // the *binary* resolved, so a reader comparing a payload against the
+        // registry in the tree would otherwise find a ceiling they cannot
+        // account for.
+        reasons.push(VerdictReason {
+            code: reason::EVIDENCE_REGISTRY_SKEW.to_string(),
+            severity: Severity::Info,
+            message: format!(
+                "this binary and the registry in the checkout grade {} claim(s) differently, \
+                 and the ceilings below were computed from the binary's own: {}",
+                ctx.registry_skew.len(),
+                ctx.registry_skew.join("; ")
+            ),
+            metric_ids: Vec::new(),
+        });
+    }
     if ctx.completeness != Completeness::Complete {
         // A notice rather than an advisory, and the severity is the whole of the
         // argument. Saying "incomplete" out loud is what an actor who can only
@@ -445,6 +475,7 @@ mod tests {
             stale_claim_ids: &[],
             iteration_state_recovered: false,
             completeness: Completeness::Complete,
+            registry_skew: &[],
         }
     }
 

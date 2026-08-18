@@ -740,32 +740,107 @@ mod tests {
 
     #[test]
     fn policy_v1_is_fully_classified() {
-        // Every leaf of the policy schema has a decision recorded about it. A
+        // Every leaf of the policy **type** has a decision recorded about it. A
         // field added without one fails here rather than silently defaulting to
         // `Unclassified`, which would mean a new gate nobody could block on.
-        let value = serde_json::to_value(Policy::default()).expect("policy serializes");
-        let mut leaves = Vec::new();
-        collect_leaves("", &value, &mut leaves);
-        let unclassified: Vec<&String> = leaves.iter().filter(|f| knob(f).is_none()).collect();
+        //
+        // Read off the JSON schema and not off `Policy::default()`, which is
+        // what it used to do. A serialized instance shows the fields that
+        // instance happens to have values for: a nested struct whose default is
+        // empty contributes no leaves at all, and a field skipped when empty
+        // contributes none either. Both are exactly the shape of "a new field
+        // nobody classified", so the guard was blind to its own subject.
+        let unclassified: Vec<String> = schema_leaves()
+            .into_iter()
+            .filter(|field| knob(field).is_none())
+            .collect();
         assert!(
             unclassified.is_empty(),
             "policy fields with no direction recorded: {unclassified:?}"
         );
     }
 
-    fn collect_leaves(prefix: &str, value: &Value, out: &mut Vec<String>) {
-        match value {
-            Value::Object(map) => {
-                for (key, child) in map {
-                    let path = if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{prefix}.{key}")
-                    };
-                    collect_leaves(&path, child, out);
+    #[test]
+    fn the_classification_guard_reads_the_type_and_not_an_instance() {
+        // The guard's own premise. If the schema walk stopped finding fields,
+        // `policy_v1_is_fully_classified` would pass over an empty list and
+        // prove nothing — which is how the instance-based version failed.
+        let leaves = schema_leaves();
+        for expected in [
+            "severity.block_on_tamper",
+            "severity.med_plus_tiers",
+            "loop.iteration_cap",
+            "self_measure.excluded_paths",
+        ] {
+            assert!(
+                leaves.iter().any(|f| f == expected),
+                "the schema walk missed {expected}: {leaves:?}"
+            );
+        }
+        assert!(leaves.len() >= 12, "{leaves:?}");
+    }
+
+    /// Every leaf field of the `Policy` **schema**, as its dotted path.
+    ///
+    /// Nested objects arrive as `$ref`s into the schema's definitions, so the
+    /// walk resolves them; arrays are leaves, as they are to [`walk`].
+    fn schema_leaves() -> Vec<String> {
+        let root = schemars::schema_for!(Policy);
+        let definitions = root.definitions.clone();
+        let mut out = Vec::new();
+        walk_schema(
+            "",
+            &schemars::schema::Schema::Object(root.schema),
+            &definitions,
+            &mut out,
+        );
+        out.sort();
+        out
+    }
+
+    fn walk_schema(
+        prefix: &str,
+        schema: &schemars::schema::Schema,
+        definitions: &schemars::Map<String, schemars::schema::Schema>,
+        out: &mut Vec<String>,
+    ) {
+        let schemars::schema::Schema::Object(object) = schema else {
+            out.push(prefix.to_string());
+            return;
+        };
+        if let Some(reference) = &object.reference {
+            let name = reference.rsplit('/').next().unwrap_or(reference);
+            match definitions.get(name) {
+                Some(resolved) => walk_schema(prefix, resolved, definitions, out),
+                None => out.push(prefix.to_string()),
+            }
+            return;
+        }
+        // schemars wraps a `$ref` to a named struct in an `allOf` when the field
+        // also carries its own metadata, which every documented field here does.
+        if let Some(subschemas) = &object.subschemas {
+            if let Some(all_of) = &subschemas.all_of {
+                if all_of.len() == 1 {
+                    walk_schema(prefix, &all_of[0], definitions, out);
+                    return;
                 }
             }
-            _ => out.push(prefix.to_string()),
+        }
+        let Some(validation) = &object.object else {
+            out.push(prefix.to_string());
+            return;
+        };
+        if validation.properties.is_empty() {
+            out.push(prefix.to_string());
+            return;
+        }
+        for (key, child) in &validation.properties {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            walk_schema(&path, child, definitions, out);
         }
     }
 }

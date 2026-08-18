@@ -416,6 +416,7 @@ fn every_metric_is_context_informational_so_none_of_them_can_block() {
         stale_claim_ids: &[],
         iteration_state_recovered: false,
         completeness: andon_core::schema::enums::Completeness::Complete,
+        registry_skew: &[],
     };
     for result in &results {
         assert!(

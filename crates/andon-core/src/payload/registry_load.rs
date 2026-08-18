@@ -18,6 +18,26 @@
 //! `the_loader_refuses_what_the_lint_refuses` pins that against the lint crate's
 //! own must-reject fixture, rather than against a copy of it.
 //!
+//! # A re-review schedule is not a reason to refuse to measure
+//!
+//! One lint rule is not about evidence at all. `registry.expiry-stagger` counts
+//! how many claims fall due for re-review in one calendar month and fails the
+//! build above the limit, so that a year from now somebody is not handed six
+//! re-reviews in one week (PREMORTEM S2). That is a scheduling property of the
+//! repository, and in CI it should absolutely fail the build.
+//!
+//! Applied here it did something else: a binary whose registry had four claims
+//! expiring in March **refused to measure anything at all**. The tool would stop
+//! working, on every change, for a reason that has nothing to do with the change
+//! and nothing to do with whether any number is trustworthy — the strongest
+//! version of PREMORTEM A4's uninstall loop this codebase can produce, arriving
+//! through a housekeeping rule.
+//!
+//! So [`SCHEDULING_HYGIENE_CODES`] are demoted to notices at this boundary and
+//! stay errors in the standalone lint. The evidence rules — a metric with no
+//! claim, a claim over budget, a malformed tuple — are unchanged and still
+//! refuse: those are about whether a number may be reported at all.
+//!
 //! # Notices are not failures, deliberately
 //!
 //! An expired claim demotes to a visible `evidence: stale` and the load
@@ -33,6 +53,13 @@ use crate::date::Date;
 use crate::policy::RegistryPolicy;
 use crate::registry::{lint, parse_file, Diagnostic, DiagnosticSeverity, EngineRegistryFile};
 use crate::registry::{Registry, RegistryError};
+
+/// Lint codes that are about the re-review schedule rather than about evidence.
+///
+/// Errors in CI, notices here. See the module documentation: a binary that
+/// refuses to measure because six claims come due in the same month has stopped
+/// working for a reason unrelated to any number it would have reported.
+pub const SCHEDULING_HYGIENE_CODES: &[&str] = &["registry.expiry-stagger"];
 
 /// A registry directory that could not be turned into an evidence gate.
 #[derive(Debug, thiserror::Error)]
@@ -131,19 +158,25 @@ pub fn load_files(
     location: &str,
 ) -> Result<LoadedRegistry, RegistryLoadError> {
     let (registry, report) = lint(files, policy, as_of);
-    if report.failed() {
+    let fatal: Vec<String> = report
+        .errors()
+        .filter(|d| !SCHEDULING_HYGIENE_CODES.contains(&d.code))
+        .map(|d| format!("{}[{}]: {}", d.code, d.location, d.message))
+        .collect();
+    if !fatal.is_empty() {
         return Err(RegistryLoadError::Lint {
             path: location.to_string(),
-            errors: report
-                .errors()
-                .map(|d| format!("{}[{}]: {}", d.code, d.location, d.message))
-                .collect(),
+            errors: fatal,
         });
     }
+    // Hygiene breaches ride along as notices rather than vanishing: the surface
+    // still shows them, and the standalone lint still fails the build over them.
     let notices = report
         .diagnostics
         .into_iter()
-        .filter(|d| d.severity == DiagnosticSeverity::Notice)
+        .filter(|d| {
+            d.severity == DiagnosticSeverity::Notice || SCHEDULING_HYGIENE_CODES.contains(&d.code)
+        })
         .collect();
     Ok(LoadedRegistry {
         registry,

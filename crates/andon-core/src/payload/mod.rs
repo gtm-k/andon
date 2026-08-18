@@ -310,6 +310,7 @@ pub struct Prepared {
     engine_failures: Vec<EngineFailure>,
     policy_change: Option<PolicyChange>,
     stale_claim_ids: Vec<String>,
+    registry_skew: Vec<String>,
     completeness: Completeness,
     countable: bool,
 }
@@ -368,6 +369,7 @@ impl Prepared {
             stale_claim_ids: &self.stale_claim_ids,
             iteration_state_recovered: iteration.recovered,
             completeness: self.completeness,
+            registry_skew: &self.registry_skew,
         };
         let verdict = verdict::evaluate(&self.results, &context, iteration.state);
 
@@ -442,6 +444,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
     }
 
     let mut results: Vec<MeasurementResult> = Vec::new();
+    let mut registry_skew: Vec<String> = Vec::new();
     let mut pairing_keys: BTreeSet<(String, String)> = BTreeSet::new();
     for output in engines {
         let descriptor = output.descriptor;
@@ -460,7 +463,11 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
                 });
             }
 
-            resolve_evidence(&mut result, resolved);
+            if let Some(skew) = resolve_evidence(&mut result, resolved) {
+                if !registry_skew.contains(&skew) {
+                    registry_skew.push(skew);
+                }
+            }
             results.push(result);
         }
     }
@@ -490,6 +497,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
             stale_claim_ids: &stale_claim_ids,
             iteration_state_recovered: false,
             completeness,
+            registry_skew: &registry_skew,
         },
     );
 
@@ -509,6 +517,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
         engine_failures,
         policy_change,
         stale_claim_ids,
+        registry_skew,
         completeness,
         countable,
     })
@@ -735,18 +744,43 @@ fn validate<'r>(
 /// the array with the registry's copy would erase it — deleting the one line
 /// that tells a reader the number came off a partial tree.
 ///
-/// `tier` and `citation` are left as the engine resolved them. A binary whose
-/// compiled registry disagrees with the checkout is an old binary, and the
-/// mechanism for that already exists and is digest-bound: `engine_version` is
-/// part of the `measurement_regime`, so the verifier reports
+/// `tier` and `citation` are left as the engine resolved them, and that is a
+/// deliberate split with a cost worth stating rather than a division nobody
+/// noticed.
+///
+/// The engine's copy is compiled in (`include_str!`), so it cannot be moved by a
+/// hostile checkout — which is why it, and not the loaded directory's copy, is
+/// what [`crate::verdict::severity::ceiling`] reads when it decides whether this
+/// claim's tier may reach the MED+ band. Overwriting it from a registry the
+/// change under measurement can edit would hand that decision to the change
+/// (DEFERRED-APPROVALS E4, the same argument as `deterministic`).
+///
+/// What the two registries disagreeing *means* is that the binary is older or
+/// newer than the checkout, and the durable mechanism for that is digest-bound:
+/// `engine_version` is in the `measurement_regime`, so the verifier reports
 /// `unwitnessed-version-skew` rather than an accusation (PREMORTEM S4).
-fn resolve_evidence(result: &mut MeasurementResult, resolved: &crate::registry::ResolvedClaim) {
+///
+/// The part that was missing is that nothing said so. One `EvidenceRef` was
+/// filled from two registries and a reader had no way to know which field came
+/// from where, or that they disagreed at all. A disagreement is now collected
+/// and reported as a verdict notice ([`crate::verdict::reason::EVIDENCE_REGISTRY_SKEW`]),
+/// so the actor who can see only the record can see it too.
+fn resolve_evidence(
+    result: &mut MeasurementResult,
+    resolved: &crate::registry::ResolvedClaim,
+) -> Option<String> {
     result.evidence.stale = resolved.stale;
     for line in &resolved.claim.does_not_predict {
         if !result.evidence.does_not_predict.contains(line) {
             result.evidence.does_not_predict.push(line.clone());
         }
     }
+    (result.evidence.tier != resolved.claim.tier).then(|| {
+        format!(
+            "{}: the engine resolved tier {:?} and the loaded registry declares {:?}",
+            result.claim_id, result.evidence.tier, resolved.claim.tier
+        )
+    })
 }
 
 /// The record-level completeness.

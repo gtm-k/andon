@@ -444,6 +444,7 @@ fn the_static_family_can_still_reach_the_med_plus_band() {
         stale_claim_ids: &[],
         iteration_state_recovered: false,
         completeness: andon_core::schema::enums::Completeness::Complete,
+        registry_skew: &[],
     };
     assert!(
         measured

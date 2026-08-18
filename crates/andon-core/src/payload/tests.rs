@@ -137,9 +137,18 @@ fn result(
         severity: Severity::Info,
         completeness: Completeness::Complete,
         measurement_regime: regime(family),
+        // Tier and citation as the engine would have resolved them, from its
+        // own copy of the registry. Hardcoding a tier here made every fixture
+        // disagree with the shipped registry about four of the five engines,
+        // which is a real condition — an old binary — and not one a fixture
+        // should be simulating by accident.
         evidence: EvidenceRef {
             claim_id: claim_id.to_string(),
-            tier: EvidenceTier::B,
+            tier: registry
+                .registry
+                .claims
+                .get(claim_id)
+                .map_or(EvidenceTier::B, |c| c.claim.tier),
             citation: "as the engine resolved it".to_string(),
             does_not_predict: Vec::new(),
             stale: false,
@@ -352,6 +361,96 @@ fn advance(count: u32, cap: u32) -> Advance {
         },
         recovered: false,
     }
+}
+
+// --- the two registries behind one evidence reference ----------------------
+
+#[test]
+fn a_tier_the_two_registries_grade_differently_is_reported() {
+    // One `EvidenceRef` filled from two places: `stale` and the honesty lines
+    // from the loaded registry, `tier` and `citation` from the engine's compiled
+    // one. The split is deliberate — the severity ceiling reads the tier, and a
+    // tier the change under measurement could edit would let the change choose
+    // its own ceiling — but nothing said so, and a disagreement was silent.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    engines[0].results[0].evidence.tier = EvidenceTier::A;
+
+    let record = prepare(request(&policy, &registry, engines))
+        .expect("assembles")
+        .finish(advance(0, 3));
+    let notice = record
+        .verdict
+        .reasons
+        .iter()
+        .find(|r| r.code == reason::EVIDENCE_REGISTRY_SKEW)
+        .expect("a disagreement between two registries is never silent");
+    assert_eq!(notice.severity, Severity::Info);
+    assert!(
+        notice
+            .message
+            .contains("andon.static.cognitive@1|typescript|comprehension-time"),
+        "{}",
+        notice.message
+    );
+
+    // The ceiling still came from the engine's tier, which is the half a reader
+    // cannot otherwise account for.
+    let reported = record
+        .results
+        .iter()
+        .find(|r| r.metric_id == "static.cognitive-complexity.typescript")
+        .expect("the result is in the record");
+    assert_eq!(reported.evidence.tier, EvidenceTier::A);
+
+    let agreeing = prepare(request(&policy, &registry, five_engines(&registry)))
+        .expect("assembles")
+        .finish(advance(0, 3));
+    assert!(
+        !agreeing
+            .verdict
+            .reasons
+            .iter()
+            .any(|r| r.code == reason::EVIDENCE_REGISTRY_SKEW),
+        "and two registries that agree say nothing"
+    );
+}
+
+#[test]
+fn a_re_review_schedule_never_stops_a_measurement() {
+    // `registry.expiry-stagger` counts claims falling due in one month and fails
+    // the build above the limit, which is right in CI and was catastrophic here:
+    // a binary whose registry had four claims expiring in March refused to
+    // measure anything at all, on every change, for a reason unrelated to any
+    // number it would have reported.
+    let tight = RegistryPolicy {
+        max_claims_expiring_per_month: 1,
+        ..RegistryPolicy::default()
+    };
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("registry");
+    let loaded = registry_load::load(&dir, &tight, as_of())
+        .expect("a scheduling breach must not stop a measurement");
+    assert!(
+        loaded
+            .notices
+            .iter()
+            .any(|d| d.code == "registry.expiry-stagger"),
+        "and it is still reported: {:?}",
+        loaded.notices.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+
+    // The evidence rules are untouched and still refuse.
+    let over_budget = RegistryPolicy {
+        claim_budget: 1,
+        ..RegistryPolicy::default()
+    };
+    assert!(
+        registry_load::load(&dir, &over_budget, as_of()).is_err(),
+        "a claim budget breach is about evidence and still refuses"
+    );
 }
 
 // --- the loop counter's inputs ---------------------------------------------

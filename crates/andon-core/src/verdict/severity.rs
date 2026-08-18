@@ -234,6 +234,7 @@ mod tests {
             stale_claim_ids: &[],
             iteration_state_recovered: false,
             completeness: crate::schema::enums::Completeness::Complete,
+            registry_skew: &[],
         }
     }
 
