@@ -479,6 +479,12 @@ fn the_history_rungs_are_pinned_at_their_boundaries() {
     // `NoOpinion`; nothing proved the numbers on them. Moving a rung to a figure
     // no repository could reach — disabling the ladder while leaving it looking
     // declared — left every test in the workspace green.
+    //
+    // Both boundaries, both directions, on every rung. Pinning a rung at its own
+    // value alone leaves the window below it open: the medium and high rungs
+    // once read only at 2_000/5_000, 2.5/3.5, 400/1_000 and 3/5, and every one of
+    // them could slide to the bottom of its window with the workspace still
+    // green. The value one below each rung is the only assertion that can see it.
     use andon_core::schema::enums::Severity;
     use andon_core::schema::payload::MetricValue;
     use andon_engine_process::engine::*;
@@ -502,9 +508,15 @@ fn the_history_rungs_are_pinned_at_their_boundaries() {
         // Lines added plus deleted: five hundred, two thousand, five thousand.
         (METRIC_CHURN_LINES, MetricValue::Count(499), Severity::Info),
         (METRIC_CHURN_LINES, MetricValue::Count(500), Severity::Low),
+        (METRIC_CHURN_LINES, MetricValue::Count(1_999), Severity::Low),
         (
             METRIC_CHURN_LINES,
             MetricValue::Count(2_000),
+            Severity::Medium,
+        ),
+        (
+            METRIC_CHURN_LINES,
+            MetricValue::Count(4_999),
             Severity::Medium,
         ),
         (
@@ -525,7 +537,17 @@ fn the_history_rungs_are_pinned_at_their_boundaries() {
         ),
         (
             METRIC_OWNERSHIP_ENTROPY,
+            MetricValue::Ratio(2.49),
+            Severity::Low,
+        ),
+        (
+            METRIC_OWNERSHIP_ENTROPY,
             MetricValue::Ratio(2.5),
+            Severity::Medium,
+        ),
+        (
+            METRIC_OWNERSHIP_ENTROPY,
+            MetricValue::Ratio(3.49),
             Severity::Medium,
         ),
         (
@@ -536,7 +558,9 @@ fn the_history_rungs_are_pinned_at_their_boundaries() {
         // Commits multiplied by complexity: where to look first, and no more.
         (METRIC_HOTSPOT, MetricValue::Count(99), Severity::Info),
         (METRIC_HOTSPOT, MetricValue::Count(100), Severity::Low),
+        (METRIC_HOTSPOT, MetricValue::Count(399), Severity::Low),
         (METRIC_HOTSPOT, MetricValue::Count(400), Severity::Medium),
+        (METRIC_HOTSPOT, MetricValue::Count(999), Severity::Medium),
         (METRIC_HOTSPOT, MetricValue::Count(1_000), Severity::High),
         // Habitual co-change partners absent from the change: one, three, five.
         (
@@ -545,9 +569,15 @@ fn the_history_rungs_are_pinned_at_their_boundaries() {
             Severity::Info,
         ),
         (METRIC_CHANGE_COUPLING, MetricValue::Count(1), Severity::Low),
+        (METRIC_CHANGE_COUPLING, MetricValue::Count(2), Severity::Low),
         (
             METRIC_CHANGE_COUPLING,
             MetricValue::Count(3),
+            Severity::Medium,
+        ),
+        (
+            METRIC_CHANGE_COUPLING,
+            MetricValue::Count(4),
             Severity::Medium,
         ),
         (
