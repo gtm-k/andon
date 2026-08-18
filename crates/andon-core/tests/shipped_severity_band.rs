@@ -67,11 +67,11 @@ use common::TestRepo;
 /// eleven and eleven is the `Medium` rung, so the prose was wrong twice about
 /// the code beside it.
 ///
-/// The numbers are mid-band on purpose. `Medium` is reached at 11 and 15, `High`
-/// at 21 and 25, so this fixture has four units of room below it and six above —
-/// and retuning a rung by a unit or two, which is an expected kind of change,
-/// leaves the ruling's mandatory band guard green. At eleven against a rung of
-/// eleven it did not.
+/// The numbers are mid-band on purpose. `Medium` is reached at 11 and 15 and
+/// `High` at 21 and 25, so each number has at least four units of room below it
+/// and five above. Retuning a rung by a unit or two — an expected kind of change
+/// — therefore leaves [`the_static_family_can_still_reach_the_med_plus_band`]
+/// green. At eleven against a rung of eleven it did not.
 const COMPLEX_TS: &[u8] = br#"
 export function classify(a: number, b: number, c: number): string {
   if (a > 0) {
@@ -806,10 +806,12 @@ fn the_fixture_sits_in_the_middle_of_the_band_it_reaches() {
              is the number this file's doc comment states — got {values:?}"
         );
 
-        // Pre-policy, the ladder puts that number in the MED+ band — and keeps
-        // it there three units either way, which is the margin. A rung moved by
-        // one or two does not move this fixture's severity; one moved by four
-        // does, and that is a change worth reddening for.
+        // The margin, asserted rather than described: the ladder puts that
+        // number in the MED+ band and keeps it there three units either way, so
+        // the fixture is legibly not sitting on a rung. Read against the tables,
+        // that is four units above `Medium` and six below `High` for cyclomatic,
+        // five and five for cognitive — where the version this replaced was on
+        // the rung exactly, and a one-unit retune reddened the ruling's guard.
         let ladder = ladders["static-metrics"][metric_id];
         for value in [expected_value - 3, expected_value, expected_value + 3] {
             assert_eq!(
