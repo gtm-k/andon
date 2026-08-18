@@ -37,7 +37,7 @@
 //! re-deriving the order from prose. What they supply that this module cannot
 //! compute is [`BaseRelation`] — ancestry is a git question.
 
-use crate::schema::enums::{Attestation, TamperSignal};
+use crate::schema::enums::{Attestation, Completeness, TamperSignal};
 use crate::schema::payload::{CompareOutcome, MeasurementRecord, MeasurementResult};
 
 /// How a claimed base commit relates to the branch the verifier trusts.
@@ -97,9 +97,11 @@ pub fn classify(
 ) -> Classification {
     let Some(report) = self_report else {
         // Nothing to compare. A fork job still recomputed statically, which is a
-        // real if weaker pass; anywhere else this is simply unwitnessed.
+        // real if weaker pass — but only over a recompute that saw everything.
+        // A partial recompute is a partial look, and a pass over a partial look
+        // is the thing that pass is worth nothing against.
         return Classification {
-            attestation: if inputs.fork_tier {
+            attestation: if inputs.fork_tier && recompute.completeness == Completeness::Complete {
                 Attestation::ConfirmedStatic
             } else {
                 Attestation::Unwitnessed
@@ -230,9 +232,26 @@ pub fn classify(
                 .any(|r| r.metric_id == recomputed.metric_id && r.scope == recomputed.scope)
     });
 
+    // Step 5 — and neither side may be a partial look.
+    //
+    // The payload says this out loud already: a record whose engines could not
+    // all run is `partial`, and `verdict::evaluate` emits "this record cannot be
+    // confirmed downstream" beside the engine that failed. That sentence was
+    // true of nothing — this function never read `completeness`, so a change
+    // that broke the same engine on both sides left the surviving results
+    // pairing cleanly and collected a `confirmed` over a measurement neither
+    // side had finished. Breaking a detector was a way to launder past it, which
+    // is the failure class this whole apparatus exists to catch.
+    //
+    // `unwitnessed`, never `divergent`: an incomplete measurement is not tamper
+    // evidence, and R2-4's rule is that a non-tamper explanation is still not a
+    // confirmation. A digest that was compared and disagreed still outranks it.
+    let partial_look = report.completeness != Completeness::Complete
+        || recompute.completeness != Completeness::Complete;
+
     let attestation = if !mismatched.is_empty() {
         Attestation::Divergent
-    } else if pairs.is_empty() || recompute_result_unwitnessed {
+    } else if pairs.is_empty() || recompute_result_unwitnessed || partial_look {
         Attestation::Unwitnessed
     } else {
         Attestation::Confirmed
@@ -395,6 +414,77 @@ mod tests {
         assert_eq!(
             classify(None, &recompute, fork).attestation,
             Attestation::ConfirmedStatic
+        );
+    }
+
+    #[test]
+    fn two_partial_records_that_agree_are_not_confirmed() {
+        // CODEX'S PROBE. P5a's own verdict says "this record cannot be confirmed
+        // downstream" beside an engine that failed, and this function never read
+        // `completeness` — so a change that broke the same engine on both sides
+        // left the surviving results pairing cleanly and collected a
+        // `confirmed`. Breaking a detector was a way to launder past it. The
+        // artifact was `left: Confirmed, right: Confirmed`.
+        let mut report = sample_record();
+        let mut recompute = sample_record();
+        report.completeness = Completeness::Partial;
+        recompute.completeness = Completeness::Partial;
+
+        let outcome = classify(Some(&report), &recompute, inputs(BaseRelation::Equal));
+        assert_eq!(outcome.attestation, Attestation::Unwitnessed);
+        assert!(
+            !outcome.attestation.counts_downstream(),
+            "a pass over a partial look is the pass this design exists to withhold"
+        );
+
+        // Not an accusation: an incomplete measurement has honest causes, and
+        // R2-4's rule is that a non-tamper explanation is still not a pass.
+        assert_ne!(outcome.attestation, Attestation::Divergent);
+    }
+
+    #[test]
+    fn one_partial_side_is_enough_to_withhold_the_pass() {
+        for (report_completeness, recompute_completeness) in [
+            (Completeness::Partial, Completeness::Complete),
+            (Completeness::Complete, Completeness::ParseDegraded),
+            (Completeness::Complete, Completeness::Unwitnessed),
+        ] {
+            let mut report = sample_record();
+            let mut recompute = sample_record();
+            report.completeness = report_completeness;
+            recompute.completeness = recompute_completeness;
+            assert_eq!(
+                classify(Some(&report), &recompute, inputs(BaseRelation::Equal)).attestation,
+                Attestation::Unwitnessed,
+                "{report_completeness:?} vs {recompute_completeness:?}"
+            );
+        }
+
+        // The control: two complete records that agree still confirm, or the
+        // gate above would be proving that nothing ever passes.
+        assert_eq!(
+            classify(
+                Some(&sample_record()),
+                &sample_record(),
+                inputs(BaseRelation::Equal)
+            )
+            .attestation,
+            Attestation::Confirmed
+        );
+    }
+
+    #[test]
+    fn a_partial_fork_recompute_is_not_confirmed_static_either() {
+        // The same hole on the path with no self-report to compare against.
+        let mut recompute = sample_record();
+        recompute.completeness = Completeness::Partial;
+        let fork = CompareInputs {
+            fork_tier: true,
+            ..inputs(BaseRelation::Equal)
+        };
+        assert_eq!(
+            classify(None, &recompute, fork).attestation,
+            Attestation::Unwitnessed
         );
     }
 
