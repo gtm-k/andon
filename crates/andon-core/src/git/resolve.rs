@@ -227,7 +227,10 @@ pub enum ResolveError {
         /// The endpoint kind.
         kind: &'static str,
     },
-    /// A rebase, merge, bisect, or cherry-pick is half-finished.
+    /// A rebase, merge, revert, or cherry-pick is half-finished.
+    ///
+    /// Bisect is deliberately not among them: it checks out complete clean
+    /// commits in order that they be measured. See [`in_progress_operation`].
     ///
     /// The remedy is in the message because there is no flag that works from
     /// here. This check runs before anything else in
@@ -464,11 +467,12 @@ fn expect_oid(text: &str, rev: &str) -> Result<String, ResolveError> {
 
 /// How to get out of a half-finished operation, per operation.
 ///
-/// Spelled out rather than assembled from the operation name, because
-/// assembling it gets bisect wrong: every other operation here ends with
-/// `--continue` or `--abort` and bisect ends with `git bisect reset`. A remedy
-/// that names a command git does not have is worse than no remedy — the reader
-/// runs it, it fails, and now they distrust the rest of the message too.
+/// Spelled out rather than assembled from the operation name. A remedy that
+/// names a command git does not have is worse than no remedy — the reader runs
+/// it, it fails, and now they distrust the rest of the message too. The arm
+/// this note used to be about was bisect's, which ends with `git bisect reset`
+/// rather than `--continue` or `--abort`; bisect is no longer refused at all,
+/// so the arm is gone with it.
 fn remedy_for(operation: &str) -> &'static str {
     match operation {
         "rebase" => "Finish it or abort it (`git rebase --continue` or `git rebase --abort`)",
@@ -481,7 +485,6 @@ fn remedy_for(operation: &str) -> &'static str {
         }
         "revert" => "Finish it or abort it (`git revert --continue` or `git revert --abort`)",
         "merge" => "Finish it or abort it (`git merge --continue` or `git merge --abort`)",
-        "bisect" => "End it (`git bisect reset`)",
         // Unreachable from `in_progress_operation`'s fixed table, and stated
         // rather than defaulted so that adding a row without adding a remedy
         // produces vague advice rather than wrong advice.
@@ -517,7 +520,25 @@ pub fn in_progress_operation(git: &Git) -> Result<Option<&'static str>, ResolveE
         ("CHERRY_PICK_HEAD", "cherry-pick"),
         ("REVERT_HEAD", "revert"),
         ("MERGE_HEAD", "merge"),
-        ("BISECT_LOG", "bisect"),
+        // BISECT IS NOT ON THIS TABLE, AND THAT IS THE POINT OF THE TABLE.
+        //
+        // `BISECT_LOG` was here, and it made the one operation that exists in
+        // order to measure commits the one operation this tool refused to
+        // measure. Every other marker means the tree is half-way between two
+        // states: mid-merge, mid-rebase, mid-cherry-pick, mid-revert, there are
+        // conflict markers on disk and the content is neither side. `git
+        // bisect` is the opposite — it checks out a **complete, clean commit**
+        // precisely so it can be built, tested and measured, which is the whole
+        // procedure. Reproduced: during a real bisect with a clean `status` and
+        // two valid commits, `measure --base HEAD~1 --head HEAD` refused,
+        // claiming the working tree was a partial result over a tree that was
+        // nothing of the kind.
+        //
+        // Nothing is lost by dropping it. A bisect that *does* leave the tree
+        // half-finished is one whose checkout conflicted, and that state writes
+        // its own markers or leaves unmerged index entries — which
+        // `DirtySnapshot` refuses on, with the path named, whether or not any
+        // marker exists.
     ] {
         if git_dir.join(marker).exists() {
             return Ok(Some(operation));
