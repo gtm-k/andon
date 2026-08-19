@@ -11,17 +11,40 @@
 //! a true one.
 //!
 //! So the claim now enumerates rather than promises, and each entry in the
-//! enumeration is executed here against the same engine a caller runs. The test
-//! reads the prose out of the compiled-in registry rather than restating it, so
-//! it fails from either side: change the behaviour and the assertion breaks;
-//! soften the prose and the phrase lookup breaks.
+//! enumeration is executed here against the same engine a caller runs. Each
+//! probe reads the prose out of the compiled-in registry rather than restating
+//! it, so it fails from either side: change the behaviour of a shape the claim
+//! names and the assertion breaks; soften the words the claim uses for it and
+//! the phrase lookup breaks.
+//!
+//! # What this file does not do, stated because the last version implied it did
+//!
+//! It holds the five shapes the claim enumerates. It does not hold the claim to
+//! *five*. **If a sixth way to produce a `partial` result is added, nothing
+//! here fails.**
+//!
+//! That the five are all of them is an argument, not an invariant: the write is
+//! one line (`demote_to_partial`), the gate above it is one condition
+//! (`if !outcome.unassessed.is_empty()`), and the producers are the places a
+//! detector puts a finding into `unassessed` — five of them, in two of the seven
+//! detectors. It was verified by inspection twice, once here and once by review.
+//! It is true of the commit you are reading and of no other.
+//!
+//! A test that counted those places stood here and was removed. It matched the
+//! spellings `unassessed.push(` and `unassessed.extend(`, and a reachable
+//! producer written `unassessed.append(` walked straight past it — the third
+//! blind spot found in one mechanism, after a first draft that missed a match
+//! arm and a disclosed hole where a site present but unreachable still counted.
+//! A test that recognises the members of a set by how they are spelled cannot
+//! decide whether the set is complete; it is the hand-written list again, one
+//! layer down, and it is worse than nothing because it reads like a guarantee.
+//! Deciding this properly is a design question about what a producer *is* — not
+//! how it is written — and it belongs with the systemic work item, not here.
 //!
 //! The disclosures are asserted as firmly as the guarantees. A gap that is
 //! written down and then quietly closed leaves the claim overstating its own
 //! blindness, which is a smaller failure than the one this file exists for but
 //! is still the evidence disagreeing with the code.
-
-use std::path::Path;
 
 use andon_core::engine::{run_engine, MeasureContext};
 use andon_core::policy::Policy;
@@ -338,76 +361,6 @@ fn an_exclusion_replacement_nobody_can_rank_quotes_the_replacing_pattern() {
         !caveat(&results, COVERAGE).contains("__init__"),
         "the caveat names the pattern that was replaced after all:\n{}",
         caveat(&results, COVERAGE)
-    );
-}
-
-#[test]
-fn the_claims_five_shapes_are_every_shape_the_code_can_produce() {
-    // The guard the last three rounds did not have, and the reason each of them
-    // shipped an enumeration missing a member: a conformance suite can only
-    // test the shapes its author thought of, so it checks the list against the
-    // mechanism and never asks whether the list is complete.
-    //
-    // What makes the question answerable here is that the mechanism has exactly
-    // one gate. `Completeness::Partial` is written to a tamper result in one
-    // place — `demote_to_partial`, engine.rs — reached from one condition,
-    // `if !outcome.unassessed.is_empty()`. So the shapes that can produce a
-    // `partial` result are exactly the places a detector puts a finding into
-    // `unassessed`, and those are countable from the source.
-    //
-    // This test counts them. It does not know what a new one would mean, and
-    // that is the point: it fails, and whoever added it has to say.
-    let detectors = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("detectors");
-    let mut sites: Vec<String> = Vec::new();
-    let mut entries: Vec<_> = std::fs::read_dir(&detectors)
-        .expect("the detector directory is where it has always been")
-        .map(|e| e.expect("readable").path())
-        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .collect();
-    entries.sort();
-    for path in &entries {
-        let text = std::fs::read_to_string(path).expect("a detector source reads");
-        let name = path
-            .file_name()
-            .expect("named")
-            .to_string_lossy()
-            .to_string();
-        for (index, line) in text.lines().enumerate() {
-            // Anywhere on the line, not at the start of it: one of the five is
-            // a match arm (`Err(unranked) => unassessed.push(`), and a scan
-            // anchored at the first token found four of five — this guard
-            // undercounting is the same defect it exists to catch, so it is
-            // written to over-report and let a comment be excluded by hand.
-            let trimmed = line.trim();
-            let counted = !trimmed.starts_with("//")
-                && (line.contains("unassessed.push(") || line.contains("unassessed.extend("));
-            if counted {
-                sites.push(format!("{name}:{}", index + 1));
-            }
-        }
-    }
-    assert_eq!(
-        sites.len(),
-        5,
-        "the number of ways a tamper result can come back `partial` has changed, and the \
-         gate-loosening claim in registry/tamper.toml enumerates five. Found: {sites:?}. \
-         Add the new shape to that enumeration and give it a probe here, or take the \
-         removed one out of both."
-    );
-    // And they live in the two detectors the claim is about. The other five
-    // never mark anything unassessed, which is why the claim can speak for the
-    // whole of its own subject.
-    let files: std::collections::BTreeSet<&str> = sites
-        .iter()
-        .map(|s| s.split(':').next().expect("named"))
-        .collect();
-    assert_eq!(
-        files.into_iter().collect::<Vec<_>>(),
-        vec!["coverage_exclusion_drift.rs", "threshold_config_edit.rs"],
-        "a detector outside this claim's subject can now return `partial`, so the claim \
-         no longer covers every shape a reader of these two metrics will meet"
     );
 }
 
