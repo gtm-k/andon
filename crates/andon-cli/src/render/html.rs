@@ -81,7 +81,6 @@ fn document(
     notices: &[String],
 ) -> String {
     let mut out = String::new();
-    let verdict = record.verdict.verdict;
     // The head's kind said out loud, from the one function every renderer uses.
     // A dirty head's content hash cut to twelve characters is the shape of a
     // commit OID, and this string is the page title as well as the masthead.
@@ -92,7 +91,7 @@ fn document(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>Andon · {} · {}</title>\n<style>{}</style>\n</head>\n<body>\n",
-        escape(verdict_word(verdict)),
+        escape(headline_word(record)),
         escape(&range),
         STYLE
     );
@@ -142,7 +141,24 @@ fn masthead(out: &mut String, record: &MeasurementRecord, how: Option<&str>, ran
 
 fn lamp(out: &mut String, record: &MeasurementRecord) {
     let verdict = record.verdict.verdict;
-    let tone = verdict_tone(verdict);
+    // A record whose stored verdict contradicts its own fields does not light
+    // the lamp it stored. The page that outlives the terminal is the one most
+    // likely to be read by somebody deciding whether the change was safe, and a
+    // green lamp above a NOT READ panel is the contradiction at its loudest.
+    let contradicted = andon_core::verdict::stored_verdict_is_contradicted(record);
+    let (tone, glyph, meaning) = if contradicted {
+        (
+            "invalid",
+            "⊘",
+            andon_core::verdict::contradiction_label(record),
+        )
+    } else {
+        (
+            verdict_tone(verdict),
+            verdict_glyph(verdict),
+            verdict_meaning(verdict).to_string(),
+        )
+    };
     let _ = write!(
         out,
         "<section class=\"lamp lamp-{tone}\">\n\
@@ -153,10 +169,40 @@ fn lamp(out: &mut String, record: &MeasurementRecord) {
            <p class=\"lamp-meaning\">{meaning}</p>\n\
          </section>\n",
         tone = tone,
-        word = escape(verdict_word(verdict)),
-        glyph = escape(verdict_glyph(verdict)),
-        meaning = escape(verdict_meaning(verdict)),
+        word = escape(headline_word(record)),
+        glyph = escape(glyph),
+        meaning = escape(&meaning),
     );
+    if contradicted {
+        let _ = write!(
+            out,
+            "<section class=\"panel notice\">\n\
+               <h2 class=\"eyebrow\">What this record stores</h2>\n\
+               <dl class=\"pairs\">\n\
+                 <dt>Stored verdict</dt><dd class=\"mono\">{stored}</dd>\n\
+                 <dt>Unread paths</dt><dd class=\"mono\">{n}</dd>\n\
+               </dl>\n\
+               <p class=\"muted\">The bytes are served exactly as they were sealed. Nothing \
+               here has been recomputed or rewritten — the record is evidence, and this page \
+               says what it is evidence of.</p>\n\
+             </section>\n",
+            stored = escape(verdict_word(verdict)),
+            n = record.unreadable_paths.len(),
+        );
+    }
+}
+
+/// The word at the top of the page and in its title.
+///
+/// One function so the two cannot disagree: the `<title>` said `PASS` while the
+/// lamp said something else would be a page whose browser tab contradicts its
+/// own headline.
+fn headline_word(record: &MeasurementRecord) -> &'static str {
+    if andon_core::verdict::stored_verdict_is_contradicted(record) {
+        "INVALID"
+    } else {
+        verdict_word(record.verdict.verdict)
+    }
 }
 
 fn substitution_panel(out: &mut String, substitution: &Substitution) {
@@ -660,6 +706,7 @@ body {
 .lamp-advise .lamp-face { color: var(--advise); }
 .lamp-block .lamp-face { color: var(--crit); border-style: double; border-width: 5px; }
 .lamp-escalate .lamp-face { color: var(--high); border-style: dashed; }
+.lamp-invalid .lamp-face { color: var(--crit); border-style: dotted; border-width: 5px; }
 @keyframes lamp-on { from { opacity: .25; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .lamp-face { animation: none; }

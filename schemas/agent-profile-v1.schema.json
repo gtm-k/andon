@@ -552,7 +552,12 @@
           "$ref": "#/definitions/Verdict"
         }
       ],
-      "description": "What to do about the change."
+      "description": "What to do about the change.\n\nRead [`Self::verdict_invalid`] first. When that is `true` this is the word the record stores and not a verdict about the change."
+    },
+    "verdict_invalid": {
+      "default": false,
+      "description": "True when the stored verdict contradicts the record it came from.\n\nA structural field rather than prose, because this is the surface built for a reader that does not read prose. Records sealed before a change nobody read was a reason not to pass carry `verdict: pass` beside a non-zero [`Self::unread_paths`], and an agent branching on `verdict` alone would act on the older of two contradicting halves of one record.\n\nAdditive with a default, so a consumer built against a profile without it reads `false` and is right about every record that predates the contradiction being detectable.",
+      "type": "boolean"
     }
   },
   "required": [

@@ -70,7 +70,23 @@ pub struct AgentProfile {
     /// Always [`PROFILE_NAME`].
     pub profile: String,
     /// What to do about the change.
+    ///
+    /// Read [`Self::verdict_invalid`] first. When that is `true` this is the
+    /// word the record stores and not a verdict about the change.
     pub verdict: Verdict,
+    /// True when the stored verdict contradicts the record it came from.
+    ///
+    /// A structural field rather than prose, because this is the surface built
+    /// for a reader that does not read prose. Records sealed before a change
+    /// nobody read was a reason not to pass carry `verdict: pass` beside a
+    /// non-zero [`Self::unread_paths`], and an agent branching on `verdict`
+    /// alone would act on the older of two contradicting halves of one record.
+    ///
+    /// Additive with a default, so a consumer built against a profile without
+    /// it reads `false` and is right about every record that predates the
+    /// contradiction being detectable.
+    #[serde(default)]
+    pub verdict_invalid: bool,
     /// How much trust the measurement has earned.
     pub attestation: Attestation,
     /// Whether this measurement may count downstream. Stated outright so an
@@ -149,6 +165,7 @@ pub fn build_agent_profile(
         schema_version: SCHEMA_VERSION,
         profile: PROFILE_NAME.to_string(),
         verdict: record.verdict.verdict,
+        verdict_invalid: crate::verdict::stored_verdict_is_contradicted(record),
         attestation: record.attestation.value,
         counts_downstream: record.attestation.value.counts_downstream(),
         completeness: record.completeness,

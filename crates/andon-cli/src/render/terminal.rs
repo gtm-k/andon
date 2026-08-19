@@ -121,12 +121,7 @@ pub fn render(measurement: &Measurement, colour: Colour, detail: Detail) -> Stri
 /// record — is announced here exactly as it is at measurement time.
 pub fn render_record(record: &MeasurementRecord, colour: Colour, detail: Detail) -> String {
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "\n {}  {}",
-        colour.verdict(record.verdict.verdict, verdict_word(record.verdict.verdict)),
-        colour.dim(verdict_meaning(record.verdict.verdict))
-    );
+    verdict_line(&mut out, record, colour);
     let _ = writeln!(
         out,
         " {}",
@@ -141,6 +136,46 @@ pub fn render_record(record: &MeasurementRecord, colour: Colour, detail: Detail)
     unreadable_note(&mut out, record, colour);
     body(&mut out, record, colour, detail, None);
     out
+}
+
+/// The verdict word, or the label that says the stored one is not a verdict.
+///
+/// One writer, used by the measurement header and by the read-back render. They
+/// were two, printing the same three values, which is exactly the arrangement
+/// that let `ledger show` re-serve `PASS` months after `measure` had stopped
+/// printing it.
+///
+/// A record whose stored verdict contradicts its own fields
+/// ([`andon_core::verdict::stored_verdict_is_contradicted`]) does not get the
+/// word it stored. Printing `PASS` and a caveat underneath leaves `PASS` as the
+/// headline, and the headline is what a reader with thirty seconds takes away.
+fn verdict_line(out: &mut String, record: &MeasurementRecord, colour: Colour) {
+    if andon_core::verdict::stored_verdict_is_contradicted(record) {
+        // Not painted in a verdict colour: it is not one of the four words, and
+        // the accent is never the carrier anyway.
+        let _ = writeln!(
+            out,
+            "\n {}  {}",
+            colour.bold("INVALID"),
+            colour.dim("the verdict stored in this record contradicts the record.")
+        );
+        let _ = writeln!(
+            out,
+            " {}",
+            colour.dim(&format!(
+                "stored   {} — {}",
+                verdict_word(record.verdict.verdict),
+                andon_core::verdict::contradiction_label(record)
+            ))
+        );
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\n {}  {}",
+        colour.verdict(record.verdict.verdict, verdict_word(record.verdict.verdict)),
+        colour.dim(verdict_meaning(record.verdict.verdict))
+    );
 }
 
 /// What trust this measurement earned, in the words the record's own
@@ -212,13 +247,7 @@ fn unreadable_note(out: &mut String, record: &MeasurementRecord, colour: Colour)
 
 fn header(out: &mut String, measurement: &Measurement, colour: Colour) {
     let record = &measurement.record;
-    let verdict = record.verdict.verdict;
-    let _ = writeln!(
-        out,
-        "\n {}  {}",
-        colour.verdict(verdict, verdict_word(verdict)),
-        colour.dim(verdict_meaning(verdict))
-    );
+    verdict_line(out, record, colour);
 
     let engines: std::collections::BTreeSet<&str> = record
         .results

@@ -2448,3 +2448,162 @@ fn a_repository_with_no_commit_is_told_something_true_about_itself() {
         String::from_utf8_lossy(&after.stderr)
     );
 }
+
+#[test]
+fn a_record_whose_stored_verdict_contradicts_it_is_labelled_on_every_surface() {
+    // The legacy record. A schema-v2 payload sealed before a change nobody read
+    // was a reason not to pass: `unreadable_paths` naming what was not read and
+    // `verdict: pass` beside it, which the current `evaluate` cannot produce and
+    // which is still on disk and still in `refs/notes/andon-measure`.
+    //
+    // Three options were open — reject it, migrate it, or label it — and this is
+    // label. Not recompute: a verdict is a function of the policy, registry and
+    // iteration state in force when it was reached, none of which a reader has
+    // months later, and printing a newly computed word in the old one's place
+    // would make two renderings of one record disagree. Not reject: `ledger
+    // show` exists to re-serve records months later. Not migrate: the bytes are
+    // sealed, and rewriting a stored verdict in place is the shape of the
+    // laundering path the trust boundary exists to keep shut.
+    let repo = stranger_repo();
+    let (mut record, _) = measure_json(repo.path(), &[]);
+    record.unreadable_paths = vec!["src/work.ts".to_string()];
+    record.verdict.verdict = andon_core::schema::enums::Verdict::Pass;
+    record
+        .verdict
+        .reasons
+        .retain(|r| r.code != andon_core::verdict::reason::CHANGE_NOT_READ);
+
+    let saved = repo.path().join("legacy.json");
+    std::fs::write(
+        &saved,
+        andon_core::canonical::to_canonical_string(&record).expect("serializes"),
+    )
+    .expect("writes");
+    let input = saved.to_str().expect("utf-8").to_string();
+
+    // The terminal render, which `report` and `ledger show` both reach through
+    // one function.
+    let reported = stdout(&run(&["report", "--input", &input, "--no-color"]));
+    assert!(
+        reported.contains("INVALID"),
+        "the read-back render still headlines a verdict the record contradicts:\n{reported}"
+    );
+    assert!(
+        !reported.starts_with("\n PASS"),
+        "PASS is still the headline, which is what a reader with thirty seconds takes \
+         away:\n{reported}"
+    );
+    // The stored word is still shown. Labelling it invalid is not hiding it —
+    // the record is evidence, and a reader has to be able to see what it says.
+    assert!(
+        reported.contains("stored   PASS"),
+        "the label withheld the word the record actually stores:\n{reported}"
+    );
+
+    // The HTML page, which outlives the terminal and is the one most likely to
+    // be read by somebody deciding whether the change was safe.
+    let out = repo.path().join("legacy.html");
+    let _ = run(&[
+        "report",
+        "--input",
+        &input,
+        "--html",
+        out.to_str().expect("utf-8"),
+    ]);
+    let html = std::fs::read_to_string(&out).expect("the report reads back");
+    assert!(
+        html.contains("lamp-word\">INVALID"),
+        "the HTML lamp is still lit for a verdict the record contradicts"
+    );
+    assert!(
+        html.contains("<title>Andon · INVALID"),
+        "the browser tab contradicts the page's own headline"
+    );
+
+    // The agent surface carries it structurally, because it is the one written
+    // for a reader that does not read prose.
+    let profile = stdout(&run(&[
+        "report",
+        "--input",
+        &input,
+        "--profile",
+        "agent-mode",
+    ]));
+    let parsed: serde_json::Value = serde_json::from_str(&profile).expect("valid profile");
+    assert_eq!(parsed["verdict_invalid"], true, "{profile}");
+    assert_eq!(parsed["verdict"], "pass", "{profile}");
+
+    // `--json` re-serves the sealed bytes exactly, because they are evidence.
+    // The label goes beside them on stderr; the exit code was already 1.
+    let json = run(&["report", "--input", &input, "--json"]);
+    let served: MeasurementRecord =
+        serde_json::from_slice(&json.stdout).expect("the bytes are still a record");
+    assert_eq!(
+        served.verdict.verdict,
+        andon_core::schema::enums::Verdict::Pass,
+        "the stored verdict was rewritten on the way out, which is a migration"
+    );
+    assert_eq!(served.unreadable_paths, record.unreadable_paths);
+    let said = String::from_utf8_lossy(&json.stderr);
+    assert!(
+        said.contains("stores `pass`"),
+        "the machine surface served a contradicted record with nothing said about it:\n{said}"
+    );
+    assert_eq!(json.status.code(), Some(1), "{said}");
+}
+
+#[test]
+fn an_ordinary_record_still_gets_the_verdict_word_it_earned() {
+    // The other half of a label: it must not fire on the records it is not
+    // about. A rule that reddens honest work is uninstalled faster than one that
+    // misses something.
+    let repo = stranger_repo();
+    let (record, _) = measure_json(repo.path(), &[]);
+    assert!(record.unreadable_paths.is_empty());
+
+    let saved = repo.path().join("ordinary.json");
+    std::fs::write(
+        &saved,
+        andon_core::canonical::to_canonical_string(&record).expect("serializes"),
+    )
+    .expect("writes");
+    let input = saved.to_str().expect("utf-8").to_string();
+
+    let reported = stdout(&run(&["report", "--input", &input, "--no-color"]));
+    assert!(
+        !reported.contains("INVALID"),
+        "an honest record was labelled invalid:\n{reported}"
+    );
+    let profile = stdout(&run(&[
+        "report",
+        "--input",
+        &input,
+        "--profile",
+        "agent-mode",
+    ]));
+    let parsed: serde_json::Value = serde_json::from_str(&profile).expect("valid profile");
+    assert_eq!(parsed["verdict_invalid"], false, "{profile}");
+
+    // And a record that carries unread paths *and* the verdict they earned is
+    // not contradicted either: the label is about the contradiction, not about
+    // the field.
+    let mut consistent = record.clone();
+    consistent.unreadable_paths = vec!["src/work.ts".to_string()];
+    consistent.verdict.verdict = andon_core::schema::enums::Verdict::Advise;
+    let saved = repo.path().join("consistent.json");
+    std::fs::write(
+        &saved,
+        andon_core::canonical::to_canonical_string(&consistent).expect("serializes"),
+    )
+    .expect("writes");
+    let reported = stdout(&run(&[
+        "report",
+        "--input",
+        saved.to_str().expect("utf-8"),
+        "--no-color",
+    ]));
+    assert!(
+        !reported.contains("INVALID"),
+        "a record whose verdict matches its own fields was labelled invalid:\n{reported}"
+    );
+}

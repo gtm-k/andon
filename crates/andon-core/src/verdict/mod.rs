@@ -38,7 +38,9 @@ pub mod severity;
 
 use crate::policy::Policy;
 use crate::schema::enums::{Completeness, Severity, TamperSignal, Verdict};
-use crate::schema::payload::{IterationState, MeasurementResult, VerdictReason, VerdictSummary};
+use crate::schema::payload::{
+    IterationState, MeasurementRecord, MeasurementResult, VerdictReason, VerdictSummary,
+};
 
 use policy_change::PolicyChange;
 
@@ -136,6 +138,62 @@ pub fn has_countable_finding(results: &[MeasurementResult], ctx: &VerdictContext
         .iter()
         .any(|r| severity::counts_toward_iteration(r, ctx))
         || ctx.policy_change.is_some_and(|c| c.stops_the_line())
+}
+
+/// Whether a record's stored verdict contradicts the record's own fields.
+///
+/// # The rule this checks, and why it is checked at read time
+///
+/// [`evaluate`] holds one invariant about unread paths: a change with a path
+/// nobody read cannot be a `pass`, because `pass` means "nothing above the
+/// advisory floor" and there is no floor under bytes nobody looked at. Records
+/// sealed before that rule existed carry both halves of the contradiction —
+/// `unreadable_paths` naming what was not read, and `verdict: pass` beside it —
+/// and they are still on disk and still in `refs/notes/andon-measure`.
+///
+/// # Reject, migrate, or label, and why this is label
+///
+/// The reviewer's framing: *"A durable artifact need not be silently
+/// recomputed, but an internally inconsistent legacy record must be rejected,
+/// migrated, or explicitly labeled invalid."* Three options and this is the
+/// third.
+///
+/// **Not recompute.** A verdict is a function of the policy, the registry and
+/// the iteration state in force when it was reached, none of which a reader
+/// months later has. Computing a new word and printing it in the old one's place
+/// would make two renderings of one record disagree, which is the defect class
+/// this phase has spent three rounds closing.
+///
+/// **Not reject.** `ledger show` exists to re-serve records months later, and a
+/// query surface that refuses the rows it does not like has lost the history it
+/// was built to keep.
+///
+/// **Not migrate.** The bytes are sealed. Rewriting a stored verdict in place is
+/// the shape of the laundering path the whole trust boundary is built to keep
+/// shut, and it would do it in the tool's own hand.
+///
+/// So the bytes are served exactly as they were written, and every surface says
+/// the stored verdict is not a fact about this change. One predicate, because
+/// the last time a rule about unread paths was taught surface by surface, five
+/// learned it and `ledger show` did not.
+pub fn stored_verdict_is_contradicted(record: &MeasurementRecord) -> bool {
+    !record.unreadable_paths.is_empty() && record.verdict.verdict == Verdict::Pass
+}
+
+/// The sentence every surface says about a record [`stored_verdict_is_contradicted`]
+/// answers true for.
+///
+/// A function rather than a constant because it names the count, and a reader
+/// deciding whether to trust a stored verdict needs to know how much of the
+/// change it is silent about.
+pub fn contradiction_label(record: &MeasurementRecord) -> String {
+    format!(
+        "this record stores `pass` beside {} changed path(s) it could not read. A build before \
+         that rule existed wrote it, and the two cannot both be true — so the stored word is \
+         not a verdict about this change. It is served here unaltered because the record is \
+         evidence; re-run `andon measure` on the change to get one that is.",
+        record.unreadable_paths.len()
+    )
 }
 
 /// Reach a verdict.

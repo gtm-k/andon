@@ -220,6 +220,7 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
             andon_core::canonical::to_canonical_string(&measurement.record)
                 .map_err(|e| e.to_string())?
         );
+        say_if_verdict_contradicted(&measurement.record);
     } else {
         print!(
             "{}",
@@ -271,6 +272,27 @@ fn code_for_record(record: &MeasurementRecord, exit_zero: bool) -> ExitCode {
     code_for(record.verdict.verdict, false)
 }
 
+/// Say on stderr what the JSON surface cannot say in its own bytes.
+///
+/// `--json` re-serves the record exactly as it was sealed, which is the point of
+/// it: the bytes are evidence, and a tool that quietly rewrote a stored verdict
+/// on the way out would be doing the thing the trust boundary exists to prevent.
+/// So the label goes beside the bytes rather than into them — stdout stays a
+/// parseable record, stderr carries the sentence, and the exit code is already
+/// 1 through `covers_less_than_asked`.
+///
+/// The agent profile does not need this: it is a computed projection rather than
+/// the sealed record, so it carries `verdict_invalid` structurally, which is the
+/// right shape for the one surface built for a reader that does not read prose.
+fn say_if_verdict_contradicted(record: &MeasurementRecord) {
+    if andon_core::verdict::stored_verdict_is_contradicted(record) {
+        eprintln!(
+            "andon: {}",
+            andon_core::verdict::contradiction_label(record)
+        );
+    }
+}
+
 /// Whether this record describes less than the change it was asked about.
 ///
 /// One predicate rather than the field read at each surface, because the surfaces
@@ -316,6 +338,7 @@ fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
             "{}",
             andon_core::canonical::to_canonical_string(&record).map_err(|e| e.to_string())?
         );
+        say_if_verdict_contradicted(&record);
     } else {
         print!(
             "{}",

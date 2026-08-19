@@ -218,4 +218,5 @@ set was re-recorded in the same commit.
 | Schema | Change | Phase | Why |
 |---|---|---|---|
 | `payload-v1` | `CompareOutcome.flag_disagreements` added, required, always present | P0 | Verifier-authoritative compare membership (decision log E2). |
+| `agent-profile-v1` | `AgentProfile.verdict_invalid` added, default `false` | P5b | Records sealed before "a change nobody read cannot pass" carry `verdict: pass` beside a non-zero `unread_paths`. The two cannot both be true, and the machine surface has to be able to say so in a field rather than in prose. The record itself is untouched: it is served exactly as sealed, and every renderer labels the stored verdict rather than recomputing or rewriting it. |
 | `policy-v1` | `[perf] fast_lane_warm_fallback_p95_ms` added, default `2000` | P1 | The dirty-tree path without a watching fsmonitor daemon is a shipped arrangement with its own cost, and it needs a budget of its own to be gated rather than merely printed. Ledgered policy decision, orchestrator pre-approved. |
