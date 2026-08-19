@@ -27,8 +27,12 @@
 //! one line (`demote_to_partial`), the gate above it is one condition
 //! (`if !outcome.unassessed.is_empty()`), and the producers are the places a
 //! detector puts a finding into `unassessed` — five of them, in two of the seven
-//! detectors. It was verified by inspection twice, once here and once by review.
-//! It is true of the commit you are reading and of no other.
+//! detectors. It was verified by inspection twice, once here and once by
+//! review, and both inspections read the commit you are reading. That is the
+//! scope of the verification and not a property of the commit: the fact is not
+//! claimed to tell this commit apart from its neighbours — only to have been
+//! checked here, and to be unchecked wherever a later commit moves the
+//! producers or the gate.
 //!
 //! A test that counted those places stood here and was removed. It matched the
 //! spellings `unassessed.push(` and `unassessed.extend(`, and a reachable
