@@ -2148,3 +2148,303 @@ fn a_filter_driver_that_cannot_be_neutralized_is_refused() {
     // And it says what to do, because the reader has run one command.
     assert!(stderr.contains("unset"), "{stderr}");
 }
+
+/// A scratch repository on a named branch, with one commit and a dirty tree.
+///
+/// Deliberately not `stranger_repo()`: this is `git init` an hour ago, which is
+/// the checkout the head rung exists for and the one the base ladder finds
+/// nothing in.
+fn scratch_on_branch(branch: &str) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let bootstrap = Git::open(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("a repository");
+    bootstrap
+        .cmd([
+            "init",
+            "--quiet",
+            &format!("--initial-branch={branch}"),
+            "--object-format=sha1",
+        ])
+        .arg(temp.path())
+        .output()
+        .expect("git init");
+    let git = Git::open(temp.path()).expect("the fixture is a repository");
+    for (key, value) in [
+        ("user.name", common::FIXTURE_NAME),
+        ("user.email", common::FIXTURE_EMAIL),
+        ("core.autocrlf", "false"),
+        ("core.eol", "lf"),
+    ] {
+        git.cmd(["config", key, value]).output().expect("config");
+    }
+    std::fs::write(
+        temp.path().join("src.ts"),
+        b"export function a(x: number) {\n  return x;\n}\n",
+    )
+    .expect("write");
+    git.cmd(["add", "--all", "."]).output().expect("add");
+    commit_fixture(&git, "root");
+    // The change in flight: the state the product exists for.
+    std::fs::write(
+        temp.path().join("src.ts"),
+        b"export function a(x: number) {\n  if (x > 0) {\n    if (x > 1) {\n      if (x > 2) {\n\
+          return 1;\n      }\n    }\n  }\n  return x;\n}\n",
+    )
+    .expect("write");
+    temp
+}
+
+/// Commit whatever is staged at the fixture identity, so a scratch repository
+/// built here is as reproducible as one built from `fixtures/golden`.
+fn commit_fixture(git: &Git, message: &str) {
+    git.cmd(["commit", "--quiet", "--all", "-m", message])
+        .env("GIT_AUTHOR_NAME", common::FIXTURE_NAME)
+        .env("GIT_AUTHOR_EMAIL", common::FIXTURE_EMAIL)
+        .env("GIT_AUTHOR_DATE", common::FIXTURE_DATE)
+        .env("GIT_COMMITTER_NAME", common::FIXTURE_NAME)
+        .env("GIT_COMMITTER_EMAIL", common::FIXTURE_EMAIL)
+        .env("GIT_COMMITTER_DATE", common::FIXTURE_DATE)
+        .output()
+        .expect("git commit");
+}
+
+/// Every metric and value in a record, keyed so two records can be compared
+/// without their OIDs, which differ by construction.
+fn value_map(record: &MeasurementRecord) -> std::collections::BTreeMap<String, String> {
+    record
+        .results
+        .iter()
+        .map(|r| {
+            (
+                format!("{}|{:?}", r.metric_id, r.scope),
+                format!("{:?}", r.value),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_branch_name_does_not_decide_whether_the_tool_works() {
+    // THE BLOCKER. A controlled A/B with exactly one variable.
+    //
+    // `develop`, `dev` and `trunk` were refused — exit 1, a message about
+    // uncommitted work — while `main` and `master` measured the same bytes in
+    // the same repository, and `git branch --move trunk main` flipped the
+    // outcome. The cause was structural rather than a missing candidate name:
+    // the worktree head was only consumed inside the `BASE_CANDIDATES` loop, so
+    // where no candidate resolves the loop body never ran and control fell
+    // through to a refusal. The clean path had `last_merged_change` as its A1
+    // rung; the dirty path had no rung at all.
+    //
+    // Widening `BASE_CANDIDATES` would not have fixed it. `develop` is not the
+    // only name a branch can have, and the manual-fetch checkout below has no
+    // candidate under any name.
+    let mut values: Vec<(String, std::collections::BTreeMap<String, String>)> = Vec::new();
+    for branch in ["develop", "dev", "trunk", "main", "master"] {
+        let repo = scratch_on_branch(branch);
+        let (record, output) = measure_json(repo.path(), &[]);
+        assert_ne!(
+            output.status.code(),
+            Some(1),
+            "a repository whose branch is `{branch}` could not be measured at all:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !record.results.is_empty(),
+            "`{branch}` produced an empty record"
+        );
+        assert_eq!(
+            record.compare_context.head_kind,
+            andon_core::schema::payload::HeadKind::UncommittedWorktree,
+            "`{branch}` did not measure the working tree, which is the whole point"
+        );
+        values.push((branch.to_string(), value_map(&record)));
+    }
+    // Same bytes, so the same numbers. A rung that measured *something* while
+    // measuring a different change would pass the exit-code assertion above and
+    // still be the silent substitution this module exists to prevent.
+    let (first_name, first) = values[0].clone();
+    for (branch, map) in &values[1..] {
+        assert_eq!(
+            &first, map,
+            "`{first_name}` and `{branch}` measured the same bytes and disagreed"
+        );
+    }
+}
+
+#[test]
+fn the_record_says_the_base_was_the_commit_the_tree_sits_on() {
+    // The rung's disclosure half. The change measured is the working change, so
+    // this is not a `Substitution` — but *how the base was arrived at* is a fact
+    // about the record, and a reader months later has to be able to tell "HEAD
+    // because I asked" from "HEAD because this repository offered no fork
+    // point". The terminal header says it too, from the same value.
+    let repo = scratch_on_branch("develop");
+    let (record, _) = measure_json(repo.path(), &[]);
+    assert_eq!(
+        record.compare_context.base_resolution, "no-branch-point:head",
+        "the record does not say how the base was arrived at"
+    );
+    assert!(
+        record.substitution.is_none(),
+        "the working change was measured, so nothing was substituted for it"
+    );
+
+    let rendered = stdout(&run(&[
+        "measure",
+        "--repo",
+        repo.path().to_str().expect("utf-8"),
+        "--no-color",
+    ]));
+    assert!(
+        rendered.contains("no branch point found"),
+        "the header does not say the base was arrived at without a fork point:\n{rendered}"
+    );
+
+    // A named base still says it was named, so the new value cannot swallow the
+    // ordinary one.
+    let (explicit, _) = measure_json(repo.path(), &["--base", "HEAD"]);
+    assert_eq!(explicit.compare_context.base_resolution, "head");
+}
+
+#[test]
+fn the_manual_fetch_checkout_is_measured() {
+    // The same blocker with a remote attached, which is what makes it a CI
+    // failure rather than a scratch-repo artefact: `git init -b develop`, add a
+    // remote, fetch, `reset --hard`. `origin/HEAD` is unset and the branch
+    // tracks nothing, so no candidate resolves — while a plain `git clone` of
+    // the same upstream measures, because clone sets both.
+    let upstream = scratch_on_branch("develop");
+    let upstream_git = Git::open(upstream.path()).expect("a repository");
+    commit_fixture(&upstream_git, "second");
+    let url = format!(
+        "file://{}",
+        upstream.path().to_str().expect("utf-8").replace('\\', "/")
+    );
+
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let bootstrap = Git::open(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("a repository");
+    bootstrap
+        .cmd([
+            "init",
+            "--quiet",
+            "--initial-branch=develop",
+            "--object-format=sha1",
+        ])
+        .arg(temp.path())
+        .output()
+        .expect("git init");
+    let git = Git::open(temp.path()).expect("a repository");
+    for (key, value) in [
+        ("user.name", common::FIXTURE_NAME),
+        ("user.email", common::FIXTURE_EMAIL),
+        ("core.autocrlf", "false"),
+        ("core.eol", "lf"),
+    ] {
+        git.cmd(["config", key, value]).output().expect("config");
+    }
+    git.cmd(["remote", "add", "origin", &url])
+        .output()
+        .expect("remote add");
+    git.cmd(["fetch", "--quiet", "origin"])
+        .output()
+        .expect("fetch");
+    git.cmd(["reset", "--quiet", "--hard", "origin/develop"])
+        .output()
+        .expect("reset");
+
+    // The premise: neither of the two candidates a clone would have set exists.
+    for candidate in ["origin/HEAD", "@{upstream}"] {
+        let resolved = git
+            .cmd(["rev-parse", "--verify", "--quiet", candidate])
+            .succeeds_with_output();
+        assert!(
+            !matches!(resolved, Ok(Some(_))),
+            "{candidate} resolves, so this test is not the checkout it describes"
+        );
+    }
+
+    std::fs::write(
+        temp.path().join("src.ts"),
+        b"export function a(x: number) {\n  if (x > 0) {\n    if (x > 1) {\n      return 1;\n\
+          }\n  }\n  return x;\n}\n",
+    )
+    .expect("write");
+
+    let (record, output) = measure_json(temp.path(), &[]);
+    assert_ne!(
+        output.status.code(),
+        Some(1),
+        "the manual-fetch CI checkout could not be measured:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        record.compare_context.base_resolution, "no-branch-point:head",
+        "the record does not say how the base was arrived at"
+    );
+}
+
+#[test]
+fn a_repository_with_no_commit_is_told_something_true_about_itself() {
+    // The refusal that survives the rung, and the message class this phase has
+    // blocked on three times. What it used to say — "a bare repository with no
+    // worktree to resolve, or a snapshot git reported and then could not diff" —
+    // was two alternatives, both asserted without being checked, and both false
+    // here: `--is-bare-repository` is `false` and `--show-toplevel` resolves.
+    // Its two remedies both failed as well: `--last-merged` refuses with the
+    // typed error, and "commit the change, then re-run" leaves a one-commit
+    // repository whose next `andon measure` refuses again.
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let bootstrap = Git::open(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("a repository");
+    bootstrap
+        .cmd([
+            "init",
+            "--quiet",
+            "--initial-branch=main",
+            "--object-format=sha1",
+        ])
+        .arg(temp.path())
+        .output()
+        .expect("git init");
+    let git = Git::open(temp.path()).expect("a repository");
+    for (key, value) in [
+        ("user.name", common::FIXTURE_NAME),
+        ("user.email", common::FIXTURE_EMAIL),
+    ] {
+        git.cmd(["config", key, value]).output().expect("config");
+    }
+    std::fs::write(temp.path().join("a.ts"), b"export const a = 1;\n").expect("write");
+
+    let path = temp.path().to_str().expect("utf-8").to_string();
+    let output = run(&["measure", "--repo", &path, "--no-color"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("no commit yet"),
+        "the refusal does not name the state the repository is in:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("bare"),
+        "the refusal still calls a non-bare repository bare:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("--last-merged"),
+        "the refusal still offers a flag that refuses here too:\n{stderr}"
+    );
+
+    // The remedy is followed, and it has to end in a measurement. The pair it
+    // replaced did not.
+    git.cmd(["add", "--all", "."]).output().expect("add");
+    commit_fixture(&git, "first");
+    std::fs::write(
+        temp.path().join("a.ts"),
+        b"export const a = 1;\nexport const b = 2;\n",
+    )
+    .expect("write");
+    let after = run(&["measure", "--repo", &path, "--no-color"]);
+    assert_ne!(
+        after.status.code(),
+        Some(1),
+        "the remedy the refusal names does not end in a measurement:\n{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+}

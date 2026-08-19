@@ -9,7 +9,7 @@
 //! tool does not have. They clone something, run one command, and judge the tool
 //! on what comes back.
 //!
-//! So there are two separate defences here and they answer different failures.
+//! So there are three separate defences here and they answer different failures.
 //!
 //! **The base ladder** answers *"I have no idea what this repository looks
 //! like"*. `andon-spike`'s default base is `merge-base:origin/main`, which is
@@ -27,6 +27,21 @@
 //! itself carries [`FALLBACK_RESOLUTION`] in
 //! [`CompareContext::base_resolution`], so the substitution survives being
 //! serialized, emailed, and read by someone who never saw the terminal.
+//!
+//! **The head rung** answers *"there is something in flight and this repository
+//! offers no fork point for it"*. The two defences above were both reached
+//! through the ladder, so a repository where no candidate resolves — branch
+//! `develop`, no remote; or `git init -b trunk` five minutes ago; or the
+//! manual-fetch CI checkout where `origin/HEAD` is unset and the branch tracks
+//! nothing — ran the loop body zero times and fell through to a refusal. The
+//! branch name decided whether the tool worked at all: `master` and `main`
+//! measured, `develop` and `dev` and `trunk` refused, same bytes, same
+//! repository, renaming it flipped the answer. The rung is the commit the
+//! working tree sits on — what `--base HEAD` always did by hand — and the
+//! record says so through [`HEAD_RUNG_RESOLUTION`]. It is **not** a
+//! [`Substitution`]: the change measured is the working change, which is what
+//! was asked for. Only the base was arrived at differently, and that is a fact
+//! about the base, which is what `base_resolution` is for.
 //!
 //! # What is deliberately not done
 //!
@@ -49,6 +64,18 @@ use andon_core::schema::payload::{CompareContext, HeadKind};
 /// value — so extending the vocabulary here records the substitution as a fact
 /// about the record rather than as prose in one renderer.
 pub const FALLBACK_RESOLUTION: &str = "no-diff-fallback:last-merged-change";
+
+/// The `base_resolution` written when the head rung fired.
+///
+/// Distinct from the `head` that `git::resolve` writes for an explicit
+/// `--base HEAD`, and deliberately: the caller did not name this base, the
+/// ladder did not find one, and a reader of the record months later has to be
+/// able to tell "measured against HEAD because I asked" from "measured against
+/// HEAD because this repository offered no fork point". Same field, same
+/// reason, same shape as [`FALLBACK_RESOLUTION`] — outside `ResultDigestInput`,
+/// nothing branches on its value, so extending the vocabulary records the fact
+/// rather than leaving it in one renderer's prose.
+pub const HEAD_RUNG_RESOLUTION: &str = "no-branch-point:head";
 
 /// Revision specs tried, in order, when the caller names no base.
 ///
@@ -157,8 +184,7 @@ pub enum ResolveFailure {
         /// assert something about it.
         uncommitted: Vec<String>,
     },
-    /// There is uncommitted work, and this repository offers no working-tree
-    /// head to measure it as.
+    /// There is uncommitted work, and no honest way to measure it as it stands.
     ///
     /// # What this used to be, and what it is now
     ///
@@ -168,54 +194,34 @@ pub enum ResolveFailure {
     /// says what it **is** ([`HeadKind`]), an uncommitted head carries its
     /// snapshot's content hash, and `crate::compare` refuses to compare it — so
     /// the laundering path R2-4 exists to close stays shut without refusing to
-    /// look. An ordinary dirty tree is measured above.
+    /// look. An ordinary dirty tree is measured above, and since the head rung
+    /// so is a dirty tree in a repository with no fork point.
     ///
-    /// What is left here is the residue: the working-tree head produced no
-    /// changed set at all. A bare repository with no worktree to resolve, or a
-    /// snapshot git reported and then could not diff.
+    /// # Why the reason is a value and not a sentence
     ///
-    /// The message said "this build measures committed content only" until it
-    /// was pointed out that the same binary, in the same session, prints
-    /// `→ your uncommitted working tree`. A refusal that contradicts the tool
-    /// it comes from is worse than a terse one.
-    ///
-    /// # Two ways in, and they need two sentences
-    ///
-    /// The common one is that the caller **pinned the head** — `--head HEAD` is
-    /// not the same request as omitting `--head`, and pinning it takes the
-    /// working tree out of the measurement by construction. The rare one is the
-    /// residue above. Saying "this repository does not offer a working-tree
-    /// head" to somebody who simply passed `--head` describes a repository they
-    /// do not have, which is the mistake this whole variant is a correction of.
+    /// The sentence it replaced named two causes — *"a bare repository with no
+    /// worktree to resolve, or a snapshot git reported and then could not
+    /// diff"* — and printed both, as alternatives, without having checked
+    /// either. On the repository that actually reached it,
+    /// `--is-bare-repository` was `false`, `--show-toplevel` resolved, and git
+    /// diffed the change fine: a refusal asserting two things about a
+    /// repository and wrong about both. That is the message class this phase
+    /// blocked on three times, so the cause is now read at the point of refusal
+    /// and carried as a [`DirtyDeadEnd`]. A message that names what it checked
+    /// and what it found cannot be false the way that one was.
     #[error(
         "there is uncommitted work here ({paths}), and it is not what was measured.\n  {why}\n  \
          What works now:  {remedy}",
         paths = summarize(.paths),
-        why = if *.head_pinned {
-            "You named `--head`, so the head is that commit and your working tree was never \
-             eligible — omitting `--head` is a different request, not the same one spelled out. \
-             Against that commit, every base candidate this repository offers leaves nothing to \
-             measure."
-        } else {
-            "An ordinary dirty tree IS measured by this build: the head becomes your working \
-             tree and the record says so. Reaching this message means that head produced no \
-             changed set at all — a bare repository with no worktree to resolve, or a snapshot \
-             git reported and then could not diff."
-        },
-        remedy = if *.head_pinned {
-            "re-run without `--head` to measure the working tree, or name a base: \
-             `andon measure --base <rev>`."
-        } else {
-            "commit the change, then re-run `andon measure`. Or, deliberately: \
-             `andon measure --last-merged` measures the last merged change instead and says so."
-        }
+        why = .dead_end.why(),
+        remedy = .dead_end.remedy()
     )]
     UncommittedWork {
         /// Every uncommitted path, so the refusal names what it is about.
         paths: Vec<String>,
-        /// Whether the caller named `--head`, which is why the working tree was
-        /// not the head. Decides which of two true sentences the message gets.
-        head_pinned: bool,
+        /// Which dead end this is, read from the repository rather than
+        /// asserted about it.
+        dead_end: DirtyDeadEnd,
     },
     /// Git refused.
     #[error(transparent)]
@@ -223,6 +229,105 @@ pub enum ResolveFailure {
     /// The repository could not be read at all.
     #[error(transparent)]
     Open(#[from] andon_core::git::GitError),
+}
+
+/// Why a dirty tree had no head this build could measure, read at the point of
+/// refusal.
+///
+/// Every variant is a fact somebody checked with a git command, and the
+/// message for each says what that command found. The alternative — one
+/// sentence listing the causes it might be — is how a refusal ends up
+/// describing a repository the reader does not have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirtyDeadEnd {
+    /// The caller named `--head`, so the working tree was never eligible, and
+    /// no base candidate resolved against that commit.
+    ///
+    /// `tried` is carried so the sentence can say whether the ladder found
+    /// nothing or found candidates that left nothing to measure. Those are
+    /// different repositories and the reader can tell them apart in one
+    /// command.
+    HeadPinned {
+        /// Base candidates that resolved, in the order they were tried.
+        tried: Vec<String>,
+    },
+    /// `HEAD` names nothing: this repository has no commit yet.
+    ///
+    /// `git init`, some files written, nothing committed. There is no earlier
+    /// state, so there is no base — not a missing one, an absent one. The
+    /// refusal this used to get told the reader their repository was bare and
+    /// offered `--last-merged`, which refuses here too.
+    NoCommitYet,
+    /// `HEAD` resolves, the head rung ran against it, and git reported no
+    /// changed path at all.
+    ///
+    /// The genuine residue, and now the only thing this variant is: `status`
+    /// names paths that `diff` does not — a dirty submodule pointer, a
+    /// mode-only change on a filesystem that does not carry the bit — so there
+    /// is work in the tree and no content for an engine to read.
+    NothingGitWillDiff {
+        /// Abbreviated `HEAD`, so the message names the commit it compared to.
+        head_short: String,
+    },
+}
+
+impl DirtyDeadEnd {
+    /// What was checked, and what it found.
+    fn why(&self) -> String {
+        match self {
+            DirtyDeadEnd::HeadPinned { tried } if tried.is_empty() => {
+                "You named `--head`, so the head is that commit and your working tree was never \
+                 eligible — omitting `--head` is a different request, not the same one spelled \
+                 out. Against that commit, no base candidate resolves in this repository at all."
+                    .to_string()
+            }
+            DirtyDeadEnd::HeadPinned { tried } => format!(
+                "You named `--head`, so the head is that commit and your working tree was never \
+                 eligible — omitting `--head` is a different request, not the same one spelled \
+                 out. Against that commit, every base candidate this repository does offer ({}) \
+                 leaves nothing to measure.",
+                tried.join(", ")
+            ),
+            DirtyDeadEnd::NoCommitYet => {
+                "`git rev-parse HEAD` names nothing here: this repository has no commit yet, so \
+                 there is no earlier state for your work to be a change from. Nothing is wrong \
+                 with the tree — there is simply no base in existence."
+                    .to_string()
+            }
+            DirtyDeadEnd::NothingGitWillDiff { head_short } => format!(
+                "`git status` names those paths and `git diff {head_short}` names none of them, \
+                 so there is no changed content for an engine to read. A dirty submodule pointer \
+                 and a mode-only change both look like this."
+            ),
+        }
+    }
+
+    /// A remedy that works from here.
+    ///
+    /// Checked against the repository the refusal is about, because the pair
+    /// this replaced both failed on it: `--last-merged` refuses on an unborn
+    /// HEAD with the typed error, and "commit the change, then re-run" leaves a
+    /// one-commit repository whose next `andon measure` refuses again.
+    fn remedy(&self) -> String {
+        match self {
+            DirtyDeadEnd::HeadPinned { .. } => {
+                "re-run without `--head` to measure the working tree, or name a base: \
+                 `andon measure --base <rev>`."
+                    .to_string()
+            }
+            DirtyDeadEnd::NoCommitYet => {
+                "make the first commit — `git add -A && git commit -m \"first\"` — and the change \
+                 after it is measurable: `andon measure` then compares your working tree against \
+                 that commit."
+                    .to_string()
+            }
+            DirtyDeadEnd::NothingGitWillDiff { head_short } => format!(
+                "`git diff {head_short} --stat` prints exactly what this tool would have \
+                 measured. If it is empty there is nothing here to measure yet; commit the \
+                 pointer or the mode change, and the next change on top of it is measurable."
+            ),
+        }
+    }
 }
 
 /// What was measured in place of what was asked for.
@@ -411,16 +516,77 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
         }
     }
 
-    // A dirty tree that got this far was never measured as itself. Two ways
-    // that happens, and the refusal has to say which: the caller pinned
-    // `--head`, so the working tree was not eligible, or the working-tree head
-    // produced no changed set at all — a bare repository with no worktree to
-    // resolve, or a snapshot git reported and then could not diff. An ordinary
-    // dirty tree is measured above.
+    // THE HEAD RUNG: THE DIRTY PATH'S FALLBACK, WHICH IT DID NOT HAVE.
+    //
+    // The clean path falls through to `last_merged_change`. The dirty path fell
+    // through to a refusal, and the difference was invisible because the head is
+    // only *consumed* inside the loop above — so a repository where no candidate
+    // resolves ran the loop body zero times and never measured the working tree
+    // it had already decided to use as the head.
+    //
+    // What made that a blocker rather than a corner is which repositories they
+    // are. `develop`, `dev`, `trunk`, and `git init` an hour ago are not exotic;
+    // neither is the manual-fetch CI checkout, where `origin/HEAD` is unset and
+    // the branch tracks nothing. A controlled A/B over one variable had
+    // `master`/`main` measuring and `develop`/`dev`/`trunk` refusing, in the same
+    // repository with the same bytes, flipping on a `git branch --move`. The
+    // branch name decided whether the tool worked.
+    //
+    // The base is the commit the working tree sits on, which is what
+    // `--base HEAD` did by hand and what the tool never suggested. It is a rung
+    // rather than a `BASE_CANDIDATES` entry on purpose: as a candidate it would
+    // join `tried`, and `NoWorkingChange` would then report that HEAD is one of
+    // the bases HEAD matches, and every clean-path `asked_for` string would grow
+    // a base nobody asked about.
+    if matches!(head, Revision::Worktree) && rev_exists(git, &head_spec) {
+        let range = ResolvedRange::resolve(git, &Revision::Rev(head_spec.clone()), &head)?;
+        let mut compare_context = range.wire_context()?;
+        let changed = ChangedSet::enumerate(git, &range)?;
+        if !changed.is_empty() {
+            // Overwritten rather than left as `head`, which `git::resolve`
+            // writes for any `Revision::Rev("HEAD")`: that value would say the
+            // caller named this base, and the caller named nothing.
+            compare_context.base_resolution = HEAD_RUNG_RESOLUTION.to_string();
+            let how = describe(
+                &compare_context,
+                "no branch point found, so the base is the commit your tree sits on",
+            );
+            return Ok(Resolution {
+                range,
+                compare_context,
+                changed,
+                how,
+                // Not a substitution. The change measured is the working change,
+                // which is what was asked for; only the base was arrived at
+                // differently, and `base_resolution` is the field for that.
+                substitution: None,
+                uncommitted,
+            });
+        }
+    }
+
+    // A dirty tree that got past the rung has no head this build can measure,
+    // and the reason is read here rather than asserted in the message.
     if !uncommitted.is_empty() && !request.last_merged {
+        let dead_end = if request.head.is_some() {
+            DirtyDeadEnd::HeadPinned {
+                tried: tried.iter().map(|c| c.to_string()).collect(),
+            }
+        } else {
+            match rev_parse(git, &head_spec) {
+                Ok(oid) => DirtyDeadEnd::NothingGitWillDiff {
+                    head_short: short(&oid),
+                },
+                // The only way `HEAD` fails to resolve on the unpinned path is
+                // that no commit exists. Asked of the repository rather than
+                // inferred: an unborn HEAD used to be told it was bare and
+                // offered `--last-merged`, which refuses here too.
+                Err(_) => DirtyDeadEnd::NoCommitYet,
+            }
+        };
         return Err(ResolveFailure::UncommittedWork {
             paths: uncommitted,
-            head_pinned: request.head.is_some(),
+            dead_end,
         });
     }
 

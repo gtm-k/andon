@@ -67,7 +67,11 @@ andon measure [OPTIONS]
   --repo <PATH>        any path inside the repository (default: .)
   --base <REV>         base revision, or merge-base:<ref>
                        (default: the fork point against this repository's own
-                        upstream, falling back to the last merged change)
+                        upstream. Where this repository offers no fork point --
+                        a branch named neither main nor master, no remote, or a
+                        manual-fetch checkout -- the base is the commit your
+                        working tree sits on; and with nothing in flight, the
+                        last merged change. The report says which was used)
   --head <REV>         head revision. Omitting it is NOT the same as passing
                        HEAD: with uncommitted work in the tree, the default
                        head is that working tree, and `--head HEAD` asks for
