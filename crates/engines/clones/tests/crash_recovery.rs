@@ -26,7 +26,7 @@ use std::process::Command;
 
 use andon_core::engine::{run_engine, MeasureContext};
 use andon_core::policy::Policy;
-use andon_core::schema::payload::CompareContext;
+use andon_core::schema::payload::{CompareContext, HeadKind};
 use andon_engine_clones::index::{FileInput, Index};
 use andon_engine_clones::ClonesEngine;
 
@@ -75,6 +75,7 @@ fn context() -> MeasureContext {
             base_oid: "a".repeat(40),
             head_oid: "b".repeat(40),
             git_version: "git version 2.51.0".to_string(),
+            head_kind: HeadKind::Commit,
             base_resolution: "explicit".to_string(),
         },
         policy: Policy::default(),

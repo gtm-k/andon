@@ -116,6 +116,13 @@
             "unwitnessed-base-mismatch"
           ],
           "type": "string"
+        },
+        {
+          "description": "The head was an uncommitted tree, so no verifier can ever witness it.\n\n# Why this is not the generic `unwitnessed`\n\n`unwitnessed` is documented above as *\"No CI recompute happened. Neutral, not negative\"* — a statement about the past, and one that stops being true the moment CI runs. This one is a statement about what is possible: CI cannot check out somebody's working tree, so a record measured against one is **permanently** unwitnessable, and no future run changes that.\n\nCollapsing the two would tell an operator to wait for an attestation that is never coming, which is the actor-observability defect the `unwitnessed-*` family already exists to avoid: `unwitnessed-version-skew` and `unwitnessed-base-mismatch` are both specific causes kept out of the generic bucket for exactly this reason.\n\nLike the rest of the family it is **not an accusation** and **not a pass**. A measurement of uncommitted work is real, useful to its author, and outside the trust boundary by construction (P5b mini-G2 ruling).",
+          "enum": [
+            "unwitnessed-uncommitted"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -187,6 +194,32 @@
           "description": "Novel and unvalidated. Motivated by evidence, not yet supported by it.",
           "enum": [
             "N"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "HeadKind": {
+      "description": "What kind of thing the head of a measured range is.\n\n# Why this exists rather than a commit OID standing in for a working tree\n\nThe state the product exists for is an agent that has just written a change and not committed it. Measuring it needs a head, and the working tree has no commit OID — so there were only ever two honest options, and the tempting third one is a vulnerability.\n\nThe tempting one: write `HEAD`'s OID into `head_oid` and carry on. That produces a record which passes the verifier's tuple-equality check while describing bytes that were never committed, so the verifier recomputes the *commit*, gets different numbers, and reports `divergent` on honest work. That is the R2-4 laundering path from one side and PREMORTEM Story 1's false accusation from the other, and P1's `git::resolve` refused to build a `CompareContext` from a dirty endpoint precisely to keep it shut.\n\nSo the head says what it **is**. An uncommitted head carries the content hash of its own snapshot, which no commit OID can collide with in practice and which nothing downstream will mistake for one, because this field says not to. [`crate::compare::classify`] reads it before it reads anything else and refuses to compare, so a dirty record can never be accused.",
+      "oneOf": [
+        {
+          "description": "A commit. The only kind a verifier can check out and recompute.",
+          "enum": [
+            "commit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "An uncommitted working tree, including anything staged. `head_oid` is the content hash of the dirty snapshot, never a commit OID.",
+          "enum": [
+            "uncommitted-worktree"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The index alone — staged content, with unstaged edits excluded. `head_oid` is the content hash of that snapshot.",
+          "enum": [
+            "uncommitted-index"
           ],
           "type": "string"
         }
@@ -438,7 +471,7 @@
       "description": "How much trust the measurement has earned."
     },
     "base_oid": {
-      "description": "Base commit measured against.",
+      "description": "Base commit measured against. Always a commit.",
       "type": "string"
     },
     "completeness": {
@@ -460,8 +493,16 @@
       },
       "type": "array"
     },
+    "head_kind": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/HeadKind"
+        }
+      ],
+      "description": "What `head_oid` identifies.\n\nPresent for the same reason it is present on the record: an uncommitted head cannot be recomputed by anything, and a consumer that took `head_oid` for a commit would ask CI to check out a working tree."
+    },
     "head_oid": {
-      "description": "Head commit measured.",
+      "description": "The head's identity, of the kind [`Self::head_kind`] names: a commit OID for `commit`, and otherwise the content hash of an uncommitted snapshot.\n\n**Read `head_kind` before interpreting this.** Its description here used to say \"head commit measured\", which is false for two of the three kinds this profile can carry — on the one surface written for a reader that does not read prose.",
       "type": "string"
     },
     "iteration": {
@@ -471,6 +512,13 @@
         }
       ],
       "description": "Where the agent is against its iteration cap."
+    },
+    "measured_instead": {
+      "description": "Present when something other than what was asked for was measured.\n\nBounded like everything else here, and included because an agent acting on a fallback verdict without knowing it is a fallback is PREMORTEM A1 reached through the one surface built for agents.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "profile": {
       "description": "Always [`PROFILE_NAME`].",
@@ -492,13 +540,31 @@
       "description": "True when findings were dropped to stay inside the budget.",
       "type": "boolean"
     },
+    "unread_paths": {
+      "description": "How many changed paths nothing could read, so no finding describes them.\n\nA count rather than the paths: this view has a byte budget, and what an agent needs from it is \"this verdict covers less than you asked about\", which a number carries. `andon report` names them.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
     "verdict": {
       "allOf": [
         {
           "$ref": "#/definitions/Verdict"
         }
       ],
-      "description": "What to do about the change."
+      "description": "What to do about the change.\n\nRead [`Self::verdict_invalid`] first. When that is `true` this is the word the record stores and not a verdict about the change."
+    },
+    "verdict_invalid": {
+      "default": false,
+      "description": "True when the stored verdict contradicts the record it came from.\n\nA structural field rather than prose, because this is the surface built for a reader that does not read prose. Records sealed before a change nobody read was a reason not to pass carry `verdict: pass` beside a non-zero [`Self::unread_paths`], and an agent branching on `verdict` alone would act on the older of two contradicting halves of one record.\n\nAdditive with a default, so a consumer built against a profile without it reads `false` and is right about every record that predates the contradiction being detectable.",
+      "type": "boolean"
+    },
+    "withheld_paths": {
+      "default": 0,
+      "description": "How many changed paths the policy withheld from this measurement, so no finding describes them either.\n\nNon-zero only under `--self-measure`, which is Andon measuring Andon. A count rather than the paths, for the reason [`Self::unread_paths`] is one: this view has a byte budget, and what an agent needs is that the verdict covers less than the change.\n\nAdditive with a default. A consumer built against a profile without it reads zero, which is right for every measurement of a repository that is not this one.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
     }
   },
   "required": [
@@ -507,12 +573,14 @@
     "completeness",
     "counts_downstream",
     "findings",
+    "head_kind",
     "head_oid",
     "iteration",
     "profile",
     "schema_version",
     "total_findings",
     "truncated",
+    "unread_paths",
     "verdict"
   ],
   "title": "AgentProfile",

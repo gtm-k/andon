@@ -328,6 +328,9 @@ fn bare_request<'a>(
     engines: Vec<EngineOutput>,
 ) -> AssembleRequest<'a> {
     AssembleRequest {
+        substitution: None,
+        unreadable_paths: Vec::new(),
+        self_measure: None,
         tool: ToolIdentity {
             name: "andon".to_string(),
             version: "0.1.0".to_string(),
@@ -354,6 +357,7 @@ fn bare_request<'a>(
 
 fn advance(count: u32, cap: u32) -> Advance {
     Advance {
+        contended: false,
         state: crate::schema::payload::IterationState {
             count,
             cap,
@@ -488,20 +492,133 @@ fn a_measurement_that_could_not_see_does_not_clear_the_budget() {
 }
 
 #[test]
+fn a_path_nothing_could_read_does_not_clear_the_budget_either() {
+    // The same reset, through a field that did not exist when `LoopOutcome` was
+    // made three-valued. `every_question_was_answered` asked about engine
+    // failures and about half-finished results, and not about a changed path
+    // nothing could open — so a measurement that found nothing because it never
+    // saw the file answered `Finished` and cleared the agent's count.
+    //
+    // "Break the engine" and "make the file unreadable" are the same move, and
+    // the verdict already knows it: the record carries `change-not-read` and
+    // exits 1. The counter was the last consumer still blind to it.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+
+    let mut req = request(&policy, &registry, five_engines(&registry));
+    req.unreadable_paths = vec!["src/work.ts".to_string()];
+    let blinded = prepare(req).expect("assembles");
+
+    assert!(
+        !blinded.has_countable_finding(),
+        "an unreadable path is not something the agent's next edit answers, and counting it \
+         would grind the loop to escalation over a permission bit"
+    );
+    assert_eq!(
+        blinded.loop_outcome(),
+        crate::verdict::iteration::LoopOutcome::Inconclusive,
+        "a run over a path nothing could read is not evidence that the loop ended"
+    );
+}
+
+#[test]
+fn an_honest_absence_still_ends_the_loop() {
+    // The other half, and the half that was dead in production. Engines emit
+    // `unwitnessed` results by design for absences that are facts about the
+    // repository — no coverage report, no history for a file added in this
+    // change, no complexity input for a `.png`. Record completeness is the
+    // weakest of the results, and `unwitnessed` is the weakest value there is,
+    // so a reset gated on `Complete` never fired: measured across four real
+    // repositories, 15 of 15 runs were `unwitnessed`.
+    //
+    // A counter that advances and never resets makes escalation guaranteed
+    // rather than earned on any long-lived branch, which is PREMORTEM S6 — the
+    // anti-grinding mechanism inverting into the flood it exists to prevent.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+
+    let mut engines = five_engines(&registry);
+    let marker = engines
+        .iter_mut()
+        .find(|output| output.descriptor.engine_id == "artifacts")
+        .expect("the artifacts engine is in the roster");
+    for result in &mut marker.results {
+        // What the engine really emits when there is no report to read: an
+        // answer, not a failure to answer.
+        result.completeness = Completeness::Unwitnessed;
+        result.value = MetricValue::Text("unwitnessed: no coverage report found".to_string());
+        result
+            .seal(&compare_context())
+            .expect("re-seals after the edit");
+    }
+
+    let honest = prepare(request(&policy, &registry, engines)).expect("assembles");
+    assert!(!honest.has_countable_finding());
+    assert_eq!(
+        honest.completeness(),
+        Completeness::Unwitnessed,
+        "the record still reports the weakest of its results, which is the honest value"
+    );
+    assert_eq!(
+        honest.loop_outcome(),
+        crate::verdict::iteration::LoopOutcome::Finished,
+        "an engine that looked and reported an absence has answered; the loop is over"
+    );
+}
+
+#[test]
+fn a_half_read_file_still_holds_the_budget() {
+    // The distinction the reset now keys on, from the other side. `unwitnessed`
+    // is an answer; `parse-degraded` is an answer about part of a file with the
+    // rest unread, and a change can produce one on purpose (PREMORTEM T3). It
+    // must not clear a budget.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+
+    let mut engines = five_engines(&registry);
+    let degraded = engines
+        .iter_mut()
+        .find(|output| output.descriptor.engine_id == "static-metrics")
+        .expect("the static engine is in the roster");
+    for result in &mut degraded.results {
+        result.completeness = Completeness::ParseDegraded;
+        result
+            .seal(&compare_context())
+            .expect("re-seals after the edit");
+    }
+
+    let blinded = prepare(request(&policy, &registry, engines)).expect("assembles");
+    assert!(!blinded.has_countable_finding());
+    assert_eq!(
+        blinded.loop_outcome(),
+        crate::verdict::iteration::LoopOutcome::Inconclusive,
+        "a number computed over a file the parser gave up on is not evidence the loop ended"
+    );
+}
+
+#[test]
 fn an_inconclusive_run_holds_the_count_rather_than_advancing_or_clearing_it() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let store = crate::verdict::iteration::IterationStore::open(dir.path()).expect("opens");
     use crate::verdict::iteration::LoopOutcome;
 
-    for _ in 0..3 {
+    // A distinct change per pass, because that is what a pass is: the counter
+    // counts attempts at a change, and three readings of one change are one
+    // attempt by construction.
+    for pass in 0..3 {
         store
-            .advance("feat/a", 3, LoopOutcome::Countable)
+            .advance(
+                "feat/a",
+                3,
+                LoopOutcome::Countable,
+                &format!("base..head{pass}"),
+            )
             .expect("advances");
     }
     assert_eq!(store.peek("feat/a", 3).count, 3);
 
     store
-        .advance("feat/a", 3, LoopOutcome::Inconclusive)
+        .advance("feat/a", 3, LoopOutcome::Inconclusive, "base..head3")
         .expect("advances");
     assert_eq!(
         store.peek("feat/a", 3).count,
@@ -510,7 +627,7 @@ fn an_inconclusive_run_holds_the_count_rather_than_advancing_or_clearing_it() {
     );
 
     store
-        .advance("feat/a", 3, LoopOutcome::Finished)
+        .advance("feat/a", 3, LoopOutcome::Finished, "base..head4")
         .expect("advances");
     assert_eq!(store.peek("feat/a", 3).count, 0);
 }
@@ -1646,7 +1763,12 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     for pass in 1..=cap {
         let prepared = prepare(request(&policy, &registry, firing())).expect("assembles");
         let advance = store
-            .advance("feat/a", cap, prepared.loop_outcome())
+            .advance(
+                "feat/a",
+                cap,
+                prepared.loop_outcome(),
+                &format!("base..pass{pass}"),
+            )
             .expect("advances");
         let record = prepared.finish(advance);
         assert_eq!(record.verdict.iteration.count, pass);
@@ -1656,7 +1778,7 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     // One more, and the tool stops asking the agent.
     let prepared = prepare(request(&policy, &registry, firing())).expect("assembles");
     let advance = store
-        .advance("feat/a", cap, prepared.loop_outcome())
+        .advance("feat/a", cap, prepared.loop_outcome(), "base..one-too-many")
         .expect("advances");
     let record = prepared.finish(advance);
     assert_eq!(record.verdict.verdict, Verdict::EscalateToHuman);
@@ -1667,7 +1789,7 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     let prepared =
         prepare(request(&policy, &registry, five_engines(&registry))).expect("assembles");
     let advance = store
-        .advance("feat/a", cap, prepared.loop_outcome())
+        .advance("feat/a", cap, prepared.loop_outcome(), "base..fixed")
         .expect("advances");
     let record = prepared.finish(advance);
     assert_eq!(record.verdict.verdict, Verdict::Pass);
@@ -1796,6 +1918,7 @@ fn the_countable_answer_survives_the_round_trip() {
 
         for recovered in [false, true] {
             let record = prepared.clone().finish(Advance {
+                contended: false,
                 state: crate::schema::payload::IterationState {
                     count: 9,
                     cap: 3,

@@ -48,7 +48,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use andon_core::engine::{run_engine, MeasureContext};
+use andon_core::engine::{run_engine, MeasureContext, MetricDescriptor};
 use andon_core::git::{ChangedSet, Git, ResolvedRange, Revision};
 use andon_core::policy::Policy;
 use andon_core::schema::enums::{EngineFamily, Severity};
@@ -341,6 +341,9 @@ fn assemble(measured: &Measured) -> andon_core::schema::payload::MeasurementReco
 
     let policy = Policy::default();
     let prepared = andon_core::payload::prepare(AssembleRequest {
+        substitution: None,
+        unreadable_paths: Vec::new(),
+        self_measure: None,
         tool: ToolIdentity {
             name: "andon".to_string(),
             version: "0.1.0".to_string(),
@@ -365,6 +368,7 @@ fn assemble(measured: &Measured) -> andon_core::schema::payload::MeasurementReco
     })
     .expect("real engine output assembles");
     prepared.finish(Advance {
+        contended: false,
         state: andon_core::schema::payload::IterationState {
             count: 0,
             cap: 3,
@@ -412,21 +416,95 @@ fn the_assembly_path_applies_the_ceilings() {
     );
 }
 
+/// Every engine this build ships, and the two things these assertions ask of
+/// each one.
+///
+/// # One roster, because three was the finding
+///
+/// This list used to be written out three times in this file — once as engine
+/// id and ladders, once as a bare array of five names, once as engine id and
+/// metric descriptors — and a sixth engine would have joined none of them. P5a
+/// filed that as an entry note for the next phase, and `lens-final` named it
+/// correctly: E19's recorded lesson recurring in a different medium. The lesson
+/// is that anything kept in sync by hand eventually is not, and the fix is
+/// always the same shape — state it once, and bind the statement to something
+/// that cannot be edited independently.
+///
+/// [`the_roster_is_the_registry_this_repository_ships`] is that binding.
+struct Shipped {
+    engine_id: &'static str,
+    metrics: fn() -> Vec<MetricDescriptor>,
+    ladders: fn() -> BTreeMap<String, SeverityLadder>,
+}
+
+/// The roster. Not a list of five: a list of whatever this build carries.
+const SHIPPED: &[Shipped] = &[
+    Shipped {
+        engine_id: "static-metrics",
+        metrics: andon_static_metrics::metrics::descriptors,
+        ladders: andon_static_metrics::metrics::severity_ladders,
+    },
+    Shipped {
+        engine_id: "clones",
+        metrics: andon_engine_clones::engine::metric_descriptors,
+        ladders: andon_engine_clones::engine::severity_ladders,
+    },
+    Shipped {
+        engine_id: "tamper",
+        metrics: andon_engine_tamper::engine::metric_descriptors,
+        ladders: andon_engine_tamper::engine::severity_ladders,
+    },
+    Shipped {
+        engine_id: "process",
+        metrics: andon_engine_process::engine::metric_descriptors,
+        ladders: andon_engine_process::engine::severity_ladders,
+    },
+    Shipped {
+        engine_id: "artifacts",
+        metrics: andon_engine_artifacts::engine::metric_descriptors,
+        ladders: andon_engine_artifacts::engine::severity_ladders,
+    },
+];
+
 /// Every shipped engine, paired with the ladders it declares.
 fn shipped_ladders() -> Vec<(&'static str, BTreeMap<String, SeverityLadder>)> {
-    vec![
-        (
-            "static-metrics",
-            andon_static_metrics::metrics::severity_ladders(),
-        ),
-        ("clones", andon_engine_clones::engine::severity_ladders()),
-        ("tamper", andon_engine_tamper::engine::severity_ladders()),
-        ("process", andon_engine_process::engine::severity_ladders()),
-        (
-            "artifacts",
-            andon_engine_artifacts::engine::severity_ladders(),
-        ),
-    ]
+    SHIPPED
+        .iter()
+        .map(|engine| (engine.engine_id, (engine.ladders)()))
+        .collect()
+}
+
+#[test]
+fn the_roster_is_the_registry_this_repository_ships() {
+    // The guard the entry note asks for, and the reason one roster is safer than
+    // three rather than merely tidier: an engine that lands a registry file and
+    // not a table entry reddens here, so the roster and the deployment cannot
+    // drift apart in silence. `expected_engines` is what `payload::prepare`
+    // holds a payload to, so this binds these assertions to the same fact the
+    // assembly boundary enforces.
+    let listed: BTreeSet<String> = SHIPPED
+        .iter()
+        .map(|engine| engine.engine_id.to_string())
+        .collect();
+    assert_eq!(
+        listed,
+        shipped_registry().expected_engines,
+        "the roster in this file and the registry this repository ships disagree"
+    );
+}
+
+/// The registry directory this repository ships, loaded the way assembly loads
+/// it.
+fn shipped_registry() -> andon_core::payload::registry_load::LoadedRegistry {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("registry");
+    andon_core::payload::registry_load::load(
+        &dir,
+        &andon_core::policy::RegistryPolicy::default(),
+        andon_core::date::Date::today_utc().expect("a clock"),
+    )
+    .expect("the shipped registry loads")
 }
 
 #[test]
@@ -436,10 +514,11 @@ fn every_shipped_engine_produced_something() {
     // from a clean measurement, and the band assertions would go vacuous without
     // reddening — which is exactly how the original defect hid.
     let measured = measure_everything();
-    for engine_id in ["static-metrics", "clones", "tamper", "process", "artifacts"] {
+    for engine in SHIPPED {
         assert!(
-            !measured.from(engine_id).is_empty(),
-            "{engine_id} produced no results over the fixture change"
+            !measured.from(engine.engine_id).is_empty(),
+            "{} produced no results over the fixture change",
+            engine.engine_id
         );
     }
 }
@@ -488,6 +567,7 @@ fn the_static_family_can_still_reach_the_med_plus_band() {
         iteration_state_recovered: false,
         completeness: andon_core::schema::enums::Completeness::Complete,
         registry_skew: &[],
+        unreadable_paths: &[],
     };
     assert!(
         measured
@@ -534,50 +614,13 @@ fn every_shipped_metric_declares_exactly_one_ladder() {
     // A metric added without a ladder is refused by `run_engine` — but only if
     // something emits it. This is the same rule at build time, over the
     // declarations rather than over one fixture's output.
-    let engines: Vec<(&str, Vec<String>)> = vec![
-        (
-            "static-metrics",
-            andon_static_metrics::metrics::descriptors()
-                .into_iter()
-                .map(|d| d.metric_id)
-                .collect(),
-        ),
-        (
-            "clones",
-            andon_engine_clones::engine::metric_descriptors()
-                .into_iter()
-                .map(|d| d.metric_id)
-                .collect(),
-        ),
-        (
-            "tamper",
-            andon_engine_tamper::engine::metric_descriptors()
-                .into_iter()
-                .map(|d| d.metric_id)
-                .collect(),
-        ),
-        (
-            "process",
-            andon_engine_process::engine::metric_descriptors()
-                .into_iter()
-                .map(|d| d.metric_id)
-                .collect(),
-        ),
-        (
-            "artifacts",
-            andon_engine_artifacts::engine::metric_descriptors()
-                .into_iter()
-                .map(|d| d.metric_id)
-                .collect(),
-        ),
-    ];
-    let ladders: BTreeMap<&str, BTreeMap<String, SeverityLadder>> =
-        shipped_ladders().into_iter().collect();
-
-    for (engine_id, metrics) in engines {
-        let declared: BTreeSet<String> = metrics.into_iter().collect();
-        let ranked: BTreeSet<String> = ladders[engine_id].keys().cloned().collect();
-        assert_eq!(declared, ranked, "{engine_id}");
+    for engine in SHIPPED {
+        let declared: BTreeSet<String> = (engine.metrics)()
+            .into_iter()
+            .map(|d| d.metric_id)
+            .collect();
+        let ranked: BTreeSet<String> = (engine.ladders)().into_keys().collect();
+        assert_eq!(declared, ranked, "{}", engine.engine_id);
     }
 }
 
@@ -752,10 +795,18 @@ fn every_shipped_tamper_claim_stays_outside_the_default_med_plus_tiers() {
 ///
 /// Two engines report the `static` family — `static-metrics` and the P1.5 trust
 /// spike — which is why the assembly module groups by `engine_id` and never by
-/// family (PLAN wave-1 integration, P5a-entry note 2). The spike is not measured
-/// here: it is not a shipped product engine, it declares `NoOpinion` throughout,
-/// and including it would let its `Info` results stand in for the production
-/// engine's in a family-keyed assertion.
+/// family (PLAN wave-1 integration, P5a-entry note 2).
+///
+/// The spike is not among the engines measured here, and the earlier wording of
+/// this comment claimed that as a judgement: it is not a shipped product engine,
+/// so it is excluded. That overstated what this file does. `spike-size` lives in
+/// `andon-ledger-min`, which depends on `andon-core`, so **this crate cannot
+/// reach it at all** — the exclusion is structural, not chosen. The judgement
+/// the comment described is real and it lives elsewhere: `payload::prepare`
+/// refuses `spike-size` as an `UnknownEngine` because its registry is not in
+/// `registry/`, and `andon_cli::shipped` records why it is off the product
+/// roster. A comment claiming a guard its own file does not contain leaves a
+/// reader believing a check exists where it does not.
 #[test]
 fn the_static_family_results_asserted_on_come_from_the_production_engine() {
     let mut measured = measure_everything();
@@ -883,4 +934,82 @@ fn a_record_this_tool_really_produces_can_still_be_confirmed() {
     );
     assert!(compare.mismatched.is_empty() && compare.unpaired.is_empty());
     assert!(compare.tuple_equal && compare.regime_equal);
+}
+
+#[test]
+fn an_uncommitted_head_is_never_classified_as_a_disagreement() {
+    // The false-accusation guard for the uncommitted lane, over records this
+    // tool really produces rather than over hand-built shapes.
+    //
+    // A record measured against a working tree carries a content hash where a
+    // commit OID would be. Without the step-0 check in `compare::classify` the
+    // tuple comparison finds it unequal, asks how the base relates to the
+    // trusted branch, and reports `unwitnessed-base-mismatch` — or, if the base
+    // had also moved, `base-fabrication` and `divergent`. That is a tamper
+    // accusation against somebody who did nothing but forget to commit, and this
+    // project ranks false accusation above missed detection.
+    use andon_core::compare::{self, BaseRelation, CompareInputs};
+    use andon_core::schema::enums::Attestation;
+    use andon_core::schema::payload::HeadKind;
+
+    let measured = measure_everything();
+    let record = assemble(&measured);
+    assert!(
+        record.compare_context.head_kind.is_witnessable(),
+        "the fixture is a commit range; the dirty case is derived from it below"
+    );
+
+    // The same record, relabelled as what an uncommitted measurement is: a
+    // content hash for a head, and the kind that says so.
+    let mut dirty = record.clone();
+    dirty.compare_context.head_kind = HeadKind::UncommittedWorktree;
+    dirty.compare_context.head_oid = "c".repeat(64);
+
+    // Every hostile-looking arrangement of the inputs, because the point is that
+    // none of them can reach an accusation.
+    for base_relation in [
+        BaseRelation::Equal,
+        BaseRelation::Ancestor,
+        BaseRelation::NotAncestor,
+        BaseRelation::Unknown,
+    ] {
+        for head_equal in [true, false] {
+            let classification = compare::classify(
+                Some(&dirty),
+                &record,
+                CompareInputs {
+                    base_relation,
+                    head_equal,
+                    fork_tier: false,
+                },
+            );
+            assert_eq!(
+                classification.attestation,
+                Attestation::UnwitnessedUncommitted,
+                "{base_relation:?}/{head_equal} classified an uncommitted head as something else"
+            );
+            assert!(
+                classification.tamper_signals.is_empty(),
+                "{base_relation:?}/{head_equal} raised a tamper signal over uncommitted work"
+            );
+            assert!(
+                classification.compare.is_none(),
+                "a compare was reported over a head nothing can recompute"
+            );
+        }
+    }
+
+    // And the control in the other direction: the commit record this fixture
+    // really produces still earns a real classification, so the check above is
+    // not passing because `classify` stopped working.
+    let confirmed = compare::classify(
+        Some(&record),
+        &record,
+        CompareInputs {
+            base_relation: BaseRelation::Equal,
+            head_equal: true,
+            fork_tier: false,
+        },
+    );
+    assert_eq!(confirmed.attestation, Attestation::Confirmed);
 }

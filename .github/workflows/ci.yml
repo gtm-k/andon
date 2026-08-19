@@ -192,21 +192,45 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: steps.detect.outputs.changed == 'true'
 
-      # The two-binary comparison needs a golden set, which P5b creates. Wiring
-      # the gate now means the first engine change cannot land before someone
-      # remembers to add it; reporting which mode ran means the P5b transition
-      # is visible in the log rather than a question answered by reading this
-      # file. See docs/self-measure.md.
-      - name: Two-binary comparison, or compile and unit only
+      # The golden-set comparison. P0 wired this bridge before the golden set
+      # existed and left it hard-failing on purpose, so the first engine change
+      # could not land before someone remembered to add the comparison. P5b
+      # created `fixtures/golden`, so the comparison is now here and the
+      # tripwire is spent.
+      #
+      # WHAT RUNS, AND THE HALF THAT CANNOT YET
+      #
+      # docs/self-measure.md describes a *two-binary* comparison: the last
+      # attested release binary and the working tree's binary measure the same
+      # fixtures, and their answers are compared, so that a difference is the
+      # intended output of an engine change rather than something a reviewer has
+      # to spot. No attested release exists yet — the same
+      # `bootstrap-no-attested-release` override the self-measure job records —
+      # so there is only one binary to run.
+      #
+      # What runs instead is that one binary against the committed reference
+      # payloads, which detects the same class of change with one fewer party:
+      # an engine edit that moves a number reddens here and the reviewer sees
+      # exactly which numbers moved. What it cannot do is tell an intended
+      # change from an accidental one *without* the reviewer, because the
+      # reference payloads live in the same commit as the change. The second
+      # binary is what closes that, and it arrives with the first attested
+      # release.
+      #
+      # The mode is announced either way, so "did the real comparison run?" is
+      # answered by the log rather than by reading this file.
+      - name: Golden-set comparison
         if: steps.detect.outputs.changed == 'true'
         run: |
           set -euo pipefail
-          if [ -d fixtures/golden ]; then
-            echo "MODE: two-binary comparison (fixtures/golden present)"
-            echo "ERROR: the golden set exists but the comparison is not implemented." >&2
-            echo "       P5b must land the comparison when it creates fixtures/golden." >&2
+          if [ ! -d fixtures/golden ]; then
+            echo "ERROR: fixtures/golden is missing." >&2
+            echo "       P5b created it and this gate depends on it; a deletion is a" >&2
+            echo "       silent loss of the only comparison an engine change gets." >&2
             exit 1
-          else
-            echo "MODE: compile + unit only (no fixtures/golden yet; activates at P5b)"
-            cargo test --workspace
           fi
+          echo "MODE: golden-set comparison against committed reference payloads."
+          echo "      The two-binary half is unavailable: no attested release exists yet"
+          echo "      (override bootstrap-no-attested-release, docs/self-measure.md)."
+          cargo test -p andon-cli --test golden -- --nocapture
+          cargo test --workspace

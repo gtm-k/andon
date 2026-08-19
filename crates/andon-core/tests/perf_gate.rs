@@ -193,7 +193,7 @@ impl DirtyScenario {
 
     /// Git subprocesses one pass costs, derived rather than observed.
     ///
-    /// Seven for both scenarios' shared work: two to open the repository, one
+    /// Eight for both scenarios' shared work: three to open the repository, one
     /// `rev-parse` for the base revision, one more for the snapshot's `HEAD`
     /// anchor, one `status`, one `hash-object` re-checking the conversion
     /// suspects, and one `hash-object` recording their pinned OIDs.
@@ -207,11 +207,17 @@ impl DirtyScenario {
     ///
     /// Written down as an expectation rather than a floor: the number moving is
     /// a design change, and it should fail here and be argued for, not appear in
-    /// a graph three phases later.
+    /// a graph three phases later. It moved once, from seven, and the argument
+    /// is that opening a repository now costs a third spawn: a `git config` read
+    /// of the filter drivers this repository defines. Everything after it
+    /// carries `-c` pins that stop those drivers executing, and a filter is a
+    /// program the repository wrote — one fixed read, at open, buys the
+    /// guarantee that no working-tree read runs it. The cost does not scale with
+    /// anything: it is one spawn per `Git::open`, whatever the repository holds.
     fn expected_spawns(self) -> u64 {
         match self {
-            DirtyScenario::HeadAtBase => 7,
-            DirtyScenario::BranchWithCommits => 9,
+            DirtyScenario::HeadAtBase => 8,
+            DirtyScenario::BranchWithCommits => 10,
         }
     }
 }

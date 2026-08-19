@@ -235,6 +235,7 @@ mod tests {
             iteration_state_recovered: false,
             completeness: crate::schema::enums::Completeness::Complete,
             registry_skew: &[],
+            unreadable_paths: &[],
         }
     }
 

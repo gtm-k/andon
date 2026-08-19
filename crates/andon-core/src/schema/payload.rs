@@ -10,9 +10,19 @@ use super::enums::{
 };
 use super::regime::MeasurementRegime;
 use crate::canonical::{self, CanonicalError};
+use crate::selfmeasure::SelfMeasureProvenance;
 
 /// The version of this schema. Bumped by a plan change, never by a phase.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// **2 since the uncommitted-tree representation (P5b, mini-G2 ruling).** This
+/// is a real migration rather than a v1 definition change, and the distinction
+/// is the one `schemas/README.md` draws: the pre-release carve-out covers *an
+/// additive field with a default*, and this is not that. [`CompareContext`]'s
+/// `head_oid` used to mean "a commit OID" unconditionally, and now means "the
+/// head's identity, of the kind [`CompareContext::head_kind`] names". A v1
+/// consumer that read `head_oid` and handed it to `git cat-file` was correct
+/// then and is wrong now, which is what a version number exists to tell it.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// One `andon measure` run, or one verifier recompute of the same change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -40,6 +50,90 @@ pub struct MeasurementRecord {
     pub verdict: VerdictSummary,
     /// The trust half: attestation value, tamper signals, compare detail.
     pub attestation: AttestationBlock,
+    /// Present exactly when something other than the caller's request was
+    /// measured. Absent on every ordinary run.
+    ///
+    /// A record-level field, and deliberately **not** part of any per-result
+    /// digest — the same placement and the same reason as `policy_hash`. It
+    /// describes how the measurement was arrived at, not what was measured, so
+    /// putting it inside `ResultDigestInput` would make an announcement change
+    /// every number's identity.
+    ///
+    /// It is a field rather than a log line because the caveat has to survive
+    /// the terminal. `cli::resolve`'s own documentation says the substitution
+    /// "must appear in every rendering of the record — the reason it is a value
+    /// rather than a log line", and it could not: `andon report` on a record
+    /// produced by the fallback printed the numbers with no sign that they were
+    /// about a different change from the one asked for. A caveat that lives only
+    /// in the process that produced it does not exist for the reader who has
+    /// only the record, which is most readers.
+    #[serde(default)]
+    pub substitution: Option<Substitution>,
+    /// Changed paths no engine could read, so nothing in `results` describes
+    /// them. Empty on every ordinary run.
+    ///
+    /// Durable for the reason the exit code is not enough on its own: `measure`
+    /// exits 1 when this is non-empty, and then `report`, `--json`, the HTML
+    /// report and the agent profile all read the saved record and exited 0
+    /// having lost the fact. A `pass` over bytes nobody read has the shape of a
+    /// clean measurement and is not one — the project's rule about absences,
+    /// applied to the record rather than only to the run.
+    #[serde(default)]
+    pub unreadable_paths: Vec<String>,
+    /// How a self-measurement was arrived at: which binary judged, whether the
+    /// attested-binary rule was followed, and what the policy withheld.
+    ///
+    /// `None` on every measurement of somebody else's repository, which is all
+    /// of them but this one's own CI. `Some` exactly when `--self-measure` was
+    /// given.
+    ///
+    /// # Why this is on the record
+    ///
+    /// [`crate::selfmeasure::SelfMeasureProvenance`] was written, documented and
+    /// tested, and nothing constructed one. Meanwhile the facts it describes
+    /// lived for one process: a fresh terminal and the HTML report named the
+    /// paths `[self_measure] excluded_paths` withheld, and the saved record, the
+    /// read-back report, `wait`, `--json` and the agent profile all lost them —
+    /// including the dogfood job's own payload, which is the artefact somebody
+    /// reads when they want to know what the gate covered.
+    ///
+    /// A measurement that withheld eighteen paths and a measurement that
+    /// withheld none are different measurements, and the difference has to
+    /// survive being serialized. The same is true of which binary reached the
+    /// verdict: `docs/self-measure.md`'s whole rule is that a broken detector
+    /// must not bless the change that broke it, and a rule whose exceptions are
+    /// not recorded is a rule nobody can audit.
+    ///
+    /// A record-level field and deliberately **not** part of any per-result
+    /// digest — the same placement and the same reason as `policy_hash` and
+    /// `substitution`. It describes how the measurement was arrived at, not what
+    /// was measured.
+    ///
+    /// # Reading `exclusion_drift` when nothing is attested
+    ///
+    /// Drift is defined against the last attested run. While `attested` is
+    /// `false` there has never been one, so `exclusion_drift` is `false` because
+    /// there is no baseline rather than because the list held still. The two
+    /// fields are read together, and the renderers say which case it is.
+    #[serde(default)]
+    pub self_measure: Option<SelfMeasureProvenance>,
+}
+
+/// What was measured, when it was not what was asked for.
+///
+/// PREMORTEM A1 is a first command that returns nothing. The no-diff fallback
+/// answers it by measuring the last merged change — and the *saying so* is the
+/// load-bearing half, because a tool that quietly measures something other than
+/// what was asked for has told the reader a falsehood about what the numbers
+/// are about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Substitution {
+    /// What the caller's arguments resolved to, in the caller's own terms.
+    pub asked_for: String,
+    /// What was measured instead.
+    pub measured: String,
+    /// Why, in one sentence, for a reader who has only the report.
+    pub because: String,
 }
 
 /// Which binary produced the record, and whether it was one we trust to measure
@@ -57,18 +151,77 @@ pub struct ToolIdentity {
     pub attested_release: bool,
 }
 
+/// What kind of thing the head of a measured range is.
+///
+/// # Why this exists rather than a commit OID standing in for a working tree
+///
+/// The state the product exists for is an agent that has just written a change
+/// and not committed it. Measuring it needs a head, and the working tree has no
+/// commit OID — so there were only ever two honest options, and the tempting
+/// third one is a vulnerability.
+///
+/// The tempting one: write `HEAD`'s OID into `head_oid` and carry on. That
+/// produces a record which passes the verifier's tuple-equality check while
+/// describing bytes that were never committed, so the verifier recomputes the
+/// *commit*, gets different numbers, and reports `divergent` on honest work.
+/// That is the R2-4 laundering path from one side and PREMORTEM Story 1's false
+/// accusation from the other, and P1's `git::resolve` refused to build a
+/// `CompareContext` from a dirty endpoint precisely to keep it shut.
+///
+/// So the head says what it **is**. An uncommitted head carries the content
+/// hash of its own snapshot, which no commit OID can collide with in practice
+/// and which nothing downstream will mistake for one, because this field says
+/// not to. [`crate::compare::classify`] reads it before it reads anything else
+/// and refuses to compare, so a dirty record can never be accused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum HeadKind {
+    /// A commit. The only kind a verifier can check out and recompute.
+    Commit,
+    /// An uncommitted working tree, including anything staged. `head_oid` is the
+    /// content hash of the dirty snapshot, never a commit OID.
+    UncommittedWorktree,
+    /// The index alone — staged content, with unstaged edits excluded.
+    /// `head_oid` is the content hash of that snapshot.
+    UncommittedIndex,
+}
+
+impl HeadKind {
+    /// Whether a verifier could ever recompute this head.
+    ///
+    /// False for both uncommitted kinds, permanently and for a reason no future
+    /// verifier removes: CI cannot check out somebody's working tree. It is not
+    /// "no recompute happened yet"; it is "no recompute is possible", and
+    /// [`Attestation::UnwitnessedUncommitted`] is how a record says so.
+    pub fn is_witnessable(self) -> bool {
+        matches!(self, HeadKind::Commit)
+    }
+}
+
 /// The git tuple every measurement is pinned to.
 ///
 /// `base_oid` and `head_oid` are required, never optional: a record that cannot
 /// say what it measured cannot be compared, and an uncomparable record that
 /// looks comparable is how a fabricated base gets laundered (PLAN B3, R2-4).
+///
+/// The **base is always a commit**. A dirty base is refused everywhere — by
+/// `git::resolve`, by `ChangedSet::enumerate`, and here by contract — because
+/// "compared against uncommitted content" is a comparison nothing can stand in
+/// for. Only the head has a kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CompareContext {
-    /// Full 40-character base commit OID.
+    /// Full 40-character base commit OID. Always a commit.
     pub base_oid: String,
-    /// Full 40-character head commit OID. The PR head SHA, never the synthetic
-    /// merge ref (PLAN B3).
+    /// The head's identity, of the kind [`Self::head_kind`] names: a full
+    /// 40-character commit OID for `commit` — the PR head SHA, never the
+    /// synthetic merge ref (PLAN B3) — or the content hash of an uncommitted
+    /// snapshot otherwise.
+    ///
+    /// **Read `head_kind` before interpreting this.** It was unconditionally a
+    /// commit OID at `schema_version` 1, which is why 2 exists.
     pub head_oid: String,
+    /// What `head_oid` identifies.
+    pub head_kind: HeadKind,
     /// `git --version` output of the git that resolved this tuple.
     pub git_version: String,
     /// How the base was arrived at, e.g. `merge-base`, `explicit`, `worktree`.
@@ -180,6 +333,7 @@ impl MeasurementResult {
             schema_version: SCHEMA_VERSION,
             base_oid: &ctx.base_oid,
             head_oid: &ctx.head_oid,
+            head_kind: ctx.head_kind,
             engine_id: &self.engine_id,
             metric_id: &self.metric_id,
             claim_id: &self.claim_id,
@@ -229,6 +383,13 @@ pub struct ResultDigestInput<'a> {
     pub base_oid: &'a str,
     /// Head of the measured change.
     pub head_oid: &'a str,
+    /// What `head_oid` identifies.
+    ///
+    /// Bound because it is a fact about the measurement rather than about the
+    /// compare: "these numbers came off an uncommitted tree" is part of what was
+    /// measured, and a digest that omitted it would let a commit measurement and
+    /// a working-tree measurement of the same bytes seal identically.
+    pub head_kind: HeadKind,
     /// Engine that produced the number.
     pub engine_id: &'a str,
     /// Which metric.

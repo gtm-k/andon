@@ -72,12 +72,14 @@ binary = "last-attested-release"
 # in the runner so the exclusion is reviewable and drift has a baseline.
 #
 # THE ONE PLACE THIS FILE DEVIATES FROM `andon_core::policy`'s DEFAULT.
-# `SelfMeasurePolicy::default()` ships three entries; this list has five. The two
-# extra ones arrived with P3's fixtures at the wave-1 integration
-# (docs/patches/p3-spike-matrix-join.md, patch 2) and are named below. The
-# default was left alone on purpose: it is P0-owned, and widening it would
-# silently exclude those paths in every repository that never wrote them down,
-# which is the opposite of what a reviewable exclusion is for.
+# `SelfMeasurePolicy::default()` ships three entries; this list has six. The
+# three extra ones arrived with fixture trees this repository added after the
+# default was written — two with P3's fixtures at the wave-1 integration
+# (docs/patches/p3-spike-matrix-join.md, patch 2), one with P5b's golden set —
+# and each is named below. The default was left alone on purpose: it is
+# P0-owned, and widening it would silently exclude those paths in every
+# repository that never wrote them down, which is the opposite of what a
+# reviewable exclusion is for.
 #
 # `exclusion_drift_signal` compares against the last attested run, not against
 # this default, so the deviation changes no behaviour — it is recorded here so
@@ -92,6 +94,14 @@ excluded_paths = [
     "fixtures/honest/corpus/**",
     # The cross-OS matrix specimen fires all seven detectors by construction.
     "fixtures/matrix/**",
+    # P5b's golden set, and `gamed-change` in particular: a tree named for
+    # firing. Its `classify` and `classifyVariant` are built to reach MED on
+    # cognitive and cyclomatic complexity, and they did — all four MED+ results
+    # in `--self-measure` came from inside it, so the dogfood gate was reporting
+    # a fixture doing its job as a defect in Andon (PREMORTEM S3). The
+    # honest-change half is excluded with it: a corpus is one thing, and half a
+    # corpus measured is a number about neither.
+    "fixtures/golden/**",
     "crates/andon-registry-lint/tests/fixtures/**",
 ]
 exclusion_drift_signal = true

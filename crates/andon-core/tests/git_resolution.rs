@@ -1317,3 +1317,100 @@ fn a_clean_worktree_produces_an_empty_change_and_a_stable_key() {
         .is_empty());
     assert!(range.head.snapshot().expect("dirty endpoint").is_empty());
 }
+
+#[test]
+fn a_bisect_in_progress_is_measured_because_that_is_what_a_bisect_is_for() {
+    // `BISECT_LOG` sat on `in_progress_operation`'s marker table beside
+    // `MERGE_HEAD` and `rebase-merge`, and it does not belong there. Every other
+    // marker means the tree is half-way between two states with conflict markers
+    // on disk and the content neither side. `git bisect` checks out a
+    // **complete, clean commit** precisely so it can be built, tested and
+    // measured — which is the procedure, not an interruption of it.
+    //
+    // Reproduced before this test existed: during a real bisect with a clean
+    // `status` and two valid commits, `measure --base HEAD~1 --head HEAD`
+    // refused, claiming the working tree was a partial result.
+    let dir = scratch("bisect");
+    let repo = TestRepo::init(dir.path());
+    let mut commits = Vec::new();
+    for i in 1..=5 {
+        commits.push(repo.commit_file(
+            "src/a.ts",
+            format!("export const a = {i};\n").as_bytes(),
+            &format!("c{i}"),
+        ));
+    }
+    repo.run(&["bisect", "start"]);
+    repo.run(&["bisect", "bad", "HEAD"]);
+    repo.run(&["bisect", "good", &commits[0]]);
+
+    // The premise, checked rather than assumed. Both halves matter: git is
+    // really in a bisect, and the tree it left is really clean.
+    assert!(
+        repo.git().facts().git_dir.join("BISECT_LOG").exists(),
+        "the bisect did not start, so this test asserts nothing"
+    );
+    assert!(
+        repo.run(&["status", "--porcelain"]).trim().is_empty(),
+        "the bisect checkout is dirty, so it is not the state this test is about"
+    );
+
+    let range = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD~1".into()),
+        &Revision::Rev("HEAD".into()),
+    )
+    .expect("a bisect checkout is two complete commits and is measurable");
+    let ctx = range.compare_context().expect("both endpoints are commits");
+    assert_ne!(ctx.base_oid, ctx.head_oid);
+
+    // And the working tree of a bisect checkout is measurable too, which is the
+    // shape `andon measure` with no flags takes.
+    ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD~1".into()),
+        &Revision::Worktree,
+    )
+    .expect("the clean tree of a bisect checkout resolves");
+
+    repo.try_run(&["bisect", "reset"]);
+}
+
+#[test]
+fn dropping_bisect_did_not_drop_the_operations_that_do_leave_a_partial_tree() {
+    // The other side of the removal. A table that lost one row could as easily
+    // have lost the rule, so the operations that genuinely leave the tree
+    // half-way between two states are asserted here rather than assumed to have
+    // survived.
+    let dir = scratch("still-refused");
+    let repo = TestRepo::init(dir.path());
+    let base = repo.commit_file("src/a.ts", b"original\n", "base");
+    repo.run(&["checkout", "--quiet", "-b", "side", &base]);
+    repo.commit_file("src/a.ts", b"theirs\n", "side");
+    repo.run(&["checkout", "--quiet", "main"]);
+    repo.commit_file("src/a.ts", b"ours\n", "ours");
+    assert!(
+        !repo.try_run(&["merge", "side"]),
+        "the fixture depends on this merge conflicting"
+    );
+    assert!(
+        repo.git().facts().git_dir.join("MERGE_HEAD").exists(),
+        "no merge is in progress, so this test asserts nothing"
+    );
+
+    let err = ResolvedRange::resolve(
+        repo.git(),
+        &Revision::Rev("HEAD~1".into()),
+        &Revision::Rev("HEAD".into()),
+    )
+    .expect_err("a half-finished merge is still refused");
+    match &err {
+        ResolveError::OperationInProgress { operation } => assert_eq!(*operation, "merge"),
+        other => panic!("expected OperationInProgress, got {other}"),
+    }
+    assert!(
+        err.to_string().contains("--abort"),
+        "the refusal no longer offers a remedy that works: {err}"
+    );
+    repo.try_run(&["merge", "--abort"]);
+}

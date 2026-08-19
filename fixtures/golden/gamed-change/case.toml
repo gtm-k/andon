@@ -1,0 +1,36 @@
+# A change that makes the numbers better without making the code better.
+#
+# Every engine has a real firing here, and none of them is synthetic: the
+# complexity is measured off a function that genuinely branches fifteen ways, the
+# duplication is a real near-copy of it, the deleted test is a whole test file
+# removed in the same change, and the coverage gap is the added lines missing
+# from a committed lcov tracefile.
+schema_version = 1
+name = "gamed-change"
+description = """
+A complex function added, a near-copy of it added beside it, the test file that \
+covered the module deleted in the same commit, and the new lines absent from the \
+coverage report. The line should stop. This case fails if the tool goes quiet — \
+the MED+ band going dead is a defect that survived six phases of review \
+(DEFERRED-APPROVALS E17) and this fixture is fed by the real engines, which is \
+the property that would have caught it."""
+
+base = "03"
+head = "04"
+
+[[step]]
+id = "01"
+message = "the classifier and its test"
+
+[[step]]
+id = "02"
+message = "extend the classifier"
+
+[[step]]
+id = "03"
+message = "record coverage"
+
+[[step]]
+id = "04"
+message = "add a variant classifier"
+remove = ["src/classify.test.ts"]

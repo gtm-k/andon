@@ -38,7 +38,9 @@ pub mod severity;
 
 use crate::policy::Policy;
 use crate::schema::enums::{Completeness, Severity, TamperSignal, Verdict};
-use crate::schema::payload::{IterationState, MeasurementResult, VerdictReason, VerdictSummary};
+use crate::schema::payload::{
+    IterationState, MeasurementRecord, MeasurementResult, VerdictReason, VerdictSummary,
+};
 
 use policy_change::PolicyChange;
 
@@ -70,6 +72,8 @@ pub mod reason {
     pub const ITERATION_STATE_RESET: &str = "iteration-state-reset";
     /// The measurement did not see everything it set out to.
     pub const MEASUREMENT_INCOMPLETE: &str = "measurement-incomplete";
+    /// A changed path could not be read, so no result describes it.
+    pub const CHANGE_NOT_READ: &str = "change-not-read";
     /// The binary's compiled registry and the loaded one disagree about a claim.
     pub const EVIDENCE_REGISTRY_SKEW: &str = "evidence-registry-skew";
 }
@@ -107,6 +111,17 @@ pub struct VerdictContext<'a> {
     /// differently. Reported, never blocking — see
     /// [`crate::payload::prepare`]'s evidence resolution.
     pub registry_skew: &'a [String],
+    /// Changed paths nothing could read, so no result describes them.
+    ///
+    /// Read here because carrying the fact on the record was not enough. The
+    /// record grew [`crate::schema::payload::MeasurementRecord::unreadable_paths`]
+    /// and every renderer learned to print it, and the verdict still did not
+    /// ask: a measurement whose change could not be read reached `pass`, was
+    /// saved as `pass`, and was re-served as `pass` by `ledger show` beside the
+    /// list of what it had not read. Carrying a fact is not the same as acting
+    /// on it, and a record that says `pass` while naming what it could not read
+    /// contradicts itself in the direction that passes.
+    pub unreadable_paths: &'a [String],
 }
 
 /// Whether this measurement gives the agent something to act on.
@@ -123,6 +138,69 @@ pub fn has_countable_finding(results: &[MeasurementResult], ctx: &VerdictContext
         .iter()
         .any(|r| severity::counts_toward_iteration(r, ctx))
         || ctx.policy_change.is_some_and(|c| c.stops_the_line())
+}
+
+/// Whether a record's stored verdict contradicts the record's own fields.
+///
+/// # The rule this checks, and why it is checked at read time
+///
+/// [`evaluate`] holds one invariant about unread paths: a change with a path
+/// nobody read cannot be a `pass`, because `pass` means "nothing above the
+/// advisory floor" and there is no floor under bytes nobody looked at. Records
+/// sealed before that rule existed carry both halves of the contradiction —
+/// `unreadable_paths` naming what was not read, and `verdict: pass` beside it —
+/// and they are still on disk and still in `refs/notes/andon-measure`.
+///
+/// # Reject, migrate, or label, and why this is label
+///
+/// The reviewer's framing: *"A durable artifact need not be silently
+/// recomputed, but an internally inconsistent legacy record must be rejected,
+/// migrated, or explicitly labeled invalid."* Three options and this is the
+/// third.
+///
+/// **Not recompute.** A verdict is a function of the policy, the registry and
+/// the iteration state in force when it was reached, none of which a reader
+/// months later has. Computing a new word and printing it in the old one's place
+/// would make two renderings of one record disagree, which is the defect class
+/// this phase has spent three rounds closing.
+///
+/// **Not reject.** `ledger show` exists to re-serve records months later, and a
+/// query surface that refuses the rows it does not like has lost the history it
+/// was built to keep.
+///
+/// **Not migrate.** The bytes are sealed. Rewriting a stored verdict in place is
+/// the shape of the laundering path the whole trust boundary is built to keep
+/// shut, and it would do it in the tool's own hand.
+///
+/// So the bytes are served exactly as they were written, and every surface says
+/// the stored verdict is not a fact about this change. One predicate, because
+/// the last time a rule about unread paths was taught surface by surface, five
+/// learned it and `ledger show` did not.
+pub fn stored_verdict_is_contradicted(record: &MeasurementRecord) -> bool {
+    !record.unreadable_paths.is_empty() && record.verdict.verdict == Verdict::Pass
+}
+
+/// The sentence every surface says about a record [`stored_verdict_is_contradicted`]
+/// answers true for.
+///
+/// A function rather than a constant because it names the count, and a reader
+/// deciding whether to trust a stored verdict needs to know how much of the
+/// change it is silent about.
+///
+/// It says nothing about where the record came from. The obvious sentence —
+/// "a build before that rule existed wrote it" — is the likely history and not
+/// something this can read, and a record doctored by hand a minute ago is a
+/// counterexample to it. The contradiction is the fact; its origin is a guess,
+/// and this phase has blocked three times on messages that stated one as the
+/// other.
+pub fn contradiction_label(record: &MeasurementRecord) -> String {
+    format!(
+        "this record stores `pass` beside {} changed path(s) it could not read. The two cannot \
+         both be true, so the stored word is not a verdict about this change. It is served here \
+         unaltered because the record is evidence; re-run `andon measure` on the change to get \
+         a verdict that is.",
+        record.unreadable_paths.len()
+    )
 }
 
 /// Reach a verdict.
@@ -329,6 +407,60 @@ pub fn evaluate(
         });
     }
 
+    // --- a change that could not be read ------------------------------------
+    //
+    // The other side of the engine-failure coin, and it belongs beside it: an
+    // engine that could not run leaves a metric unmeasured, and a path that
+    // could not be read leaves *everything* about that path unmeasured. Both
+    // mean the record covers less than the caller asked about, and neither is
+    // evidence against the change.
+    //
+    // # Why this reason exists rather than a rule about the four words
+    //
+    // `main`'s exit-code table already says a `pass` requires that the change
+    // was actually read, and the CLI enforced it on the way out: `measure` exits
+    // 1 over unreadable paths whatever the verdict says. What it could not do is
+    // fix the *record*, which is the durable artifact — so a failed-read
+    // measurement was saved with `verdict: pass`, and `ledger show` re-served it
+    // months later with the headline `PASS` printed directly above the list of
+    // paths it had not read. The exit code is this process's; the verdict is
+    // everybody's.
+    //
+    // # Why `Medium`, which is to say why `advise` and not `block`
+    //
+    // Severity above `Info` is what lifts the verdict off `pass`, which is the
+    // whole requirement. It stops there deliberately. `block` is the word for
+    // "something in this change has to be dealt with", exit code 2, and this is
+    // not that: nothing was found, because nothing was read. The distinction
+    // between 1 and 2 is the one the CLI documentation calls the one that
+    // matters — "Andon found something" against "Andon could not look" — and
+    // `code_for_record` returns 1 here in either case, so a `block` verdict
+    // would make the published exit-code table false rather than stricter.
+    // `advise` is the only word that leaves it true, and row 1 of that table
+    // already names this case.
+    //
+    // # Why it does not touch the iteration counter
+    //
+    // [`has_countable_finding`] does not read this field, for the reason engine
+    // failures are exempt: an unreadable path is not something the agent's next
+    // edit answers, and counting it would grind the loop to escalation over a
+    // permission bit. It is also what keeps the count honest across the
+    // round-trip — `payload::prepare` computes countability once and `finish`
+    // recomputes it, and a field only one of them read would let them disagree.
+    if !ctx.unreadable_paths.is_empty() {
+        reasons.push(VerdictReason {
+            code: reason::CHANGE_NOT_READ.to_string(),
+            severity: Severity::Medium,
+            message: format!(
+                "{} changed path(s) could not be read, so no result here describes them and \
+                 this verdict is about the rest of the change: {}",
+                ctx.unreadable_paths.len(),
+                ctx.unreadable_paths.join(", ")
+            ),
+            metric_ids: Vec::new(),
+        });
+    }
+
     // --- notices ------------------------------------------------------------
     let stale_cited = cited_stale_claims(results, ctx.stale_claim_ids);
     if !stale_cited.is_empty() {
@@ -492,6 +624,7 @@ mod tests {
             iteration_state_recovered: false,
             completeness: Completeness::Complete,
             registry_skew: &[],
+            unreadable_paths: &[],
         }
     }
 
@@ -532,6 +665,67 @@ mod tests {
         let summary = evaluate(&[clean_result()], &ctx(&policy), iteration(0, 3));
         assert_eq!(summary.verdict, Verdict::Pass);
         assert!(summary.reasons.is_empty());
+    }
+
+    #[test]
+    fn a_change_with_an_unread_path_cannot_pass() {
+        // The same results that pass above, over a change one path of which was
+        // never read. `pass` means "nothing above the advisory floor", and there
+        // is no floor under bytes nobody looked at.
+        let policy = Policy::default();
+        let unread = vec!["src/calc.ts".to_string()];
+        let summary = evaluate(
+            &[clean_result()],
+            &VerdictContext {
+                unreadable_paths: &unread,
+                ..ctx(&policy)
+            },
+            iteration(0, 3),
+        );
+        assert_eq!(summary.verdict, Verdict::Advise);
+        let reason = summary
+            .reasons
+            .iter()
+            .find(|r| r.code == reason::CHANGE_NOT_READ)
+            .expect("the verdict says which paths it could not read");
+        assert!(reason.message.contains("src/calc.ts"), "{reason:?}");
+        assert_eq!(reason.severity, Severity::Medium);
+    }
+
+    #[test]
+    fn an_unread_path_does_not_advance_the_loop_counter() {
+        // The counter counts attempts an agent made at this change. A path the
+        // tool could not open is not one, and counting it would grind a branch to
+        // `escalate_to_human` over a permission bit — the exemption engine
+        // failures already have.
+        let policy = Policy::default();
+        let unread = vec!["src/calc.ts".to_string()];
+        assert!(!has_countable_finding(
+            &[clean_result()],
+            &VerdictContext {
+                unreadable_paths: &unread,
+                ..ctx(&policy)
+            }
+        ));
+    }
+
+    #[test]
+    fn an_unread_path_does_not_soften_a_block() {
+        // The reason is additive and non-blocking, which must not mean it can
+        // stand in front of one. A real finding still stops the line.
+        let policy = Policy::default();
+        let unread = vec!["src/calc.ts".to_string()];
+        let mut result = sample_result();
+        result.severity = Severity::High;
+        let summary = evaluate(
+            &[result],
+            &VerdictContext {
+                unreadable_paths: &unread,
+                ..ctx(&policy)
+            },
+            iteration(1, 3),
+        );
+        assert_eq!(summary.verdict, Verdict::Block);
     }
 
     #[test]

@@ -124,6 +124,11 @@ fn run() -> Result<(), String> {
     );
 
     let record = MeasurementRecord {
+        // A probe measures a commit range with one engine: nothing substituted,
+        // and nothing it was handed went unread.
+        substitution: None,
+        unreadable_paths: Vec::new(),
+        self_measure: None,
         schema_version: SCHEMA_VERSION,
         record_kind: RecordKind::SelfReport,
         tool: ToolIdentity {

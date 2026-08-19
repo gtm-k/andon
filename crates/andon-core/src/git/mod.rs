@@ -50,5 +50,7 @@ mod status;
 pub use blob::{BlobBatch, BlobError, Content, ContentLane, ContentOrigin};
 pub use command::{Git, GitCommand, GitError, RepoFacts, PINNED_CONFIG};
 pub use diff::{ChangeStatus, ChangedEntry, ChangedSet, GITLINK_MODE};
-pub use resolve::{Endpoint, EndpointKey, ResolveError, ResolvedRange, Revision};
+pub use resolve::{
+    in_progress_operation, Endpoint, EndpointKey, ResolveError, ResolvedRange, Revision,
+};
 pub use status::{testing, DirtyEntry, DirtySnapshot, SnapshotMode, SNAPSHOT_VERSION};

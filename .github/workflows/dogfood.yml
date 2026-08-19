@@ -1,0 +1,118 @@
+# Dogfood switch-on (PLAN P5b): Andon measures Andon.
+#
+# THE GATE IS NOT A GREEN TICK, AND THAT IS THE ACCEPTANCE CRITERION
+#
+# PLAN P5b: "gate asserts non-empty results + expected engine count, not
+# exit-code green (round-1 vacuity fix)". The vacuity it names has already
+# happened once in this project: a payload assembled from no engines at all came
+# out `complete` and `pass`, so a job checking only the exit status would have
+# gone green over a run in which nothing was measured.
+#
+# So the assertions live in `crates/andon-cli/tests/dogfood.rs`, where they are
+# typed, run on a developer's machine before CI sees them, and need no JSON
+# shell-parsing — a gate whose own correctness depends on `grep` over a payload
+# has a defect class of its own. This file drives them and prints the report
+# beside them, so the log carries what the measurement actually said.
+#
+# THE VERDICT IS REPORTED AND DOES NOT GATE, ON PURPOSE
+#
+# `docs/self-measure.md`: self-measurement runs the last attested release binary,
+# so that a broken detector cannot bless the change that broke it. No attested
+# release exists yet, so this runs the working tree's own build under the
+# recorded override `bootstrap-no-attested-release` — self-expiring, because it
+# names a condition that stops being true the day the first release is attested.
+#
+# A binary judging itself has produced an opinion, not evidence. Gating on that
+# opinion would mean a detector change could turn its own CI green. The verdict
+# is printed in full and written to the job summary so nobody has to dig for it;
+# what gates is that the measurement happened and every engine was heard from.
+#
+# Every third-party action is pinned by commit SHA with the tag in a trailing
+# comment, for the reason ci.yml gives: a tag is a mutable pointer, and these run
+# in a project whose product is trust.
+
+name: dogfood
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A report that quotes a repository-controlled path is read by a person, and
+  # ANSI escapes in a CI log are noise rather than colour.
+  NO_COLOR: "1"
+
+jobs:
+  self-measure:
+    name: andon measures andon
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Full history, and it is load-bearing twice over. The process family
+          # reads a windowed history and reports `unwitnessed` on a truncated
+          # one, so a shallow clone would measure nothing it could witness; and
+          # the base ladder needs a commit before HEAD or the honest answer is a
+          # refusal rather than a measurement.
+          fetch-depth: 0
+
+      - name: Install toolchain
+        run: rustup component add rustfmt clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # Before the script runs, a check that what it says about the ledger is
+      # true. The line that prints the note once read it through `head -c 400`
+      # under `pipefail`: the bound closed the pipe, `git notes show` died on the
+      # broken pipe, and the `||` branch printed "(no note is recorded against
+      # HEAD)" onto the end of the note it had just printed. A real note here is
+      # one canonical line of about 640 KB, so that fired on every run — the step
+      # whose job is to show the run was filed was the step denying it was.
+      #
+      # It needs no toolchain and takes seconds. It runs first so that a
+      # regression is reported as a broken claim rather than read as one.
+      - name: Regression test — the ledger line reports the truth
+        run: bash scripts/tests/self-measure-ledger.test.sh
+
+      # The measurement itself, printed for a reader. `--exit-zero` because the
+      # verdict does not gate here (see the header); the gate is the next step.
+      - name: Measure
+        run: bash scripts/self-measure.sh
+
+      # The gate. Non-empty results and every shipped engine heard from,
+      # asserted against the record rather than against the exit status.
+      - name: Gate — non-empty results and the expected engine count
+        run: cargo test -p andon-cli --test dogfood -- --nocapture
+
+      - name: Attach the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: andon-self-measure
+          path: |
+            andon-self-measure.html
+            andon-self-measure.json
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Andon measured Andon"
+            echo
+            echo "Self-measurement ran the working tree's own build under the recorded"
+            echo "override \`bootstrap-no-attested-release\`: no attested release exists yet,"
+            echo "so this verdict is an opinion the binary formed about itself and does not"
+            echo "gate. What gates is that the measurement happened and every shipped engine"
+            echo "was heard from."
+            echo
+            echo '```'
+            sed -e 's/\x1b\[[0-9;]*m//g' andon-self-measure.txt 2>/dev/null | head -60 || \
+              echo "no report was produced"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

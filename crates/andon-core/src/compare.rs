@@ -95,6 +95,39 @@ pub fn classify(
     recompute: &MeasurementRecord,
     inputs: CompareInputs,
 ) -> Classification {
+    // Step 0 — before anything, including the tuple. An uncommitted head is not
+    // a disagreement to classify; it is a measurement nobody can repeat.
+    //
+    // This has to come first, and the ordering is the safety property. A record
+    // measured against a working tree carries a content hash where a commit OID
+    // would be, so the tuple check below would find it unequal, ask how the base
+    // relates to the trusted branch, and report `unwitnessed-base-mismatch` or —
+    // if the base had also moved — `base-fabrication` and `divergent`. That is a
+    // tamper accusation against somebody who did nothing but forget to commit,
+    // which is the exact class of false accusation this project ranks above
+    // missed detection.
+    //
+    // Either side, not just the report: a verifier whose own head is dirty has a
+    // bug, and the right response to a bug in the verifier is still not to
+    // accuse the change under examination.
+    let uncommitted_side = [
+        self_report.map(|r| &r.compare_context),
+        Some(&recompute.compare_context),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|ctx| !ctx.head_kind.is_witnessable());
+    if uncommitted_side {
+        return Classification {
+            attestation: Attestation::UnwitnessedUncommitted,
+            tamper_signals: Vec::new(),
+            // No compare was attempted, and `None` says so. An empty
+            // `CompareOutcome` would claim a comparison happened and found
+            // nothing, which is a different and false statement.
+            compare: None,
+        };
+    }
+
     let Some(report) = self_report else {
         // Nothing to compare. A fork job still recomputed statically, which is a
         // real if weaker pass; anywhere else this is simply unwitnessed.

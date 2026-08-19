@@ -1,0 +1,47 @@
+# The product CLI (PLAN P5b) — the first surface a human meets.
+#
+# Picked up by the root manifest's `crates/andon-*` member glob, so the root
+# Cargo.toml is untouched (PLAN R2-2).
+#
+# NO NEW THIRD-PARTY DEPENDENCY, AND WHY THERE IS NO ARGUMENT PARSER
+#
+# Every dependency here is already in the lockfile. The flag parser is
+# hand-rolled in `args.rs` for the reason `andon-static.rs` and `andon-spike.rs`
+# give for theirs: an argument parser is a large transitive tree in a binary
+# whose whole pitch is that its supply chain is auditable, for a surface of six
+# subcommands and a dozen flags. `cargo deny check licenses bans sources` passes
+# without a new exception because nothing new arrives.
+#
+# The five engine crates are ordinary dependencies here, not dev-dependencies.
+# `andon-core` carries them as dev-dependencies to ask a question about all five
+# at once (`tests/shipped_severity_band.rs`); this crate is the binary that
+# actually runs them, so the direction is the plain one and there is no cycle.
+[package]
+name = "andon-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Andon's command line: measure a change, read the evidence behind every number, and render a report a human can act on."
+
+[[bin]]
+name = "andon"
+path = "src/main.rs"
+
+[dependencies]
+andon-core.workspace = true
+andon-engine-artifacts = { path = "../engines/artifacts" }
+andon-engine-clones = { path = "../engines/clones" }
+andon-engine-process = { path = "../engines/process" }
+andon-engine-tamper = { path = "../engines/tamper" }
+andon-ledger-min = { path = "../andon-ledger-min" }
+andon-static-metrics = { path = "../engines/static-metrics" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+toml.workspace = true

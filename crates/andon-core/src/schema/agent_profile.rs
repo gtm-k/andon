@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::enums::{Attestation, Completeness, EvidenceTier, Severity, Verdict};
-use super::payload::{IterationState, MeasurementRecord, MetricValue, SCHEMA_VERSION};
+use super::payload::{HeadKind, IterationState, MeasurementRecord, MetricValue, SCHEMA_VERSION};
 use crate::canonical;
 
 /// The name of this schema view, emitted in the payload so a consumer can tell
@@ -70,7 +70,23 @@ pub struct AgentProfile {
     /// Always [`PROFILE_NAME`].
     pub profile: String,
     /// What to do about the change.
+    ///
+    /// Read [`Self::verdict_invalid`] first. When that is `true` this is the
+    /// word the record stores and not a verdict about the change.
     pub verdict: Verdict,
+    /// True when the stored verdict contradicts the record it came from.
+    ///
+    /// A structural field rather than prose, because this is the surface built
+    /// for a reader that does not read prose. Records sealed before a change
+    /// nobody read was a reason not to pass carry `verdict: pass` beside a
+    /// non-zero [`Self::unread_paths`], and an agent branching on `verdict`
+    /// alone would act on the older of two contradicting halves of one record.
+    ///
+    /// Additive with a default, so a consumer built against a profile without
+    /// it reads `false` and is right about every record that predates the
+    /// contradiction being detectable.
+    #[serde(default)]
+    pub verdict_invalid: bool,
     /// How much trust the measurement has earned.
     pub attestation: Attestation,
     /// Whether this measurement may count downstream. Stated outright so an
@@ -78,10 +94,47 @@ pub struct AgentProfile {
     pub counts_downstream: bool,
     /// How complete the measurement behind it was.
     pub completeness: Completeness,
-    /// Base commit measured against.
+    /// Base commit measured against. Always a commit.
     pub base_oid: String,
-    /// Head commit measured.
+    /// The head's identity, of the kind [`Self::head_kind`] names: a commit OID
+    /// for `commit`, and otherwise the content hash of an uncommitted snapshot.
+    ///
+    /// **Read `head_kind` before interpreting this.** Its description here used
+    /// to say "head commit measured", which is false for two of the three kinds
+    /// this profile can carry — on the one surface written for a reader that
+    /// does not read prose.
     pub head_oid: String,
+    /// What `head_oid` identifies.
+    ///
+    /// Present for the same reason it is present on the record: an uncommitted
+    /// head cannot be recomputed by anything, and a consumer that took
+    /// `head_oid` for a commit would ask CI to check out a working tree.
+    pub head_kind: HeadKind,
+    /// Present when something other than what was asked for was measured.
+    ///
+    /// Bounded like everything else here, and included because an agent acting
+    /// on a fallback verdict without knowing it is a fallback is PREMORTEM A1
+    /// reached through the one surface built for agents.
+    pub measured_instead: Option<String>,
+    /// How many changed paths the policy withheld from this measurement, so no
+    /// finding describes them either.
+    ///
+    /// Non-zero only under `--self-measure`, which is Andon measuring Andon. A
+    /// count rather than the paths, for the reason [`Self::unread_paths`] is one:
+    /// this view has a byte budget, and what an agent needs is that the verdict
+    /// covers less than the change.
+    ///
+    /// Additive with a default. A consumer built against a profile without it
+    /// reads zero, which is right for every measurement of a repository that is
+    /// not this one.
+    #[serde(default)]
+    pub withheld_paths: u32,
+    /// How many changed paths nothing could read, so no finding describes them.
+    ///
+    /// A count rather than the paths: this view has a byte budget, and what an
+    /// agent needs from it is "this verdict covers less than you asked about",
+    /// which a number carries. `andon report` names them.
+    pub unread_paths: u32,
     /// Where the agent is against its iteration cap.
     pub iteration: IterationState,
     /// Findings, worst first, cut to fit the budget.
@@ -125,11 +178,22 @@ pub fn build_agent_profile(
         schema_version: SCHEMA_VERSION,
         profile: PROFILE_NAME.to_string(),
         verdict: record.verdict.verdict,
+        verdict_invalid: crate::verdict::stored_verdict_is_contradicted(record),
         attestation: record.attestation.value,
         counts_downstream: record.attestation.value.counts_downstream(),
         completeness: record.completeness,
         base_oid: truncate_bytes(&record.compare_context.base_oid, bounds.max_string_bytes),
         head_oid: truncate_bytes(&record.compare_context.head_oid, bounds.max_string_bytes),
+        head_kind: record.compare_context.head_kind,
+        measured_instead: record
+            .substitution
+            .as_ref()
+            .map(|s| truncate_bytes(&s.measured, bounds.max_hint_bytes)),
+        withheld_paths: record
+            .self_measure
+            .as_ref()
+            .map_or(0, |p| p.excluded_paths.len() as u32),
+        unread_paths: record.unreadable_paths.len() as u32,
         iteration: record.verdict.iteration,
         findings: Vec::new(),
         truncated: false,

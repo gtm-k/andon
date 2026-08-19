@@ -63,8 +63,9 @@ use crate::policy::Policy;
 use crate::schema::enums::{Completeness, RecordKind};
 use crate::schema::payload::{
     AttestationBlock, CompareContext, Invocation, MeasurementRecord, MeasurementResult, Reserved,
-    ResultScope, ToolIdentity, SCHEMA_VERSION,
+    ResultScope, Substitution, ToolIdentity, SCHEMA_VERSION,
 };
+use crate::selfmeasure::SelfMeasureProvenance;
 use crate::verdict::iteration::{Advance, LoopOutcome};
 use crate::verdict::policy_change::PolicyChange;
 use crate::verdict::{self, EngineFailure, VerdictContext};
@@ -132,7 +133,17 @@ pub enum AssemblyError {
         metric_id: String,
     },
     /// Two results share a `(metric_id, scope)` pair.
-    #[error("two results share the pairing key ('{metric_id}', {scope:?})")]
+    ///
+    /// The scope is spelled rather than dumped. `{scope:?}` printed a line of
+    /// Rust struct syntax — `ResultScope { kind: Function, path: Some(...),
+    /// blob_oid: Some(...), ... }` — at somebody who ran one command, and this
+    /// abort is reachable from an ordinary method chain, so it is an error a
+    /// real user meets rather than a corner a developer reads in a backtrace.
+    #[error(
+        "two results share the pairing key: '{metric_id}' at {}. \
+         A pairing key has to name one result, and this scope names two",
+        describe_scope(.scope)
+    )]
     DuplicateResult {
         /// The metric.
         metric_id: String,
@@ -288,6 +299,20 @@ pub struct AssembleRequest<'a> {
     pub engine_failures: Vec<EngineFailure>,
     /// The `.andon.toml` edit inside this change, if any.
     pub policy_change: Option<PolicyChange>,
+    /// Set when something other than the caller's request was measured.
+    ///
+    /// Carried through assembly rather than stamped on the finished record so
+    /// that there is one construction site for a record and no way to build one
+    /// that forgot to say it was about a different change.
+    pub substitution: Option<Substitution>,
+    /// Changed paths nothing could read, so nothing in `engines` describes them.
+    pub unreadable_paths: Vec<String>,
+    /// How a self-measurement was arrived at, when this is one.
+    ///
+    /// Carried through assembly for the reason `substitution` is: one
+    /// construction site for a record, and no way to build one that forgot to
+    /// say the policy withheld eighteen paths from it.
+    pub self_measure: Option<SelfMeasureProvenance>,
 }
 
 /// A validated payload, waiting only on the iteration counter.
@@ -313,6 +338,9 @@ pub struct Prepared {
     registry_skew: Vec<String>,
     completeness: Completeness,
     countable: bool,
+    substitution: Option<Substitution>,
+    unreadable_paths: Vec<String>,
+    self_measure: Option<SelfMeasureProvenance>,
 }
 
 impl Prepared {
@@ -328,14 +356,96 @@ impl Prepared {
     /// could not see everything must not clear the agent's budget the way a
     /// measurement that found nothing does. See
     /// [`crate::verdict::iteration::LoopOutcome`].
+    ///
+    /// # Why this does not read `completeness`
+    ///
+    /// It used to, and the reset was dead code in production because of it.
+    /// Record completeness is `parse_health::weakest`, and engines emit
+    /// per-result `unwitnessed` **by design** for honest absences — a `.png` has
+    /// no complexity, a repository with no coverage report has no diff coverage,
+    /// a file added in this change has no history. `Unwitnessed` is weakness-rank
+    /// 0, so one honest marker made the whole record `unwitnessed`, and the
+    /// reset branch required `Complete`. Measured across four real repositories:
+    /// **15 of 15 runs were `unwitnessed`**. The counter could therefore advance
+    /// and never reset, so on any branch living longer than a few attempts
+    /// escalation to a human stopped being earned and became guaranteed — which
+    /// is PREMORTEM S6, the anti-grinding mechanism inverting into a flood.
+    ///
+    /// **This is the E20 roll-up biting a second consumer**, and the fix is not
+    /// E20's rejected one. That move was to widen which completeness values a
+    /// gate accepts, and it fails for the reason recorded there: the roll-up
+    /// genuinely cannot tell an honest absence from an engine that could not run.
+    ///
+    /// What is different here is the *vantage point*. `compare::classify` sees a
+    /// [`MeasurementRecord`], which carries no `engine_failures` field — verified
+    /// against the schema in E20, and the reason the discrimination was
+    /// impossible there. [`Prepared`] holds `engine_failures` and every result,
+    /// so it can ask the question directly instead of inferring it from a
+    /// minimum: *did every engine answer, and did it answer over everything it
+    /// was asked to read?*
+    ///
+    /// - An engine that **could not run** is an unanswered question.
+    /// - A result over a **`parse-degraded`** view is an answer about part of a
+    ///   file, with the rest unread.
+    /// - A **`partial`** result is work that has not finished.
+    /// - An **`unwitnessed`** result is an *answer*: the engine ran, looked, and
+    ///   reported that the input does not exist. Nothing is outstanding.
+    ///
+    /// # The blinding hole this leaves, and why it is the right trade
+    ///
+    /// A change that deletes the coverage report turns findings into
+    /// `unwitnessed` markers, and the loop now treats that as finished. That is
+    /// real. It is also not what this counter defends: the module documentation
+    /// says so directly — the counter is *tool state, not a security boundary*,
+    /// its file is local and writable by whoever runs the tool, and deleting it
+    /// resets the count outright. Hardening the reset against a deliberate
+    /// blinding buys nothing when the cheaper move is `rm`. The mechanism
+    /// against dishonest work is the verifier and the tamper suite, and the
+    /// deletion stays loudly visible: the markers name their reason, and the
+    /// verdict carries `measurement-incomplete`.
+    ///
+    /// Weighed against a guaranteed escalation on every long-lived branch, which
+    /// fires on honest work every time, this is the trade PREMORTEM S6 asks for.
     pub fn loop_outcome(&self) -> LoopOutcome {
         if self.countable {
             LoopOutcome::Countable
-        } else if self.completeness == Completeness::Complete {
+        } else if self.every_question_was_answered() {
             LoopOutcome::Finished
         } else {
             LoopOutcome::Inconclusive
         }
+    }
+
+    /// Whether every engine answered, over everything it was asked to read.
+    ///
+    /// Deliberately not `completeness == Complete`: see [`Self::loop_outcome`].
+    /// An `unwitnessed` result is an answer; a failed engine, a half-read file,
+    /// and unfinished work are not.
+    ///
+    /// # A path nothing could open is the same question left unanswered
+    ///
+    /// This read `engine_failures` and the two incomplete result states and
+    /// stopped there, which meant a changed path no engine could read did not
+    /// count. So a measurement over a file nobody opened found nothing to act
+    /// on, answered `Finished`, and **cleared the agent's count** — the exact
+    /// shape [`LoopOutcome`] was made three-valued to prevent, arriving through
+    /// a field that did not exist when it was.
+    ///
+    /// It is the same argument one step over: break the engine and the run is
+    /// clean, or make the file unreadable and the run is clean. Both are
+    /// "nothing to act on because nothing was seen", and neither is evidence
+    /// that the loop ended. `unreadable_paths` is already on `Prepared` and
+    /// already drives the verdict's `change-not-read` reason; this is that same
+    /// fact reaching the one consumer that was still blind to it.
+    fn every_question_was_answered(&self) -> bool {
+        self.engine_failures.is_empty()
+            && self.unreadable_paths.is_empty()
+            && !self.results.iter().any(|result| {
+                matches!(
+                    result.completeness,
+                    Completeness::Partial | Completeness::ParseDegraded
+                )
+            })
     }
 
     /// The results as they will appear in the record.
@@ -343,8 +453,17 @@ impl Prepared {
         &self.results
     }
 
-    /// Record-level completeness: the weakest of the results', demoted to
-    /// `partial` when an engine could not run at all.
+    /// Record-level completeness: the weakest of the results', held to no
+    /// stronger than `partial` when an engine could not run at all.
+    ///
+    /// "Demoted to `partial`" is what this said, and it was wrong in the
+    /// direction that matters. A failed engine *floors* the record; it does not
+    /// set it. A result carrying an honest `unwitnessed` marker is weaker than
+    /// `partial` and keeps its value, so the sentence claimed a stronger record
+    /// than the one it described — the same defect class as the
+    /// `ENGINE_UNAVAILABLE` message corrected in [`crate::verdict`], found in a
+    /// third place by the phase that inherited it as an entry note. See
+    /// [`record_completeness`], which is where the rule actually lives.
     pub fn completeness(&self) -> Completeness {
         self.completeness
     }
@@ -370,6 +489,7 @@ impl Prepared {
             iteration_state_recovered: iteration.recovered,
             completeness: self.completeness,
             registry_skew: &self.registry_skew,
+            unreadable_paths: &self.unreadable_paths,
         };
         let verdict = verdict::evaluate(&self.results, &context, iteration.state);
 
@@ -378,6 +498,8 @@ impl Prepared {
             ..self.invocation
         };
 
+        // Read before the context moves into the record.
+        let witnessable = self.compare_context.head_kind.is_witnessable();
         MeasurementRecord {
             schema_version: SCHEMA_VERSION,
             record_kind: self.record_kind,
@@ -393,13 +515,56 @@ impl Prepared {
             // fired signals ride along because the deterministic tamper channel
             // is agent-visible by design (PRE-DECISIONS, trust model); the
             // verifier recomputes them regardless.
+            //
+            // # The one value a record may set about itself
+            //
+            // A record measured against an uncommitted head says so, and that is
+            // safe for the reason the rule exists: the danger is a record
+            // granting itself trust, and this grants itself *less*. Both values
+            // answer `counts_downstream()` false, so nothing downstream moves;
+            // what changes is that a reader is told this record can never be
+            // witnessed rather than that it merely has not been yet.
+            //
+            // Nor is it a claim taken on faith. `head_kind` is inside every
+            // result's digest input, so a record lying about being uncommitted
+            // sealed its results against the lie — and `compare::classify` reads
+            // the same field before it reads anything else, so the record and
+            // the verifier cannot disagree about what this record is.
             attestation: AttestationBlock {
+                value: if witnessable {
+                    crate::schema::enums::Attestation::Unwitnessed
+                } else {
+                    crate::schema::enums::Attestation::UnwitnessedUncommitted
+                },
                 tamper_signals: tamper_signals::fired_signals(&self.results),
                 ..AttestationBlock::default()
             },
             results: self.results,
+            substitution: self.substitution,
+            unreadable_paths: self.unreadable_paths,
+            self_measure: self.self_measure,
         }
     }
+}
+
+/// A scope as a person reads it, for the one error that has to name one.
+///
+/// Not a general renderer: the CLI's `scope_label` writes prose for a report
+/// and the agent profile's `render_scope` writes to a byte budget, and a third
+/// caller of either would be reaching across a boundary for a string it does
+/// not want. This is short, has no budget, and exists so that an error message
+/// stops being Rust struct syntax.
+fn describe_scope(scope: &ResultScope) -> String {
+    let mut out = match (&scope.path, &scope.symbol) {
+        (Some(path), Some(symbol)) => format!("{path} {symbol}"),
+        (Some(path), None) => path.clone(),
+        (None, Some(symbol)) => symbol.clone(),
+        (None, None) => format!("{:?}", scope.kind).to_lowercase(),
+    };
+    if let Some(span) = &scope.line_span {
+        out.push_str(&format!(" (line {})", span.start));
+    }
+    out
 }
 
 /// Validate engine outputs and apply policy, stopping short of the verdict.
@@ -415,6 +580,9 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
         engines,
         engine_failures,
         policy_change,
+        substitution,
+        unreadable_paths,
+        self_measure,
     } = request;
 
     // Engine order is the grouping key, and it is sorted so that the record does
@@ -498,6 +666,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
             iteration_state_recovered: false,
             completeness,
             registry_skew: &registry_skew,
+            unreadable_paths: &unreadable_paths,
         },
     );
 
@@ -520,6 +689,9 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
         registry_skew,
         completeness,
         countable,
+        substitution,
+        unreadable_paths,
+        self_measure,
     })
 }
 
