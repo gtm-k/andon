@@ -343,6 +343,7 @@ fn assemble(measured: &Measured) -> andon_core::schema::payload::MeasurementReco
     let prepared = andon_core::payload::prepare(AssembleRequest {
         substitution: None,
         unreadable_paths: Vec::new(),
+        self_measure: None,
         tool: ToolIdentity {
             name: "andon".to_string(),
             version: "0.1.0".to_string(),

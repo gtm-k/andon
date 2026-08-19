@@ -251,3 +251,172 @@ fn the_two_binary_gate_activates_now_that_the_golden_set_exists() {
         "the golden set the gate depends on is missing"
     );
 }
+
+#[test]
+fn the_self_measurement_carries_its_own_provenance() {
+    // `SelfMeasureProvenance` was written, documented and unit-tested, and
+    // nothing constructed one. The facts it describes lived for exactly one
+    // process: a fresh terminal named the paths `[self_measure] excluded_paths`
+    // withheld, and the saved record, the read-back report, `wait`, `--json` and
+    // the agent profile all lost them — including this job's own payload, which
+    // is the artefact somebody opens to find out what the gate covered.
+    if let Err(reason) = measurable() {
+        eprintln!("dogfood skipped: {reason}");
+        return;
+    }
+    let record = measure_self().expect("the self-measurement runs");
+    let provenance = record
+        .self_measure
+        .as_ref()
+        .expect("a --self-measure run records how it was arrived at");
+
+    // Which binary judged, from the same values the record's `tool` block
+    // carries, so the two cannot disagree.
+    assert_eq!(provenance.measuring_binary_version, record.tool.version);
+    assert_eq!(provenance.measuring_binary_oid, record.tool.build_oid);
+    assert_eq!(provenance.attested, record.tool.attested_release);
+
+    // The bootstrap exception, durable rather than announced in a shell banner.
+    // `docs/self-measure.md`: every self-measurement carries it until the first
+    // attested release exists.
+    let over = provenance
+        .override_record
+        .as_ref()
+        .expect("the bootstrap exception is in force and must be recorded");
+    assert_eq!(
+        over.reason,
+        andon_core::selfmeasure::OverrideReason::BootstrapNoAttestedRelease
+    );
+    for (field, value) in [
+        ("justification", &over.justification),
+        ("reference", &over.reference),
+        ("approved_by", &over.approved_by),
+        ("head_oid", &over.head_oid),
+    ] {
+        assert!(
+            !value.is_empty(),
+            "the override's {field} is empty, which is indistinguishable from a silent bypass"
+        );
+    }
+    assert!(
+        !provenance.is_clean(),
+        "a run under an override reported itself as a clean one"
+    );
+
+    // What the policy withheld, named rather than counted, because a reader
+    // deciding what the gate covered needs the files.
+    let policy_path = workspace().join(".andon.toml");
+    let policy = Policy::from_toml(&std::fs::read_to_string(&policy_path).expect("a policy"))
+        .expect("the policy parses");
+    for path in &provenance.excluded_paths {
+        assert!(
+            policy.self_measure.excluded_paths.iter().any(|pattern| {
+                let prefix = pattern.strip_suffix("/**").unwrap_or(pattern);
+                path == prefix || path.starts_with(&format!("{prefix}/"))
+            }),
+            "{path} was withheld by nothing the policy declares, so the exclusion is not \
+             reviewable in a diff"
+        );
+    }
+}
+
+#[test]
+fn the_dogfood_run_is_a_ledgered_event() {
+    // PLAN P5b: "switch is a ledgered event (S3)". It was not one. The job
+    // printed a report, uploaded an artefact, and left nothing behind that
+    // anybody could query afterwards — which is the difference between "we think
+    // the gate ran" and a record attached to the commit it was taken under.
+    //
+    // Asserted against the script rather than by running it: the assertion is
+    // about what the job does, and a script that dropped `--record` would pass
+    // every other test in this file.
+    let script = std::fs::read_to_string(workspace().join("scripts").join("self-measure.sh"))
+        .expect("the self-measure script exists");
+    // The flag on the invocation, not the word anywhere in the file. A first
+    // draft of this asserted `script.contains("--record")` and still passed with
+    // the flag deleted, because the paragraph above the command explains why it
+    // is there — a guard satisfied by its own documentation.
+    assert!(
+        script
+            .lines()
+            .any(|line| line.trim().trim_end_matches('\\').trim() == "--record"),
+        "the self-measure run is not filed against the commit, so the switch-on is a log line \
+         rather than a ledgered event"
+    );
+    assert!(
+        script.contains("andon-measure"),
+        "the script does not show the reader what was filed, so a note that silently failed to \
+         land would look exactly like one that did"
+    );
+}
+
+#[test]
+fn every_surface_that_renders_a_self_measurement_says_what_it_withheld() {
+    // The disclosure half, across the surfaces that lost it. A measurement that
+    // withheld eighteen paths and one that withheld none are different
+    // measurements, and the difference has to survive being serialized.
+    if measurable().is_err() {
+        return;
+    }
+    let record = measure_self().expect("the self-measurement runs");
+    let provenance = record.self_measure.as_ref().expect("provenance");
+    assert!(
+        !provenance.excluded_paths.is_empty(),
+        "this repository's own policy withholds fixtures, so a run that withheld none is not \
+         the run this test is about"
+    );
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let saved = dir.path().join("self.json");
+    std::fs::write(
+        &saved,
+        andon_core::canonical::to_canonical_string(&record).expect("serializes"),
+    )
+    .expect("writes");
+    let input = saved.to_str().expect("utf-8").to_string();
+    let sample = provenance.excluded_paths[0].clone();
+
+    let run = |args: &[&str]| {
+        let out = Command::new(EXE).args(args).output().expect("andon runs");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    let reported = run(&["report", "--input", &input, "--no-color"]);
+    assert!(
+        reported.contains(&sample) && reported.contains("withheld"),
+        "the read-back report does not say what the policy withheld"
+    );
+
+    let waited = run(&["wait", "--input", &input]);
+    assert!(
+        waited.contains("withheld"),
+        "`wait` renders the record and says nothing about what it withheld:\n{waited}"
+    );
+
+    let html_path = dir.path().join("self.html");
+    let _ = run(&[
+        "report",
+        "--input",
+        &input,
+        "--html",
+        html_path.to_str().expect("utf-8"),
+    ]);
+    let html = std::fs::read_to_string(&html_path).expect("the report reads back");
+    assert!(
+        html.contains(&sample),
+        "the HTML report lost the withheld paths"
+    );
+    assert!(
+        html.contains("bootstrap") || html.contains("Bootstrap"),
+        "the HTML report does not say which binary judged, or under what exception"
+    );
+
+    // The agent gets a count, because this view has a byte budget.
+    let profile = run(&["report", "--input", &input, "--profile", "agent-mode"]);
+    let parsed: serde_json::Value = serde_json::from_str(&profile).expect("valid profile");
+    assert_eq!(
+        parsed["withheld_paths"],
+        provenance.excluded_paths.len(),
+        "{profile}"
+    );
+}

@@ -122,6 +122,7 @@ pub fn sample_record() -> MeasurementRecord {
     MeasurementRecord {
         substitution: None,
         unreadable_paths: Vec::new(),
+        self_measure: None,
         schema_version: SCHEMA_VERSION,
         record_kind: RecordKind::SelfReport,
         tool: ToolIdentity {

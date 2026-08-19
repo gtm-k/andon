@@ -114,6 +114,7 @@ pub fn measure(
         // was read or it would not be here.
         substitution: None,
         unreadable_paths: Vec::new(),
+        self_measure: None,
         record_kind: kind,
         tool: ToolIdentity {
             name: TOOL_NAME.to_string(),

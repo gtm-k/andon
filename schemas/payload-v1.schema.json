@@ -1056,6 +1056,46 @@
         }
       ]
     },
+    "OverrideReason": {
+      "description": "Why a self-measure gate was bypassed.",
+      "oneOf": [
+        {
+          "description": "No attested release exists yet. The bootstrap exception from the decision log: legal only until the first attested release ships, and self-expiring by construction because it stops being true.",
+          "enum": [
+            "bootstrap-no-attested-release"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The change under measurement is to an engine, so the attested binary's verdict is about the old detector. Pairs with the two-binary comparison.",
+          "enum": [
+            "engine-change-under-review"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A detector defect is known, filed, and firing on this change.",
+          "enum": [
+            "known-detector-defect"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The attested binary could not be fetched or run. Infrastructure, not judgement.",
+          "enum": [
+            "infrastructure-unavailable"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A finding was reviewed and found to be a false positive. Feeds the PREMORTEM S6 false-positive budget.",
+          "enum": [
+            "reviewed-false-positive"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "RecordKind": {
       "description": "Whether a record is a self-report or a verifier's attestation.",
       "oneOf": [
@@ -1183,6 +1223,90 @@
           "type": "string"
         }
       ]
+    },
+    "SelfMeasureOverride": {
+      "description": "A recorded override. Every field is required: an override with no issue reference and no named approver is indistinguishable from a silent bypass.",
+      "properties": {
+        "approved_by": {
+          "description": "Who approved it. A named person, not a role.",
+          "type": "string"
+        },
+        "head_oid": {
+          "description": "Commit the override applies to. Overrides do not carry forward.",
+          "type": "string"
+        },
+        "justification": {
+          "description": "Free text explaining this instance.",
+          "type": "string"
+        },
+        "reason": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/OverrideReason"
+            }
+          ],
+          "description": "Which closed-set reason applies."
+        },
+        "reference": {
+          "description": "Issue or PR the decision is recorded against.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approved_by",
+        "head_oid",
+        "justification",
+        "reason",
+        "reference"
+      ],
+      "type": "object"
+    },
+    "SelfMeasureProvenance": {
+      "description": "Which binary a self-measurement ran, and whether that was the rule or an exception.",
+      "properties": {
+        "attested": {
+          "description": "Whether that binary was an attested release.",
+          "type": "boolean"
+        },
+        "excluded_paths": {
+          "description": "Paths excluded from self-measurement, from `policy.self_measure.excluded_paths`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "exclusion_drift": {
+          "description": "Set when the excluded set grew since the last attested run. An exclusion list that widens quietly is how the dogfood gate stops meaning anything.",
+          "type": "boolean"
+        },
+        "measuring_binary_oid": {
+          "description": "Commit it was built from.",
+          "type": "string"
+        },
+        "measuring_binary_version": {
+          "description": "Version of the binary that measured.",
+          "type": "string"
+        },
+        "override_record": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SelfMeasureOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when the attested-binary rule was not followed."
+        }
+      },
+      "required": [
+        "attested",
+        "excluded_paths",
+        "exclusion_drift",
+        "measuring_binary_oid",
+        "measuring_binary_version"
+      ],
+      "type": "object"
     },
     "Severity": {
       "description": "Finding severity. \"MED+\" throughout the plan means `Medium` or above.",
@@ -1530,6 +1654,18 @@
       "format": "uint32",
       "minimum": 0,
       "type": "integer"
+    },
+    "self_measure": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SelfMeasureProvenance"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "How a self-measurement was arrived at: which binary judged, whether the attested-binary rule was followed, and what the policy withheld.\n\n`None` on every measurement of somebody else's repository, which is all of them but this one's own CI. `Some` exactly when `--self-measure` was given.\n\n# Why this is on the record\n\n[`crate::selfmeasure::SelfMeasureProvenance`] was written, documented and tested, and nothing constructed one. Meanwhile the facts it describes lived for one process: a fresh terminal and the HTML report named the paths `[self_measure] excluded_paths` withheld, and the saved record, the read-back report, `wait`, `--json` and the agent profile all lost them — including the dogfood job's own payload, which is the artefact somebody reads when they want to know what the gate covered.\n\nA measurement that withheld eighteen paths and a measurement that withheld none are different measurements, and the difference has to survive being serialized. The same is true of which binary reached the verdict: `docs/self-measure.md`'s whole rule is that a broken detector must not bless the change that broke it, and a rule whose exceptions are not recorded is a rule nobody can audit.\n\nA record-level field and deliberately **not** part of any per-result digest — the same placement and the same reason as `policy_hash` and `substitution`. It describes how the measurement was arrived at, not what was measured.\n\n# Reading `exclusion_drift` when nothing is attested\n\nDrift is defined against the last attested run. While `attested` is `false` there has never been one, so `exclusion_drift` is `false` because there is no baseline rather than because the list held still. The two fields are read together, and the renderers say which case it is."
     },
     "substitution": {
       "anyOf": [

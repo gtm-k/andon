@@ -67,6 +67,16 @@ fi
 # `--exit-zero` because the verdict does not gate here. Without it a blocking
 # self-verdict would fail this step for the same reason a crash does, and the
 # log could not tell the two apart.
+#
+# `--record` because PLAN P5b's acceptance criterion says the dogfood switch-on
+# is a LEDGERED EVENT, and it was not one: the run printed a report, uploaded an
+# artefact, and left nothing behind that anybody could query. A note in
+# `refs/notes/andon-measure` is the difference between "we think the gate ran"
+# and a record attached to the commit it was taken under, carrying which binary
+# measured, under which override, and what the policy withheld.
+#
+# It needs no git identity: `andon_ledger_min::notes` pins its own, precisely
+# because a CI runner has none configured.
 "$ANDON" measure \
     --repo . \
     --self-measure \
@@ -74,6 +84,7 @@ fi
     --harness github-actions \
     --full \
     --exit-zero \
+    --record \
     --html "$REPORT_HTML" \
     | tee "$REPORT_TXT"
 
@@ -90,6 +101,13 @@ echo
 echo "report:  $REPORT_TXT"
 echo "html:    $REPORT_HTML"
 echo "payload: $REPORT_JSON"
+echo
+# The ledgered event itself, printed so a reader of the CI log can see that the
+# run was filed rather than merely reported. `show` rather than `list` because
+# the question a reader has is what was recorded against THIS commit.
+echo "ledger:"
+git notes --ref=andon-measure show HEAD 2>/dev/null | head -c 400 || \
+    echo "  (no note is recorded against HEAD)"
 echo
 echo "The verdict above is reported, not enforced. Run the gate with:"
 echo "  cargo test -p andon-cli --test dogfood"

@@ -58,7 +58,6 @@ pub fn render(measurement: &Measurement) -> String {
     document(
         &measurement.record,
         Some(&measurement.how),
-        &measurement.excluded,
         &measurement.notices,
     )
 }
@@ -71,15 +70,10 @@ pub fn render(measurement: &Measurement) -> String {
 /// about a different change from the one asked for. It comes off the record
 /// now, which both callers have.
 pub fn render_record(record: &MeasurementRecord) -> String {
-    document(record, None, &[], &[])
+    document(record, None, &[])
 }
 
-fn document(
-    record: &MeasurementRecord,
-    how: Option<&str>,
-    excluded: &[String],
-    notices: &[String],
-) -> String {
+fn document(record: &MeasurementRecord, how: Option<&str>, notices: &[String]) -> String {
     let mut out = String::new();
     // The head's kind said out loud, from the one function every renderer uses.
     // A dirty head's content hash cut to twelve characters is the shape of a
@@ -107,7 +101,7 @@ fn document(
     flags(&mut out, record);
     finding_list(&mut out, record);
     absence_list(&mut out, record);
-    trust(&mut out, record, excluded, notices);
+    trust(&mut out, record, notices);
     colophon(&mut out, record);
 
     let _ = writeln!(out, "</body>\n</html>");
@@ -472,7 +466,7 @@ fn absence_list(out: &mut String, record: &MeasurementRecord) {
     let _ = writeln!(out, "</tbody>\n</table></div>\n</section>");
 }
 
-fn trust(out: &mut String, record: &MeasurementRecord, excluded: &[String], notices: &[String]) {
+fn trust(out: &mut String, record: &MeasurementRecord, notices: &[String]) {
     let _ = write!(
         out,
         "<section class=\"panel\">\n<h2 class=\"eyebrow\">Trust</h2>\n\
@@ -503,13 +497,47 @@ fn trust(out: &mut String, record: &MeasurementRecord, excluded: &[String], noti
         policy = escape(&short(&record.policy_hash)),
     );
 
-    if !excluded.is_empty() {
+    // Off the record rather than out of the process that produced it, so the
+    // page a reviewer opens three weeks later carries what the terminal said.
+    if let Some(provenance) = &record.self_measure {
         let _ = write!(
             out,
-            "<p class=\"caveat\">{n} path(s) were withheld by <span class=\"mono\">\
-             [self_measure] excluded_paths</span>: <span class=\"mono small\">{paths}</span></p>",
-            n = excluded.len(),
-            paths = escape(&excluded.join(", ")),
+            "<p class=\"caveat\">This is Andon measuring itself, with \
+             <span class=\"mono\">{tool} {version}</span> (build \
+             <span class=\"mono\">{build}</span>). {rule}</p>",
+            tool = escape(&record.tool.name),
+            version = escape(&provenance.measuring_binary_version),
+            build = escape(&short(&provenance.measuring_binary_oid)),
+            rule = match &provenance.override_record {
+                Some(o) => escape(&format!(
+                    "Override {:?}: {} Approved by {}, recorded in {}.",
+                    o.reason, o.justification, o.approved_by, o.reference
+                )),
+                None => "The attested-binary rule was followed with no override.".to_string(),
+            },
+        );
+        let _ = write!(
+            out,
+            "<p class=\"caveat\">{withheld} {drift}</p>",
+            withheld = if provenance.excluded_paths.is_empty() {
+                "<span class=\"mono\">[self_measure] excluded_paths</span> withheld nothing \
+                 from this change."
+                    .to_string()
+            } else {
+                format!(
+                    "{n} path(s) were withheld by <span class=\"mono\">[self_measure] \
+                     excluded_paths</span>: <span class=\"mono small\">{paths}</span>.",
+                    n = provenance.excluded_paths.len(),
+                    paths = escape(&provenance.excluded_paths.join(", ")),
+                )
+            },
+            drift = if provenance.exclusion_drift {
+                "The excluded set has grown since the last attested run."
+            } else if provenance.attested {
+                "The excluded set has not grown since the last attested run."
+            } else {
+                "Drift against the last attested run is not computable: there has not been one."
+            },
         );
     }
     for notice in notices {

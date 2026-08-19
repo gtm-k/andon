@@ -116,6 +116,19 @@ pub struct AgentProfile {
     /// on a fallback verdict without knowing it is a fallback is PREMORTEM A1
     /// reached through the one surface built for agents.
     pub measured_instead: Option<String>,
+    /// How many changed paths the policy withheld from this measurement, so no
+    /// finding describes them either.
+    ///
+    /// Non-zero only under `--self-measure`, which is Andon measuring Andon. A
+    /// count rather than the paths, for the reason [`Self::unread_paths`] is one:
+    /// this view has a byte budget, and what an agent needs is that the verdict
+    /// covers less than the change.
+    ///
+    /// Additive with a default. A consumer built against a profile without it
+    /// reads zero, which is right for every measurement of a repository that is
+    /// not this one.
+    #[serde(default)]
+    pub withheld_paths: u32,
     /// How many changed paths nothing could read, so no finding describes them.
     ///
     /// A count rather than the paths: this view has a byte budget, and what an
@@ -176,6 +189,10 @@ pub fn build_agent_profile(
             .substitution
             .as_ref()
             .map(|s| truncate_bytes(&s.measured, bounds.max_hint_bytes)),
+        withheld_paths: record
+            .self_measure
+            .as_ref()
+            .map_or(0, |p| p.excluded_paths.len() as u32),
         unread_paths: record.unreadable_paths.len() as u32,
         iteration: record.verdict.iteration,
         findings: Vec::new(),

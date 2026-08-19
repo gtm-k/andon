@@ -65,6 +65,7 @@ use crate::schema::payload::{
     AttestationBlock, CompareContext, Invocation, MeasurementRecord, MeasurementResult, Reserved,
     ResultScope, Substitution, ToolIdentity, SCHEMA_VERSION,
 };
+use crate::selfmeasure::SelfMeasureProvenance;
 use crate::verdict::iteration::{Advance, LoopOutcome};
 use crate::verdict::policy_change::PolicyChange;
 use crate::verdict::{self, EngineFailure, VerdictContext};
@@ -306,6 +307,12 @@ pub struct AssembleRequest<'a> {
     pub substitution: Option<Substitution>,
     /// Changed paths nothing could read, so nothing in `engines` describes them.
     pub unreadable_paths: Vec<String>,
+    /// How a self-measurement was arrived at, when this is one.
+    ///
+    /// Carried through assembly for the reason `substitution` is: one
+    /// construction site for a record, and no way to build one that forgot to
+    /// say the policy withheld eighteen paths from it.
+    pub self_measure: Option<SelfMeasureProvenance>,
 }
 
 /// A validated payload, waiting only on the iteration counter.
@@ -333,6 +340,7 @@ pub struct Prepared {
     countable: bool,
     substitution: Option<Substitution>,
     unreadable_paths: Vec<String>,
+    self_measure: Option<SelfMeasureProvenance>,
 }
 
 impl Prepared {
@@ -517,6 +525,7 @@ impl Prepared {
             results: self.results,
             substitution: self.substitution,
             unreadable_paths: self.unreadable_paths,
+            self_measure: self.self_measure,
         }
     }
 }
@@ -556,6 +565,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
         policy_change,
         substitution,
         unreadable_paths,
+        self_measure,
     } = request;
 
     // Engine order is the grouping key, and it is sorted so that the record does
@@ -664,6 +674,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
         countable,
         substitution,
         unreadable_paths,
+        self_measure,
     })
 }
 

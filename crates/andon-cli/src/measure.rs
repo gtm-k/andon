@@ -43,6 +43,7 @@ use andon_core::schema::payload::{
     Invocation, MeasurementRecord, MeasurementResult, MetricValue, Reserved, ScopeKind,
     ToolIdentity,
 };
+use andon_core::selfmeasure::{OverrideReason, SelfMeasureOverride, SelfMeasureProvenance};
 use andon_core::verdict::iteration::{Advance, IterationStore};
 use andon_core::verdict::policy_change::{self, PolicyChange};
 use andon_core::verdict::EngineFailure;
@@ -127,19 +128,17 @@ impl Default for Request {
 pub struct Measurement {
     /// The record.
     ///
-    /// Two of this struct's fields used to sit beside it — the substitution and
-    /// the unreadable paths — and both are now on the record itself. They were
-    /// facts about the measurement that a renderer had to be handed separately,
-    /// which meant every renderer reading a record off disk was handed neither,
-    /// and said neither. What is left here is what genuinely belongs to *this
-    /// invocation* rather than to the measurement: how the range was described,
-    /// what the policy withheld, and operational notices.
+    /// Three of this struct's fields used to sit beside it — the substitution,
+    /// the unreadable paths, and what `[self_measure] excluded_paths` withheld —
+    /// and all three are now on the record itself. They were facts about the
+    /// measurement that a renderer had to be handed separately, which meant
+    /// every renderer reading a record off disk was handed none of them, and
+    /// said none of them. What is left here is what genuinely belongs to *this
+    /// invocation* rather than to the measurement: how the range was described
+    /// and operational notices.
     pub record: MeasurementRecord,
     /// One line naming the range measured.
     pub how: String,
-    /// Paths withheld by `policy.self_measure.excluded_paths`, when
-    /// `--self-measure` was given.
-    pub excluded: Vec<String>,
     /// Operational notices a reader needs and the record does not carry:
     /// registry staleness, schedule hygiene, and anything a run did differently
     /// from the ordinary path. Handling that produces no observable signal is a
@@ -404,6 +403,13 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
         // `andon report` on the same record announced neither.
         substitution: resolution.substitution.clone(),
         unreadable_paths: stage_free.unreadable.clone(),
+        // The third fact that lived for one process. `--self-measure` withheld
+        // paths and the terminal named them; the record did not, so the dogfood
+        // job's own payload — the artefact somebody reads to find out what the
+        // gate covered — said nothing about eighteen files it did not measure.
+        self_measure: request
+            .self_measure
+            .then(|| self_measure_provenance(&policy, &excluded, &resolution)),
     })?;
 
     let branch = current_branch(&git, &resolution);
@@ -477,7 +483,6 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
         // read. Nothing between here and the ledger asks git for HEAD again.
         ledger_anchor: resolution.range.head.anchor_oid().to_string(),
         how: resolution.how,
-        excluded,
         changed_files: changed.len(),
         notices: engine_notes
             .into_iter()
@@ -939,6 +944,87 @@ fn current_branch(git: &Git, resolution: &Resolution) -> String {
         Ok(Some(name)) if !name.trim().is_empty() => name.trim().to_string(),
         _ => format!("detached:{}", resolution.compare_context.head_oid),
     }
+}
+
+/// How this self-measurement was arrived at (PREMORTEM S3,
+/// `docs/self-measure.md`).
+///
+/// # Every field is read, none is asserted
+///
+/// The binary identity comes from [`tool_identity`], which is the same value
+/// the record's `tool` block carries, so the two cannot disagree about which
+/// build reached the verdict. The withheld paths are the ones
+/// [`apply_exclusions`] actually withheld on this run, not the patterns that
+/// withheld them — the patterns are policy and ride in `policy_hash`, and what
+/// a reader needs is which files were not measured.
+///
+/// # The bootstrap override, and where its fields come from
+///
+/// `docs/self-measure.md`: the rule is that self-measurement runs the last
+/// attested release, and until one exists every self-measurement carries the
+/// override `bootstrap-no-attested-release`. So the override is present exactly
+/// when the policy states the rule and this binary is not an attested release —
+/// a condition, read, which is what makes the exception self-expiring rather
+/// than a grace period somebody has to remember to end. When policy already
+/// says `current-build` there is no rule being excepted and no override.
+///
+/// `approved_by` is the owner this package declares in its own manifest, which
+/// is where this repository records who it belongs to; it is the same name the
+/// evidence registry writes in every claim's `owner`. `reference` is the
+/// contract the decision is recorded in.
+///
+/// # `exclusion_drift` is false because there is no baseline
+///
+/// Drift is defined against the last attested run and there has never been one,
+/// which `attested: false` in the same struct says. It is not a claim that the
+/// list held still. The renderers read the pair rather than the bool alone.
+fn self_measure_provenance(
+    policy: &Policy,
+    excluded: &[String],
+    resolution: &resolve::Resolution,
+) -> SelfMeasureProvenance {
+    let tool = tool_identity();
+    let bootstrap = !tool.attested_release
+        && policy.self_measure.binary == andon_core::policy::SelfMeasureBinary::LastAttestedRelease;
+    SelfMeasureProvenance {
+        measuring_binary_version: tool.version.clone(),
+        measuring_binary_oid: tool.build_oid.clone(),
+        attested: tool.attested_release,
+        override_record: bootstrap.then(|| SelfMeasureOverride {
+            reason: OverrideReason::BootstrapNoAttestedRelease,
+            justification: format!(
+                "`[self_measure] binary` is `last-attested-release` and {} {} is not an \
+                 attested release, so this measurement ran the working tree's own build. The \
+                 exception names a condition and stops being available the moment the first \
+                 attested release exists.",
+                tool.name, tool.version
+            ),
+            reference: "docs/self-measure.md#the-bootstrap-exception".to_string(),
+            approved_by: package_owner().to_string(),
+            // The commit the override applies to, and overrides do not carry
+            // forward. `anchor_oid` rather than `head_oid`: a dirty head's
+            // identity is a content hash, which is not a commit for an override
+            // to be pinned to.
+            head_oid: resolution.range.head.anchor_oid().to_string(),
+        }),
+        excluded_paths: excluded.to_vec(),
+        exclusion_drift: false,
+    }
+}
+
+/// The owner this package declares, from its own manifest.
+///
+/// Read rather than written down twice: `Cargo.toml`'s `repository` is where
+/// this repository records who it belongs to, and it is the same name the
+/// evidence registry writes in every claim's `owner`. A literal here would be a
+/// second copy of a fact the manifest already holds, which is how two answers to
+/// one question start.
+fn package_owner() -> &'static str {
+    env!("CARGO_PKG_REPOSITORY")
+        .trim_end_matches('/')
+        .rsplit('/')
+        .nth(1)
+        .unwrap_or("unknown")
 }
 
 /// Who measured.

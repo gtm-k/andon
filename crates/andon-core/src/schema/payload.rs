@@ -10,6 +10,7 @@ use super::enums::{
 };
 use super::regime::MeasurementRegime;
 use crate::canonical::{self, CanonicalError};
+use crate::selfmeasure::SelfMeasureProvenance;
 
 /// The version of this schema. Bumped by a plan change, never by a phase.
 ///
@@ -79,6 +80,43 @@ pub struct MeasurementRecord {
     /// applied to the record rather than only to the run.
     #[serde(default)]
     pub unreadable_paths: Vec<String>,
+    /// How a self-measurement was arrived at: which binary judged, whether the
+    /// attested-binary rule was followed, and what the policy withheld.
+    ///
+    /// `None` on every measurement of somebody else's repository, which is all
+    /// of them but this one's own CI. `Some` exactly when `--self-measure` was
+    /// given.
+    ///
+    /// # Why this is on the record
+    ///
+    /// [`crate::selfmeasure::SelfMeasureProvenance`] was written, documented and
+    /// tested, and nothing constructed one. Meanwhile the facts it describes
+    /// lived for one process: a fresh terminal and the HTML report named the
+    /// paths `[self_measure] excluded_paths` withheld, and the saved record, the
+    /// read-back report, `wait`, `--json` and the agent profile all lost them —
+    /// including the dogfood job's own payload, which is the artefact somebody
+    /// reads when they want to know what the gate covered.
+    ///
+    /// A measurement that withheld eighteen paths and a measurement that
+    /// withheld none are different measurements, and the difference has to
+    /// survive being serialized. The same is true of which binary reached the
+    /// verdict: `docs/self-measure.md`'s whole rule is that a broken detector
+    /// must not bless the change that broke it, and a rule whose exceptions are
+    /// not recorded is a rule nobody can audit.
+    ///
+    /// A record-level field and deliberately **not** part of any per-result
+    /// digest — the same placement and the same reason as `policy_hash` and
+    /// `substitution`. It describes how the measurement was arrived at, not what
+    /// was measured.
+    ///
+    /// # Reading `exclusion_drift` when nothing is attested
+    ///
+    /// Drift is defined against the last attested run. While `attested` is
+    /// `false` there has never been one, so `exclusion_drift` is `false` because
+    /// there is no baseline rather than because the list held still. The two
+    /// fields are read together, and the renderers say which case it is.
+    #[serde(default)]
+    pub self_measure: Option<SelfMeasureProvenance>,
 }
 
 /// What was measured, when it was not what was asked for.

@@ -330,6 +330,7 @@ fn bare_request<'a>(
     AssembleRequest {
         substitution: None,
         unreadable_paths: Vec::new(),
+        self_measure: None,
         tool: ToolIdentity {
             name: "andon".to_string(),
             version: "0.1.0".to_string(),

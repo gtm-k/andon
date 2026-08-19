@@ -75,6 +75,15 @@ pub fn wait(record: &MeasurementRecord) -> String {
         );
     }
 
+    if let Some(provenance) = &record.self_measure {
+        let _ = writeln!(
+            out,
+            "  SELF     Andon measuring itself; {} changed path(s) withheld by [self_measure] \
+             excluded_paths",
+            provenance.excluded_paths.len()
+        );
+    }
+
     if async_results.is_empty() {
         let _ = writeln!(
             out,
@@ -128,6 +137,7 @@ mod tests {
         MeasurementRecord {
             substitution: None,
             unreadable_paths: Vec::new(),
+            self_measure: None,
             schema_version: andon_core::schema::payload::SCHEMA_VERSION,
             record_kind: andon_core::schema::enums::RecordKind::SelfReport,
             tool: andon_core::schema::payload::ToolIdentity {

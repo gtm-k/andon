@@ -134,6 +134,7 @@ pub fn render_record(record: &MeasurementRecord, colour: Colour, detail: Detail)
     trust_line(&mut out, record, colour);
     substitution_note(&mut out, record.substitution.as_ref(), colour);
     unreadable_note(&mut out, record, colour);
+    self_measure_note(&mut out, record, colour);
     body(&mut out, record, colour, detail, None);
     out
 }
@@ -291,20 +292,84 @@ fn header(out: &mut String, measurement: &Measurement, colour: Colour) {
     // one. They did: the field was the CLI's and never reached disk.
     substitution_note(out, record.substitution.as_ref(), colour);
 
-    if !measurement.excluded.is_empty() {
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            " {} {} path(s) withheld by [self_measure] excluded_paths: {}",
-            colour.bold("EXCLUDED"),
-            measurement.excluded.len(),
-            measurement.excluded.join(", ")
-        );
-    }
+    self_measure_note(out, record, colour);
 
     for notice in &measurement.notices {
         let _ = writeln!(out, " {} {notice}", colour.dim("note    "));
     }
+}
+
+/// What a self-measurement withheld, and which binary reached the verdict.
+///
+/// Read off the record, so `report`, `ledger show` and the read-back render say
+/// it too. It used to be read off `Measurement`, which is this process's view:
+/// a fresh terminal named eighteen withheld paths and every later reading of the
+/// same record named none, including the dogfood job's own payload — the
+/// artefact somebody opens to find out what the gate covered.
+fn self_measure_note(out: &mut String, record: &MeasurementRecord, colour: Colour) {
+    let Some(provenance) = &record.self_measure else {
+        return;
+    };
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        " {} {}",
+        colour.bold("SELF"),
+        colour.bold(&format!(
+            "this is Andon measuring itself, with {} {}",
+            record.tool.name, provenance.measuring_binary_version
+        ))
+    );
+    // Which binary judged, and under what exception. `docs/self-measure.md`'s
+    // rule exists so a broken detector cannot bless the change that broke it,
+    // and a rule whose exceptions are not visible is a rule nobody can audit.
+    match &provenance.override_record {
+        Some(record) => {
+            let _ = writeln!(
+                out,
+                "   {}",
+                colour.dim(&format!(
+                    "override {:?} — {} (approved by {}, {})",
+                    record.reason, record.justification, record.approved_by, record.reference
+                ))
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "   {}",
+                colour.dim("the attested-binary rule was followed with no override.")
+            );
+        }
+    }
+    if provenance.excluded_paths.is_empty() {
+        let _ = writeln!(
+            out,
+            "   {}",
+            colour.dim("[self_measure] excluded_paths withheld nothing from this change.")
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "   {} path(s) withheld by [self_measure] excluded_paths: {}",
+            provenance.excluded_paths.len(),
+            provenance.excluded_paths.join(", ")
+        );
+    }
+    // The bool alone would be a claim the list held still. It is read beside
+    // `attested`, because drift is defined against the last attested run and
+    // there has not been one.
+    let _ = writeln!(
+        out,
+        "   {}",
+        colour.dim(if provenance.exclusion_drift {
+            "the excluded set has grown since the last attested run."
+        } else if provenance.attested {
+            "the excluded set has not grown since the last attested run."
+        } else {
+            "drift against the last attested run is not computable: there has not been one."
+        })
+    );
 }
 
 fn body(
