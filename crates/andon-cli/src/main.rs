@@ -232,7 +232,7 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
     }
 
     if flags.on("record") {
-        let note = ledger::record(&git, &measurement.record)?;
+        let note = ledger::record(&git, &measurement.record, &measurement.ledger_anchor)?;
         if !flags.on("json") {
             println!(" {note}\n");
         }

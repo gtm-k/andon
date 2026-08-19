@@ -153,6 +153,20 @@ pub struct Measurement {
     /// or a change consisting only of paths the self-measure policy withholds —
     /// and a reader seeing change-scope zeros deserves to know which it was.
     pub changed_files: usize,
+    /// The commit this measurement was taken under, for the ledger to file it
+    /// against.
+    ///
+    /// Captured here rather than asked for again at recording time, and that is
+    /// the whole of the fix: `crate::ledger::record` ran `rev-parse HEAD` after
+    /// the measurement, so a ref that moved in between — a hook that commits, a
+    /// second agent, a rebase next door — filed the note against a commit that
+    /// was never underneath the measured bytes.
+    ///
+    /// `Endpoint::anchor_oid` for the head endpoint: the commit itself where the
+    /// head is a commit, and `DirtySnapshot::head_oid` where it is not — read in
+    /// the same `status` scan that produced the entries, which is what makes it
+    /// transactional with the snapshot rather than merely earlier than the note.
+    pub ledger_anchor: String,
 }
 
 /// What making the working tree readable cost, and what it could not reach.
@@ -459,6 +473,9 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
 
     Ok(Measurement {
         record,
+        // From the resolved range, which still holds the snapshot the engines
+        // read. Nothing between here and the ledger asks git for HEAD again.
+        ledger_anchor: resolution.range.head.anchor_oid().to_string(),
         how: resolution.how,
         excluded,
         changed_files: changed.len(),

@@ -42,6 +42,15 @@ fn stdout(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// The full OID `HEAD` names right now.
+fn head_of(git: &Git) -> String {
+    git.cmd(["rev-parse", "HEAD"])
+        .text()
+        .expect("rev-parse")
+        .trim()
+        .to_string()
+}
+
 fn measure_json(repo: &Path, extra: &[&str]) -> (MeasurementRecord, std::process::Output) {
     let mut args = vec!["measure", "--repo", repo.to_str().expect("utf-8"), "--json"];
     args.extend_from_slice(extra);
@@ -1554,6 +1563,83 @@ fn a_dirty_measurement_can_be_recorded_and_does_not_launder_onto_the_commit() {
         attested.status.success(),
         "attest-stub could not read a ledger holding a dirty record: {}",
         String::from_utf8_lossy(&attested.stderr)
+    );
+}
+
+#[test]
+fn a_dirty_record_is_filed_against_the_commit_it_was_measured_under() {
+    // THE DEFECT. `ledger::record` asked `rev-parse HEAD` for the anchor *after*
+    // the measurement, so anything that moved the ref in between — a hook that
+    // commits, a second agent, a rebase in the next terminal — filed the note
+    // against a commit that was never underneath the measured bytes. Measured at
+    // the time: a snapshot taken under `c664569` recorded against `376f2d9`, a
+    // commit with a different tree.
+    //
+    // The attachment point is the only durable record of what a dirty
+    // measurement was taken from: `head_oid` is the snapshot's content hash and
+    // `base_oid` is the fork point, so neither says which commit the working tree
+    // sat on. Filing it against the wrong one is a false statement about what the
+    // numbers describe, printed out loud by the note this command prints.
+    //
+    // Driven through the library rather than the binary, because the window is
+    // inside one process: the CLI takes the snapshot and files the note without
+    // returning, and a subprocess test cannot get between them. The interleave
+    // here is the same window with the timing taken out of it.
+    let repo = stranger_repo();
+    let root = repo.path();
+    let git = Git::open(root).expect("a repository");
+    std::fs::write(root.join("src").join("classify.ts"), NESTED_TS).expect("write");
+
+    let measured_under = head_of(&git);
+    let measurement = andon_cli::measure::measure(&andon_cli::measure::Request {
+        repo: root.to_path_buf(),
+        ..Default::default()
+    })
+    .expect("the dirty tree measures");
+    use andon_core::schema::payload::HeadKind;
+    assert_eq!(
+        measurement.record.compare_context.head_kind,
+        HeadKind::UncommittedWorktree,
+        "the fixture did not produce a dirty head, so this test asserts nothing"
+    );
+    assert_eq!(
+        measurement.ledger_anchor, measured_under,
+        "the measurement did not capture the commit it was taken under"
+    );
+
+    // The race window: HEAD moves to a commit with a different tree, after the
+    // snapshot and before the note. `src/classify.ts` stays dirty throughout, so
+    // the record still describes bytes that sat on `measured_under`.
+    std::fs::write(root.join("unrelated.md"), "a concurrent commit\n").expect("write");
+    git.cmd(["add", "--", "unrelated.md"])
+        .output()
+        .expect("add");
+    git.cmd(["commit", "--quiet", "-m", "concurrent"])
+        .output()
+        .expect("commit");
+    let moved_to = head_of(&git);
+    assert_ne!(moved_to, measured_under, "HEAD did not move");
+
+    let note = andon_cli::ledger::record(&git, &measurement.record, &measurement.ledger_anchor)
+        .expect("the note is filed");
+
+    assert_eq!(
+        andon_cli::ledger::show(&git, &measured_under)
+            .expect("the ledger reads")
+            .len(),
+        1,
+        "the record was not filed against the commit it was measured under; the note said: {note}"
+    );
+    assert!(
+        andon_cli::ledger::show(&git, &moved_to)
+            .expect("the ledger reads")
+            .is_empty(),
+        "the record was filed against a commit that was never underneath the measured bytes"
+    );
+    // And the sentence the operator reads names the commit it actually used.
+    assert!(
+        note.contains(&measured_under[..12]) && !note.contains(&moved_to[..12]),
+        "the note described an anchor it did not use: {note}"
     );
 }
 
