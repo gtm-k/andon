@@ -1006,3 +1006,48 @@ fn an_uncommitted_head_is_never_confused_with_a_commit() {
         record.compare_context.base_oid
     );
 }
+
+#[test]
+fn re_reading_the_same_change_is_not_another_attempt_at_it() {
+    // The counter counts attempts at *this change*, and what makes an attempt is
+    // a change to what is being measured — not a call to the tool. Advancing per
+    // invocation counts looking, and looking is what a person does while they
+    // decide what to do: five verification runs over one unchanged repository
+    // escalated a human to a human, firing the one signal reserved for "an agent
+    // has tried enough times, stop trying".
+    //
+    // Driven exactly as an agent drives it: a dirty tree, no pinned range.
+    let repo = stranger_repo();
+    let git = Git::open(repo.path()).expect("a repository");
+    let path = repo.path().to_str().expect("utf-8").to_string();
+    std::fs::write(repo.path().join("src").join("greet.ts"), COMPLEX_TS).expect("write");
+    git.cmd(["add", "--all", "."]).output().expect("git add");
+
+    for _ in 0..5 {
+        let _ = run(&["measure", "--repo", &path, "--json", "--exit-zero"]);
+    }
+    let counts = loop_state(repo.path());
+    let highest = counts.values().copied().max().unwrap_or(0);
+    assert_eq!(
+        highest, 1,
+        "five readings of one unchanged change counted as {highest} attempts: {counts:?}"
+    );
+
+    // The control: a real edit is a real attempt, or the counter has simply
+    // stopped counting and this test would pass over a cap that no longer fires.
+    let mut edited = COMPLEX_TS.to_vec();
+    edited.extend_from_slice(
+        b"
+export const another = 1;
+",
+    );
+    std::fs::write(repo.path().join("src").join("greet.ts"), &edited).expect("write");
+    git.cmd(["add", "--all", "."]).output().expect("git add");
+    let _ = run(&["measure", "--repo", &path, "--json", "--exit-zero"]);
+
+    let after = loop_state(repo.path());
+    assert!(
+        after.values().copied().max().unwrap_or(0) > highest,
+        "an actual edit did not count as an attempt: {after:?}"
+    );
+}

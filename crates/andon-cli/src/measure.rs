@@ -362,15 +362,37 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
     // push the agent's *next* measurement into `escalate_to_human` for work the
     // agent never did. Where they do not share one, the number it advanced is a
     // count of nothing on a machine nobody reads.
+    //
+    // AND NEITHER DOES RE-READING THE SAME CHANGE.
+    //
+    // The counter counts *attempts at this change*, and the thing that makes an
+    // attempt is a change to what is being measured — not a call to the tool.
+    // Advancing per invocation counts looking, and looking is what a person does
+    // while they decide what to do: five verification runs over one unchanged
+    // repository escalated a human to a human, firing the one signal reserved
+    // for "an agent has tried enough times, stop trying".
+    //
+    // Keyed on the measured range rather than on `--source`. A `--source` rule
+    // would have been smaller and it has a hole: `human-cli` is the default, so
+    // an agent that never passes the flag would silently lose the cap
+    // altogether — trading a visible annoyance for an invisible loss of a
+    // safety mechanism, which is the wrong direction. The range cannot be
+    // forgotten, and for an uncommitted head it is a content hash, so any real
+    // edit produces a new one and counts.
+    let previous = store::read_last(&git).ok();
+    let same_change = previous.is_some_and(|last| {
+        last.compare_context.base_oid == resolution.compare_context.base_oid
+            && last.compare_context.head_oid == resolution.compare_context.head_oid
+    });
     let advance = match request.record_kind {
-        RecordKind::SelfReport => store
+        RecordKind::SelfReport if !same_change => store
             .advance(&branch, cap, prepared.loop_outcome())
             .map_err(|e| MeasureError::Iteration(e.to_string()))?,
-        RecordKind::Attestation => Advance {
+        // `peek` cannot report a restart because it does not perform one. A
+        // caller that claimed to have recovered state would be claiming
+        // something about a counter it did not write.
+        RecordKind::SelfReport | RecordKind::Attestation => Advance {
             state: store.peek(&branch, cap),
-            // `peek` cannot report a restart because it does not perform one.
-            // A verifier that claimed to have recovered state would be claiming
-            // something about a counter it did not write.
             recovered: false,
         },
     };
