@@ -131,6 +131,35 @@ pub struct Outcome {
     /// blind spot demoted by the blind spot it reports is the one signal T3
     /// wants loud, silenced by its own finding.
     pub view_health: ParseHealth,
+    /// Changes **inside this detector's own subject** that it read and could
+    /// not rank.
+    ///
+    /// # The zero this exists to stop being confident
+    ///
+    /// [`view_health`](Outcome::view_health) covers the case where the parser
+    /// could not read the bytes. This covers the other one: the bytes were read
+    /// fine, the change is exactly the kind of thing the detector is for, and
+    /// the detector has no model that decides which way it went. A coverage
+    /// exclusion swapped for a different pattern; an ESLint rule whose severity
+    /// held while an option moved. Before this, both came back
+    /// `{flag: false, magnitude: 0, completeness: "complete"}` — a *confident*
+    /// missed detection, which is worse than a loud gap and is precisely what
+    /// the completeness vocabulary exists to prevent.
+    ///
+    /// The engine turns a non-empty list into `completeness: partial` on that
+    /// detector's two results, with a caveat naming what went unranked. The flag
+    /// and the magnitude are unchanged and stay in the digest; what stops is the
+    /// claim that they are a complete answer.
+    ///
+    /// # Why "inside its own subject" is load-bearing
+    ///
+    /// A `tsconfig.json` bumping `target` from `es2020` to `es2022` is a change
+    /// in a file this detector reads and is not a threshold — marking it
+    /// unassessed would make `partial` the standing state of every config edit,
+    /// which is a caveat nobody can act on and the inverse of the adoption
+    /// wound it is meant to prevent. Each detector decides what its subject is;
+    /// the two that populate this list say so in their own modules.
+    pub unassessed: Vec<Finding>,
 }
 
 impl Outcome {
@@ -142,6 +171,7 @@ impl Outcome {
             findings: Vec::new(),
             severity: None,
             view_health: ParseHealth::default(),
+            unassessed: Vec::new(),
         }
     }
 
@@ -154,6 +184,7 @@ impl Outcome {
             findings,
             severity: None,
             view_health: ParseHealth::default(),
+            unassessed: Vec::new(),
         }
     }
 
@@ -166,7 +197,20 @@ impl Outcome {
             findings,
             severity: Some(severity),
             view_health: ParseHealth::default(),
+            unassessed: Vec::new(),
         }
+    }
+
+    /// Record changes the detector read and could not rank.
+    ///
+    /// A builder for the same reason [`Outcome::over_view`] is one: it applies
+    /// to a firing and to a silence alike, and the silence is the case that
+    /// matters. A detector that fired on one file while failing to rank an edit
+    /// in another has still not given a complete answer about the change.
+    pub fn with_unassessed(mut self, mut unassessed: Vec<Finding>) -> Outcome {
+        unassessed.sort();
+        self.unassessed = unassessed;
+        self
     }
 
     /// Record how completely the parser read what this detector looked at.

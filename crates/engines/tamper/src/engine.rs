@@ -326,6 +326,14 @@ impl MeasureEngine for TamperEngine {
                 parse_health::demote_with_caveat(&mut flag, outcome.view_health, caveat.clone());
                 parse_health::demote_with_caveat(&mut magnitude, outcome.view_health, caveat);
             }
+            // Applied after the parse demotion, and `partial` is the weaker of
+            // the two, so a detector that was both blinded and stumped ends at
+            // the weaker value with both caveats on it.
+            if !outcome.unassessed.is_empty() {
+                let caveat = unassessed_caveat(&outcome.unassessed);
+                demote_to_partial(&mut flag, caveat.clone());
+                demote_to_partial(&mut magnitude, caveat);
+            }
             results.push(flag);
             results.push(magnitude);
         }
@@ -351,6 +359,60 @@ fn degraded_view_caveat(health: ParseHealth) -> String {
         health.error_nodes,
         health.missing_nodes
     )
+}
+
+/// The honesty line a detector's results carry when it read its own subject and
+/// could not rank part of it.
+///
+/// Names how many and where, in the detector's own words, for the same reason
+/// the parse caveat names how many files of how many: "a coverage exclusion was
+/// rewritten and I cannot tell you whether it excludes more" and "seventeen
+/// settings changed and I ranked none of them" are the same `partial` to the
+/// digest and very different things to whoever has to decide what to do next.
+fn unassessed_caveat(unassessed: &[detectors::Finding]) -> String {
+    let where_ = unassessed
+        .iter()
+        .map(|f| match f.line {
+            Some(line) => format!("{}:{line}", f.path),
+            None => f.path.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "absence, on the part of this change it could not rank: {} change(s) inside what this \
+         detector examines were read and not decided ({where_}). The flag and the magnitude are \
+         about the rest, so a quiet result here is not a finding of absence — the first of these \
+         reads: {}",
+        unassessed.len(),
+        unassessed[0].detail,
+    )
+}
+
+/// Mark a result as an answer over part of its subject.
+///
+/// The parse-health path in `andon_core::parse_health` writes
+/// `Completeness::ParseDegraded`, which would be a false statement here: the
+/// parser was never involved and nothing was unreadable. `Partial` is the
+/// nearest true value in P0's vocabulary — its own doc says "some results are
+/// missing", and what is missing here is a decision rather than a result, which
+/// is a stretch and is recorded as one rather than taken silently.
+///
+/// Lowers and never raises, so a result that arrived weaker for another reason
+/// keeps the weaker value; and caps severity through the same public ceiling the
+/// parse path uses, so the two demotions cannot disagree about what an
+/// incomplete answer is allowed to do.
+fn demote_to_partial(result: &mut MeasurementResult, caveat: String) {
+    if parse_health::weakness_rank(Completeness::Partial)
+        < parse_health::weakness_rank(result.completeness)
+    {
+        result.completeness = Completeness::Partial;
+    }
+    result.severity = result
+        .severity
+        .min(parse_health::severity_ceiling(Completeness::Partial));
+    if !result.evidence.does_not_predict.contains(&caveat) {
+        result.evidence.does_not_predict.insert(0, caveat);
+    }
 }
 
 impl TamperEngine {

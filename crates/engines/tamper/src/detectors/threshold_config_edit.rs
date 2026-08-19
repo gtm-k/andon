@@ -107,16 +107,21 @@ const FLOOR_KEY_FRAGMENTS: &[&str] = &[
 ];
 
 /// Keys whose numeric value is a ceiling: raising one loosens.
+///
+/// `complexity` is here bare rather than as `max-complexity` and
+/// `cognitive-complexity`, which it subsumes: ESLint spells the same setting
+/// `complexity` with no prefix, and the two prefixed spellings were the whole
+/// table, so a `.eslintrc.json` raising `complexity` from 10 to 100 matched
+/// nothing and came back `{flag: false, magnitude: 0, completeness: "complete"}`.
+/// Matching is `contains`, so one entry covers all three spellings.
 const CEILING_KEY_FRAGMENTS: &[&str] = &[
-    "max_complexity",
-    "max-complexity",
+    "complexity",
     "max_line_length",
     "max-line-length",
     "max_warnings",
     "max-warnings",
     "max_errors",
     "max-errors",
-    "cognitive-complexity",
     "iteration_cap",
 ];
 
@@ -177,6 +182,7 @@ impl Detector for ThresholdConfigEdit {
 
     fn run(&self, change: &ChangeView) -> Outcome {
         let mut findings = Vec::new();
+        let mut unassessed = Vec::new();
         for file in &change.files {
             if file.content_unchanged() || !is_threshold_config(&file.path) {
                 continue;
@@ -196,14 +202,20 @@ impl Detector for ThresholdConfigEdit {
                         *line,
                         format!("{key}: {base_value} -> {head_value} ({reason})"),
                     ));
+                } else if let Some(reason) = unrankable(key, base_value, head_value) {
+                    unassessed.push(Finding::at(
+                        &file.path,
+                        *line,
+                        format!("{key}: {base_value} -> {head_value} ({reason})"),
+                    ));
                 }
             }
         }
         let count = findings.len() as i64;
         if count > 0 {
-            Outcome::fired(count, findings)
+            Outcome::fired(count, findings).with_unassessed(unassessed)
         } else {
-            Outcome::quiet(0)
+            Outcome::quiet(0).with_unassessed(unassessed)
         }
     }
 }
@@ -220,7 +232,22 @@ fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
     let after_bool = boolean(after);
 
     if let (Some(b), Some(a)) = (rank(before), rank(after)) {
-        return (a < b).then_some("severity lowered");
+        if a < b {
+            return Some("severity lowered");
+        }
+        // The severity held. In `["error", 10] -> ["error", 100]` the rule is
+        // as loud as it was and enforces a tenth as much, and reading only the
+        // first element made that invisible — the most common shape of the
+        // evasion in the ecosystem, since every rule that takes a threshold
+        // takes it as an option. Only where the rule's own *name* says the
+        // number is a ceiling: `indent: ["error", 2] -> ["error", 4]` is a
+        // style choice and knowing that requires knowing the rule.
+        if a == b && is_ceiling(&key) {
+            if let (Some(b), Some(a)) = (rule_option_number(before), rule_option_number(after)) {
+                return (a > b).then_some("rule allowance raised");
+            }
+        }
+        return None;
     }
     if STRICT_WHEN_TRUE.iter().any(|k| leaf == *k)
         && before_bool == Some(true)
@@ -229,7 +256,7 @@ fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
         return Some("strictness turned off");
     }
     if let (Ok(b), Ok(a)) = (before.parse::<f64>(), after.parse::<f64>()) {
-        if CEILING_KEY_FRAGMENTS.iter().any(|k| key.contains(k)) {
+        if is_ceiling(&key) {
             return (a > b).then_some("allowance raised");
         }
         if FLOOR_KEY_FRAGMENTS.iter().any(|k| key.contains(k)) {
@@ -237,6 +264,78 @@ fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// Whether a key's number is a ceiling, so that raising it loosens.
+fn is_ceiling(key: &str) -> bool {
+    CEILING_KEY_FRAGMENTS.iter().any(|k| key.contains(k))
+}
+
+/// Why a changed value could not be ranked at all, or `None` when the detector
+/// understood it.
+///
+/// # Narrow on purpose, and the narrowing is the design
+///
+/// Only lint rules — a value this detector reads as `<severity>` or
+/// `[<severity>, ...options]` — count. Those are what it claims to model, and a
+/// rule whose severity held while its options moved is a change inside that
+/// claim which it has no answer for. `tsconfig`'s `target: es2020 -> es2022`,
+/// a renamed path, a bumped port: all changes in a file this detector reads and
+/// none of them thresholds, so marking them unassessable would put a caveat on
+/// every config edit in every change and make `partial` the standing state.
+/// A caveat that is always on is a caveat nobody reads.
+///
+/// The one it exists for: knowing which option of a rule is its threshold means
+/// knowing the rule, and no per-linter rule table ships here. `is_ceiling`
+/// covers the names that say so themselves; everything else lands here, loudly,
+/// instead of arriving as a confident zero.
+fn unrankable(key: &str, before: &str, after: &str) -> Option<&'static str> {
+    let (Some(b), Some(a)) = (rank(before), rank(after)) else {
+        return None;
+    };
+    if a != b {
+        // The severity moved, and `loosening` has already ruled on which way.
+        return None;
+    }
+    if loosening(key, before, after).is_some() {
+        return None;
+    }
+    // The severity held and the option moved, but the rule's own name says the
+    // number is a ceiling and both sides read as numbers — so the direction was
+    // decided, and it was a tightening. Understood is understood whichever way
+    // it went; only a firing is directional.
+    let key = key.to_ascii_lowercase();
+    if is_ceiling(&key)
+        && rule_option_number(before).is_some()
+        && rule_option_number(after).is_some()
+    {
+        return None;
+    }
+    Some(
+        "a rule option moved while its severity held, and ranking it means knowing which \
+         option of this rule is its threshold — no per-linter rule table ships here, so \
+         whether this loosened the rule is not decidable from the text",
+    )
+}
+
+/// The first number among a rule's options, in either form ESLint writes them.
+///
+/// `["error", 10]` and `["error", { "max": 10 }]` are the same rule at the same
+/// threshold, and flat config uses the second for anything that takes more than
+/// one option. The severity itself is skipped — it is the element before the
+/// first comma, and `rank` has already read it.
+fn rule_option_number(value: &str) -> Option<f64> {
+    let (_, options) = value.trim().strip_prefix('[')?.split_once(',')?;
+    let mut digits = String::new();
+    for c in options.chars() {
+        if c.is_ascii_digit() || (c == '.' && !digits.is_empty()) || (c == '-' && digits.is_empty())
+        {
+            digits.push(c);
+        } else if !digits.is_empty() {
+            break;
+        }
+    }
+    digits.parse().ok()
 }
 
 /// A configuration boolean, however the file's syntax spells it.
@@ -262,11 +361,17 @@ fn rank(value: &str) -> Option<usize> {
 /// takes options. Reading the array as an opaque string meant the most common
 /// downgrade in the ecosystem was invisible.
 ///
-/// Only the severity is read. `["error", 10] -> ["error", 40]` raises an option
-/// inside a rule and is *not* caught: knowing which option is a threshold means
-/// knowing the rule, which is a per-linter rule table this detector does not
-/// have. Recorded in the known-limitations list rather than left to be
-/// discovered.
+/// Only the severity is read *here*. The options beside it are read by
+/// [`rule_option_number`], and the pair is compared in [`loosening`]:
+/// `["error", 10] -> ["error", 100]` on a rule whose name says the number is a
+/// ceiling now fires. It used not to, and the sentence that stood here said so
+/// as a permanent limitation — a UAT run raising ESLint's `complexity` from 10
+/// to 100 got `{flag: false, magnitude: 0, completeness: "complete"}` back.
+///
+/// What is still not caught is a threshold option on a rule whose name does not
+/// say it is one, because that needs a per-linter rule table this detector does
+/// not have. Those changes are no longer silent either: [`unrankable`] reports
+/// them and the engine marks the result `partial`.
 fn severity_token(value: &str) -> &str {
     let trimmed = value.trim();
     let Some(inner) = trimmed.strip_prefix('[') else {
@@ -431,5 +536,121 @@ disallow_untyped_defs = False
         // the line. What the severity says is how strong the finding is.
         assert_eq!(ThresholdConfigEdit.severity_when_fired(), Severity::Low);
         assert!(!ThresholdConfigEdit.severity_when_fired().is_med_plus());
+    }
+
+    #[test]
+    fn an_eslint_threshold_raised_inside_a_rule_fires() {
+        // The UAT case: the rule stays as loud as it was and enforces a tenth
+        // as much. This came back `{flag: false, magnitude: 0,
+        // completeness: "complete"}`, and the module doc recorded it as a
+        // permanent limitation.
+        let base = "{ \"rules\": { \"complexity\": [\"error\", 10] } }";
+        let head = "{ \"rules\": { \"complexity\": [\"error\", 100] } }";
+        let view = ChangeView::new(vec![FileChange::modified(".eslintrc.json", base, head)]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(
+            outcome.findings[0].detail.contains("rule allowance raised"),
+            "{:?}",
+            outcome.findings
+        );
+    }
+
+    #[test]
+    fn the_same_threshold_raised_in_flat_config_fires() {
+        // `eslint.config.js` writes the option as an object, which is the form
+        // every flat config uses. Reported missed alongside `.eslintrc.json`.
+        let base = "export default [{ rules: { complexity: [\"error\", { max: 10 }] } }];\n";
+        let head = "export default [{ rules: { complexity: [\"error\", { max: 100 }] } }];\n";
+        let view = ChangeView::new(vec![FileChange::modified("eslint.config.js", base, head)]);
+        assert!(ThresholdConfigEdit.run(&view).fired);
+    }
+
+    #[test]
+    fn the_unwrapped_spelling_of_the_same_setting_fires() {
+        // ESLint spells it `complexity`; flake8 spells it `max-complexity`. The
+        // table held only the prefixed spellings.
+        let base = "{ \"rules\": { \"complexity\": 10 } }";
+        let head = "{ \"rules\": { \"complexity\": 100 } }";
+        let view = ChangeView::new(vec![FileChange::modified(".eslintrc.json", base, head)]);
+        assert!(ThresholdConfigEdit.run(&view).fired);
+    }
+
+    #[test]
+    fn lowering_a_rule_threshold_is_a_tightening_and_stays_quiet() {
+        let base = "{ \"rules\": { \"complexity\": [\"error\", 100] } }";
+        let head = "{ \"rules\": { \"complexity\": [\"error\", 10] } }";
+        let view = ChangeView::new(vec![FileChange::modified(".eslintrc.json", base, head)]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_rule_option_that_is_not_a_threshold_does_not_fire() {
+        // `indent: ["error", 2] -> ["error", 4]` is a style choice, and telling
+        // it apart from a threshold means knowing the rule. It must not fire —
+        // but it is a rule option this detector could not rank, so it must not
+        // pass as a complete answer either.
+        let base = "{ \"rules\": { \"indent\": [\"error\", 2] } }";
+        let head = "{ \"rules\": { \"indent\": [\"error\", 4] } }";
+        let view = ChangeView::new(vec![FileChange::modified(".eslintrc.json", base, head)]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.unassessed.len(), 1, "{outcome:?}");
+        assert!(outcome.unassessed[0].detail.contains("indent"));
+    }
+
+    #[test]
+    fn a_config_edit_outside_this_detectors_subject_is_not_marked_unassessed() {
+        // The narrowing that keeps the caveat worth reading. A bumped compiler
+        // target is a change in a file this detector reads and is not a
+        // threshold — if this became `partial`, so would every config edit in
+        // every change.
+        let base = "{ \"compilerOptions\": { \"strict\": true, \"target\": \"es2020\" } }";
+        let head = "{ \"compilerOptions\": { \"strict\": true, \"target\": \"es2022\" } }";
+        let view = ChangeView::new(vec![FileChange::modified("tsconfig.json", base, head)]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired);
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_severity_move_is_ranked_and_never_merely_unranked() {
+        for (base, head) in [
+            ("\"error\"", "\"warn\""),
+            ("\"warn\"", "\"error\""),
+            ("[\"error\", 10]", "[\"warn\", 10]"),
+        ] {
+            let before = format!("{{ \"rules\": {{ \"complexity\": {base} }} }}");
+            let after = format!("{{ \"rules\": {{ \"complexity\": {head} }} }}");
+            let view = ChangeView::new(vec![FileChange::modified(
+                ".eslintrc.json",
+                &before,
+                &after,
+            )]);
+            let outcome = ThresholdConfigEdit.run(&view);
+            assert!(
+                outcome.unassessed.is_empty(),
+                "{base} -> {head}: the severity moved, so the direction is known: {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rule_option_reader_skips_the_severity_and_finds_the_number() {
+        assert_eq!(rule_option_number("[\"error\", 10]"), Some(10.0));
+        assert_eq!(
+            rule_option_number("[\"error\", { \"max\": 40 }]"),
+            Some(40.0)
+        );
+        assert_eq!(rule_option_number("[\"warn\", { max: 8 }]"), Some(8.0));
+        // No options, or none numeric.
+        assert_eq!(rule_option_number("\"error\""), None);
+        assert_eq!(rule_option_number("[\"error\"]"), None);
+        assert_eq!(
+            rule_option_number("[\"error\", { \"allow\": [\"arrowFunctions\"] }]"),
+            None
+        );
     }
 }

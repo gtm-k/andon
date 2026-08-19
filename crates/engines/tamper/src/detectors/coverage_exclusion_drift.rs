@@ -9,7 +9,7 @@
 //! Coverage exclusions live in `.coveragerc` (INI), `pyproject.toml`,
 //! `package.json`, `jest.config.js` (JavaScript), `codecov.yml`, `.nycrc`, and
 //! `vitest.config.ts` — six syntaxes for one idea. What the detector needs from
-//! all six is the same: *how many patterns are excluded*, which is a count of
+//! all six is the same: *which patterns are excluded*, which is the list of
 //! entries under a known key. [`crate::config`] does the reading and explains
 //! why it is a scanner rather than six parsers.
 //!
@@ -21,6 +21,22 @@
 //! Removing an exclusion is reported as a negative magnitude and does not fire.
 //! A project tightening its coverage configuration is doing the opposite of
 //! gaming it.
+//!
+//! # Counting entries was not counting exclusion
+//!
+//! The first version of this detector answered "how many patterns are excluded",
+//! and that is not the question. Changing `.nycrc.json` from excluding
+//! `src/generated/**` to excluding `src/**` takes the whole source tree out of
+//! coverage and leaves the count at one — and the detector returned
+//! `{flag: false, magnitude: 0, completeness: "complete"}`, which is a confident
+//! zero on the plainest form of the thing it exists to catch. The same edit in
+//! `.coveragerc` did the same. Nothing was wrong with the reading: the identical
+//! file fires correctly when an entry is *added*. The model was wrong — it
+//! measured cardinality where the signal is breadth.
+//!
+//! So a replacement is now ranked as well as counted, by [`covers`], and the
+//! replacements [`covers`] cannot rank are reported as unassessed rather than as
+//! nothing (see [`crate::detectors::Outcome::unassessed`]).
 
 use crate::change::ChangeView;
 use crate::config;
@@ -93,7 +109,9 @@ impl Detector for CoverageExclusionDrift {
 
     fn run(&self, change: &ChangeView) -> Outcome {
         let mut delta = 0i64;
+        let mut broadened = 0i64;
         let mut findings = Vec::new();
+        let mut unassessed = Vec::new();
         for file in &change.files {
             if file.content_unchanged() || !is_coverage_config(&file.path) {
                 continue;
@@ -102,27 +120,121 @@ impl Detector for CoverageExclusionDrift {
             let head = exclusions(file.head_bytes());
             let file_delta = head.len() as i64 - base.len() as i64;
             delta += file_delta;
-            if file_delta > 0 {
-                let mut remaining = base.clone();
-                for (line, entry) in &head {
-                    if let Some(pos) = remaining.iter().position(|(_, e)| e == entry) {
-                        remaining.remove(pos);
-                        continue;
+
+            // Multiset difference both ways, so a reordered list is no
+            // difference at all and a replacement leaves one entry on each
+            // side to be compared against the other.
+            let mut removed = base.clone();
+            let mut added = Vec::new();
+            for (line, entry) in &head {
+                match removed.iter().position(|(_, e)| e == entry) {
+                    Some(pos) => {
+                        removed.remove(pos);
                     }
+                    None => added.push((*line, entry.clone())),
+                }
+            }
+
+            // Each added entry is classified once, in this order: a pattern
+            // that swallows one the change dropped is a widening whatever the
+            // count did; otherwise a net rise in the count is an addition;
+            // otherwise the list was rewritten in a way this detector cannot
+            // rank, and saying so is the whole point.
+            for (line, entry) in &added {
+                if let Some((_, swallowed)) = removed.iter().find(|(_, gone)| covers(entry, gone)) {
+                    broadened += 1;
+                    findings.push(Finding::at(
+                        &file.path,
+                        *line,
+                        format!("coverage exclusion broadened: {swallowed} -> {entry}"),
+                    ));
+                } else if file_delta > 0 {
                     findings.push(Finding::at(
                         &file.path,
                         *line,
                         format!("coverage exclusion added: {entry}"),
                     ));
+                } else {
+                    unassessed.push(Finding::at(
+                        &file.path,
+                        *line,
+                        format!(
+                            "coverage exclusion replaced by {entry} and this detector cannot \
+                             rank the two: neither pattern is anchored above the other, so \
+                             whether the new one excludes more code is not decidable from \
+                             the text"
+                        ),
+                    ));
                 }
             }
         }
-        if delta > 0 {
-            Outcome::fired(delta, findings)
+        // Magnitude counts both routes to the same thing. They cannot
+        // double-count: a broadening consumes an entry the change removed, and
+        // a net rise is measured over entries that replaced nothing.
+        let magnitude = delta + broadened;
+        if delta > 0 || broadened > 0 {
+            Outcome::fired(magnitude, findings).with_unassessed(unassessed)
         } else {
-            Outcome::quiet(delta)
+            Outcome::quiet(magnitude).with_unassessed(unassessed)
         }
     }
+}
+
+/// Whether the exclusion pattern `added` takes out everything `removed` did,
+/// and more.
+///
+/// # A prefix test, not a glob engine
+///
+/// The six syntaxes this detector reads are consumed by six tools whose glob
+/// semantics disagree — coverage.py's `*` crosses directory separators and
+/// minimatch's does not — so a general subsumption decision would have to know
+/// which tool reads the file, and would be wrong for one of them anyway. What is
+/// true in all of them is narrower and enough: a pattern **anchored at a
+/// strictly shallower directory** that then reaches downward with a
+/// directory-spanning wildcard covers everything the deeper one did.
+/// `src/**` against `src/generated/**` is that shape, and it is the shape the
+/// evasion takes, because widening an exclusion means moving its anchor up.
+///
+/// Deliberately conservative in both directions:
+///
+/// - `src/*.ts` does not qualify as reaching downward — its tail is `*.ts`, and
+///   whether that crosses a directory depends on the tool. It becomes an
+///   unranked replacement instead of a firing.
+/// - `*/__init__.py` -> `*/conftest.py` is not a widening: neither is anchored
+///   at all, so neither contains the other. This is a real should-pass case in
+///   the frozen corpus, and a rule keyed on "the text changed" would fire on it.
+///
+/// The one unanchored pattern that *is* ranked is a pattern that is nothing but
+/// wildcards and separators — `*`, `**`, `**/*` — which excludes the repository
+/// and cannot be narrower than anything.
+fn covers(added: &str, removed: &str) -> bool {
+    if added == removed {
+        return false;
+    }
+    let (anchor, tail) = split_at_first_wildcard(added);
+    // The tail has to reach down into whatever the anchor names: `**` at any
+    // depth, or a `*` that is the whole of the rest.
+    if !(tail.starts_with("**") || tail == "*") {
+        return false;
+    }
+    if anchor.is_empty() {
+        return all_wildcard(added) && !all_wildcard(removed);
+    }
+    let (removed_anchor, _) = split_at_first_wildcard(removed);
+    removed_anchor.starts_with(anchor) && removed_anchor.len() > anchor.len()
+}
+
+/// A pattern split into the literal part before its first wildcard and the rest.
+fn split_at_first_wildcard(pattern: &str) -> (&str, &str) {
+    match pattern.find(['*', '?']) {
+        Some(at) => pattern.split_at(at),
+        None => (pattern, ""),
+    }
+}
+
+/// Whether a pattern is nothing but wildcards and separators.
+fn all_wildcard(pattern: &str) -> bool {
+    !pattern.is_empty() && pattern.chars().all(|c| matches!(c, '*' | '?' | '/'))
 }
 
 /// `(1-based line, entry text)` for every exclusion pattern in a config file.
@@ -243,5 +355,126 @@ mod tests {
             "[run]\nbranch = true\nsource = src\n",
         )]);
         assert!(!CoverageExclusionDrift.run(&view).fired);
+    }
+
+    #[test]
+    fn an_exclusion_widened_in_place_fires_although_the_count_did_not_move() {
+        // The UAT case, verbatim: `.nycrc.json` goes from excluding one
+        // generated directory to excluding the whole source tree, and the entry
+        // count stays at one. This returned `{false, 0, complete}` — a confident
+        // zero on the plainest form of the evasion.
+        let base = "{\n  \"exclude\": [\"src/generated/**\"]\n}\n";
+        let head = "{\n  \"exclude\": [\"src/**\"]\n}\n";
+        let view = ChangeView::new(vec![FileChange::modified(".nycrc.json", base, head)]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 1);
+        assert!(
+            outcome.findings[0]
+                .detail
+                .contains("src/generated/** -> src/**"),
+            "the finding must name both sides, or it cannot be acted on: {:?}",
+            outcome.findings
+        );
+        assert!(
+            outcome.unassessed.is_empty(),
+            "a ranked widening is not an unranked one"
+        );
+    }
+
+    #[test]
+    fn the_same_widening_in_the_ini_syntax_fires_too() {
+        // Reported for `.coveragerc` alongside the `.nycrc.json` case. Same
+        // model gap, different syntax — which is what proves the gap was the
+        // model and not the reading.
+        let base = "[run]\nomit =\n    src/generated/*\n";
+        let head = "[run]\nomit =\n    src/*\n";
+        let view = ChangeView::new(vec![FileChange::modified(".coveragerc", base, head)]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 1);
+    }
+
+    #[test]
+    fn narrowing_an_exclusion_stays_quiet() {
+        // The direction gate. A project taking generated code back out of its
+        // exclusions is doing the opposite of gaming, and a rule that only
+        // noticed "the anchor moved" would fire on both.
+        let base = "{\n  \"exclude\": [\"src/**\"]\n}\n";
+        let head = "{\n  \"exclude\": [\"src/generated/**\"]\n}\n";
+        let view = ChangeView::new(vec![FileChange::modified(".nycrc.json", base, head)]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+    }
+
+    #[test]
+    fn a_bare_wildcard_is_the_widest_exclusion_there_is() {
+        let base = "{\n  \"exclude\": [\"src/generated/**\"]\n}\n";
+        let head = "{\n  \"exclude\": [\"**\"]\n}\n";
+        let view = ChangeView::new(vec![FileChange::modified(".nycrc.json", base, head)]);
+        assert!(CoverageExclusionDrift.run(&view).fired);
+    }
+
+    #[test]
+    fn a_replacement_that_cannot_be_ranked_is_reported_as_unranked_not_as_nothing() {
+        // Neither pattern is anchored, so neither contains the other and no
+        // honest answer exists in the text. This is a should-pass case in the
+        // frozen corpus and it must stay quiet — but quiet and `complete` are
+        // different claims, and only one of them is true here.
+        let base = "[run]\nomit =\n    tests/*\n    */__init__.py\n";
+        let head = "[run]\nomit =\n    tests/*\n    */conftest.py\n";
+        let view = ChangeView::new(vec![FileChange::modified(".coveragerc", base, head)]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 0);
+        assert_eq!(outcome.unassessed.len(), 1, "{outcome:?}");
+        assert!(outcome.unassessed[0].detail.contains("*/conftest.py"));
+    }
+
+    #[test]
+    fn a_reordered_list_is_neither_a_finding_nor_an_unranked_one() {
+        // The entries are a multiset, so moving them changes nothing and must
+        // not spend a caveat either.
+        let base = "[run]\nomit =\n    tests/*\n    */__init__.py\n    src/vendor/*\n";
+        let head = "[run]\nomit =\n    src/vendor/*\n    tests/*\n    */__init__.py\n";
+        let view = ChangeView::new(vec![FileChange::modified(".coveragerc", base, head)]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(!outcome.fired);
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn tightening_the_list_is_understood_and_not_merely_unranked() {
+        // Entries removed and none added: nothing to rank, so no caveat. A
+        // detector that marked every edit unassessed would make `partial` the
+        // standing state and the caveat worthless.
+        let base = "[run]\nomit =\n    tests/*\n    src/legacy/*\n";
+        let head = "[run]\nomit =\n    tests/*\n";
+        let outcome = CoverageExclusionDrift.run(&ChangeView::new(vec![FileChange::modified(
+            ".coveragerc",
+            base,
+            head,
+        )]));
+        assert!(!outcome.fired);
+        assert_eq!(outcome.magnitude, -1);
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn covers_ranks_only_what_it_can_defend() {
+        // The rule in isolation, because it is the one piece of judgement in
+        // this detector and the corpus exercises only some of its arms.
+        assert!(covers("src/**", "src/generated/**"));
+        assert!(covers("src/*", "src/generated/*"));
+        assert!(covers("**", "src/generated/**"));
+        assert!(covers("src/vendor/**", "src/vendor/lib/**"));
+        // Narrower, or unrelated, or unanchored on both sides.
+        assert!(!covers("src/generated/**", "src/**"));
+        assert!(!covers("src/a/**", "src/b/**"));
+        assert!(!covers("*/conftest.py", "*/__init__.py"));
+        assert!(!covers("src/**", "src/**"));
+        // Anchored above, but the tail does not reach downward in every glob
+        // dialect these files are read by, so it is not ranked either way.
+        assert!(!covers("src/*.ts", "src/generated/*.ts"));
     }
 }

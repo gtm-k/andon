@@ -21,7 +21,13 @@ use tree_sitter::{Node, Parser, Tree};
 /// Version of the detector rule pack: the patterns, keys, and thresholds the
 /// seven detectors match on. Bumped whenever any of them changes, because a
 /// changed rule changes what fires.
-pub const RULE_PACK_VERSION: &str = "2";
+///
+/// `3` adds exclusion-breadth ranking to `coverage-exclusion-drift` and
+/// rule-option ranking to `threshold-config-edit`. `DETECTOR_SET_REVISION` is
+/// deliberately not bumped alongside it: there are still exactly seven
+/// detectors, and that constant answers which ones exist rather than what they
+/// match on.
+pub const RULE_PACK_VERSION: &str = "3";
 
 /// Revision of the detector *set* — which detectors exist at all.
 pub const DETECTOR_SET_REVISION: &str = "1";
