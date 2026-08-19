@@ -34,6 +34,18 @@
 # be drawn would be selling a refactor it cannot justify. `does_not_predict`
 # says so in the first two entries rather than leaving it to be inferred.
 #
+# THE RESIDUAL IS A MEASUREMENT, NOT A REMEMBERED NUMBER
+# ------------------------------------------------------
+# The last two `does_not_predict` entries publish figures, and a published
+# figure nobody recomputes is the one that goes wrong. The previous version of
+# this file said the saturation residual ran "at 98% of the uncapped count",
+# which held for the single fixture the test file pinned and was 75% of it on
+# shapes nothing tried. So the oracle is now a function argument
+# (`detect::detect_with_cap`) rather than a constant somebody edits by hand, the
+# battery is 47 shapes rather than one, and the counts quoted here are asserted
+# in `tests/periodic_saturation.rs` — a disclosure that moves fails a test
+# before it misleads a reader.
+#
 # `citation_ref` is deliberately absent. The P10a registry gate resolves DOIs
 # automatically, and an unverified identifier written from memory is a worse
 # artefact than a named paper with no identifier: the first looks checked.
@@ -93,7 +105,8 @@ does_not_predict = [
     "defect density, maintainability, or review effort",
     "duplication outside the measured file set, which the number never looked at",
     "duplication inside a region the parser could not read — the token stream stops where the grammar does, so a copied block hidden behind a parse error is not counted. Results over a file the parser did not finish, and every change-scoped number computed over a set containing one, are marked `parse-degraded` and are lower bounds (PREMORTEM T3)",
-    "the whole of the duplication in content repetitive enough to saturate the detector's cost cap. Above 32 occurrences of one 25-token window — generated code, literal tables, minified bundles — an occurrence is paired with a bounded set of partners rather than all of them, so a long match between two occurrences at neither extreme of that set can be missed. Measured against an uncapped run over a battery of periodic shapes, the only one that differs is two copies of a distinct block at opposite ends of repetitive filler, at 98% of the uncapped count; the cap is named in the `measurement_regime` as `sat32-mid`. The error is one-directional: coverage is a union over confirmed matches, so the number is a lower bound and never an overstatement",
+    "how many distinct sequences the duplication in saturating content falls into, which is the one of the five these numbers do not measure exactly. Above 32 occurrences of one 25-token window — generated code, literal tables, minified bundles — an occurrence is paired with a bounded set of partners rather than with all of them, so a group is found with fewer of its members than an exhaustive run finds. That leaves every *size* unchanged, because coverage is a union and a token is in it or is not, and it does move `clones.clone-groups`: the reported groups are chosen greedily over disjoint regions, and a group holding fewer members can survive a selection its full self would not have. Measured against an uncapped run over a battery of 47 repetitive shapes (`crates/engines/clones/tests/periodic_saturation.rs`, which computes the uncapped answer rather than quoting one): duplicated tokens, the ratio, the per-file counts and the per-file line spans are equal to the uncapped answer on every shape, and the longest clone is equal on every shape; the group count differs on 15 of the 47, always by describing one duplicated region in two pieces or three rather than one, never in fewer. That direction matters — the count over-reports distinctness and cannot be used to make duplication look smaller. The cap and its pairing budget are named in the `measurement_regime` as `sat32-region100k`",
+    "the whole of the duplication in a file so densely interrupted that laying every region against every occurrence exceeds the pairing budget of 100,000 pairs. There the region list is sampled rather than walked, and the result is reported `completeness: partial` naming the file rather than as a finished answer — this is the one shortfall the engine can see while it happens, so it is signalled and not merely disclosed. The error stays one-directional: coverage is a union over confirmed matches, so the number is a lower bound and never an overstatement",
 ]
 owner = "gtm-k"
 expiry = "2027-03-15"

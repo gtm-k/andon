@@ -58,33 +58,72 @@ pub const MIN_CLONE_TOKENS: u32 = 50;
 /// ratio of 1.0, and 37 lines through 200,000 lines all reported 108 tokens —
 /// so the reported *ratio fell as the real duplication rose*, to 0.00009.
 ///
+/// # The rule that replaced it was derived for one periodic block
+///
+/// It paired an occurrence with the nearest usable partner and with the two
+/// same-file occurrences bracketing the position that maximizes the reportable
+/// length — which is exactly right while the repetition is contiguous, and
+/// loses the middle as soon as identical interruptions split it into three
+/// stretches or more. A file of `600 rows / helper / 300 rows / helper / 300
+/// rows` reported 5499 of 7333 tokens, a quarter of itself missed and stamped
+/// `complete`, and the same interruption froze `largest-clone-tokens` at 1794
+/// however far the true longest clone grew. The freeze above was the
+/// contiguous form of one defect; that was the interrupted form of it.
+///
 /// # What the cap does now
 ///
 /// Above the cap, an occurrence is paired with a bounded set of partners
-/// instead of with all of them: the nearest usable one, and the two same-file
-/// occurrences bracketing the position that maximizes the reportable length.
-/// `bounded_partners` in [`crate::detect`] derives that position and states why
-/// it is the right one. Both extremes are generated, so the selection has the
-/// candidate it prefers and the coverage union has the region it covers.
+/// instead of with all of them. The bucket is first split into the *regions*
+/// its occurrences fall into, and `bounded_partners` in [`crate::detect`] lays
+/// `a` against each of them head to head and tail to tail, alongside the two
+/// crossings and the nearest usable partner. The three rules and their
+/// derivations are there rather than here.
 ///
-/// Preserved, and now measured rather than asserted: the answer for periodic
-/// content matches an uncapped run exactly on the shapes
-/// `tests/periodic_saturation.rs` pins. Preserved too: a helper copied into a
-/// hundred files, because adjacent pairs share one group key and accumulate
-/// into the same group.
+/// Measured rather than asserted, and the oracle is runnable rather than
+/// remembered: `detect::detect_with_cap` takes the cap as an argument, so
+/// `tests/periodic_saturation.rs` computes the uncapped answer on every shape
+/// in its battery and compares. Every size the engine reports — duplicated
+/// tokens, the ratio, the per-file count and the longest clone — is equal to
+/// the uncapped answer on all of them.
 ///
-/// Given up, and this is a real loss rather than a rounding one: in a saturated
-/// bucket, a longer match between two occurrences at *neither* extreme can
-/// still be missed. Two copies of a large block a third of the way into a file
-/// full of repeated syntax are the shape. The cap only engages above 32
-/// occurrences of one window hash, which takes genuinely repetitive content to
-/// reach, and the alternative is quadratic — an uncapped run over a 3000-row
-/// literal table took 6.6 s against a 1000 ms fast-lane budget. The residual is
-/// disclosed in `registry/clones.toml`'s `does_not_predict` rather than left
-/// here, because the reader who needs it is reading a number and not this file.
+/// Given up, and it is `clones.clone-groups` alone that gives it up: the
+/// *members* of a group are the placements some confirmed pair put there, and a
+/// bounded pairing finds fewer of them. That changes nothing about the sizes,
+/// which are a union, and it does change the greedy selection in
+/// [`crate::detect`], which drops a whole group when any one member overlaps a
+/// region already kept — so a group with fewer members can survive a selection
+/// its full self would not have, or fail to block one. The measured effect is
+/// small and runs in both directions; it is bounded in the battery and
+/// disclosed in `registry/clones.toml`, because the reader who needs it is
+/// reading a number and not this file.
+///
+/// The cap only engages above 32 occurrences of one window hash, which takes
+/// genuinely repetitive content to reach, and the alternative is quadratic — an
+/// uncapped run over a 3000-row literal table took 6.6 s against a 1000 ms
+/// fast-lane budget.
 ///
 /// The cap changes numbers, so it is part of the regime: see [`ALGORITHM`].
 pub const SATURATED_OCCURRENCES: usize = 32;
+
+/// Occurrence-region pairs a saturated bucket may lay out before the region
+/// list is sampled instead of walked.
+///
+/// Laying every region against every occurrence is what makes the answer over
+/// interrupted repetition right, and its cost is `occurrences x regions` —
+/// bounded by the content and not by the algorithm. A file alternating six rows
+/// with a helper a thousand times reaches 6,000,000 and took 19.7 s in a debug
+/// build; the same file under this budget takes 0.8 s.
+///
+/// Above it, only the next region is laid against each occurrence and the
+/// search is no longer a search of everywhere. Unlike every other shortfall the
+/// cap has, this one is *detectable while it happens*, so it is not left to a
+/// disclosure: `detect` records the files of every bucket it sampled and the
+/// engine reports their results `partial` rather than `complete`. See
+/// [`crate::detect::CloneReport::truncated_paths`].
+///
+/// Changes numbers when it engages, so it is named in [`ALGORITHM`] beside the
+/// occurrence cap.
+pub const REGION_PAIR_BUDGET: usize = 100_000;
 
 /// The algorithm name stamped into the `measurement_regime`.
 ///
@@ -93,18 +132,22 @@ pub const SATURATED_OCCURRENCES: usize = 32;
 /// is a digest disagreement the verifier would read as tampering rather than as
 /// skew (PREMORTEM S4).
 ///
-/// The `mid` suffix is the same rule applied to the *strategy* rather than the
+/// The suffix is the same rule applied to the *strategy* rather than the
 /// constant. The cap is still 32; what changed is which partners a saturated
 /// bucket pairs — and that moves every reported number on periodic content, so
 /// a run before this change and a run after it are not comparable measurements
-/// and must not meet at an equal regime.
+/// and must not meet at an equal regime. It has now moved twice: `sat32-mid`
+/// was the crossing rule that unfroze contiguous repetition, and
+/// `sat32-region100k` is the region alignment that unfroze interrupted
+/// repetition, carrying [`REGION_PAIR_BUDGET`] because that constant decides
+/// where the region walk stops and therefore what the numbers are.
 ///
 /// It carries the location change too, which arrived in the same revision:
 /// `ResultScope` is inside `ResultDigestInput`, so filling in a path and a line
 /// span moves every per-result digest this engine produces even where the number
 /// is unchanged. One regime move for both, because they ship together and no
 /// build exists with one and not the other.
-pub const ALGORITHM: &str = "rabin-karp+sat32-mid";
+pub const ALGORITHM: &str = "rabin-karp+sat32-region100k";
 
 /// Rolling-hash base. An odd constant, so multiplication is invertible modulo
 /// 2^64 and the low bits are not thrown away.

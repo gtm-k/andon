@@ -25,7 +25,9 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::fingerprint::{self, MIN_CLONE_TOKENS, SATURATED_OCCURRENCES, WINDOW_TOKENS};
+use crate::fingerprint::{
+    self, MIN_CLONE_TOKENS, REGION_PAIR_BUDGET, SATURATED_OCCURRENCES, WINDOW_TOKENS,
+};
 use crate::index::Index;
 
 /// One side of a clone.
@@ -87,6 +89,23 @@ pub struct CloneReport {
     pub duplicated_span_by_path: BTreeMap<String, LineRange>,
     /// Tokens in the measured set, per path.
     pub tokens_by_path: BTreeMap<String, u32>,
+    /// Paths whose duplication was searched with part of the candidate set
+    /// never enumerated.
+    ///
+    /// The saturation cap pairs an occurrence with a bounded set of partners
+    /// rather than with all of them, and [`bounded_partners`] derives that set
+    /// from the *regions* the repetition falls into — which costs occurrences
+    /// times regions. Above `REGION_PAIR_BUDGET` the region list is sampled
+    /// instead of walked, and a sampled search is one that did not look
+    /// everywhere. Every result over a path in this set is reported `partial`
+    /// rather than `complete`: the number is still the union of what was
+    /// confirmed, and what stops is the claim that it is the whole answer.
+    ///
+    /// Empty on ordinary content, and on repetitive content whose regions the
+    /// budget covers — which is the point. A caveat that arrived on every
+    /// generated file would say nothing about the one where the search really
+    /// was cut short.
+    pub truncated_paths: BTreeSet<String>,
 }
 
 /// A 1-based inclusive range of lines.
@@ -167,6 +186,20 @@ struct Occurrence {
 /// Paths absent from the index — a language with no grammar here, or a file
 /// shorter than one window — contribute nothing and are simply not represented.
 pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
+    detect_with_cap(index, paths, SATURATED_OCCURRENCES)
+}
+
+/// [`detect`], with the saturation cap supplied rather than taken from
+/// [`SATURATED_OCCURRENCES`].
+///
+/// Exists so the oracle is runnable rather than remembered. Every exact value in
+/// `tests/periodic_saturation.rs` used to be a number somebody measured once
+/// against a locally-edited constant and pasted into an assertion, which is a
+/// disclosure that decays silently: the residual the registry publishes is a
+/// ratio between the capped answer and the uncapped one, and nothing recomputed
+/// it. Passing `usize::MAX` here runs the pairwise expansion the cap replaces,
+/// so a test can assert the two answers against each other on any shape.
+pub fn detect_with_cap(index: &Index, paths: &[String], saturation_cap: usize) -> CloneReport {
     // Sorted, deduplicated, and restricted to what the index actually holds:
     // the traversal order below is the report order, so it has to be ours
     // rather than the caller's.
@@ -203,6 +236,8 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
     // Keyed by the shared sequence, so two fragments land in one group exactly
     // when they are the same code.
     let mut groups: BTreeMap<GroupKey, BTreeSet<Placement>> = BTreeMap::new();
+    // Files that took part in a bucket whose region enumeration was sampled.
+    let mut truncated_files: BTreeSet<u32> = BTreeSet::new();
 
     for occurrences in postings.values() {
         if occurrences.len() < 2 {
@@ -212,14 +247,33 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
         // partners instead of with all of them. See `bounded_partners` for
         // which ones and why, and `fingerprint::SATURATED_OCCURRENCES` for the
         // cost this is buying and the wrong number the previous rule produced.
-        let saturated = occurrences.len() > SATURATED_OCCURRENCES;
+        let saturated = occurrences.len() > saturation_cap;
+        let runs = if saturated {
+            Runs::of(occurrences)
+        } else {
+            Runs::default()
+        };
+        // Laying every region against every occurrence is what makes the
+        // answer over interrupted repetition right, and it costs occurrences
+        // times regions. Above the budget the region list is sampled instead —
+        // the one place this pass knows it did not look everywhere — so the
+        // files it touched are recorded and reported `partial`, rather than a
+        // sampled search being handed on as a finished one.
+        let truncated = saturated && runs.work(occurrences) > REGION_PAIR_BUDGET;
+        if truncated {
+            for occurrence in occurrences {
+                truncated_files.insert(occurrence.file);
+            }
+        }
         for (i, a) in occurrences.iter().enumerate() {
             let rest = &occurrences[i + 1..];
             let partners: Cow<'_, [Occurrence]> = if saturated {
                 Cow::Owned(bounded_partners(
-                    a,
-                    rest,
+                    occurrences,
+                    i,
                     symbols[a.file as usize].len() as u32,
+                    &runs,
+                    truncated,
                 ))
             } else {
                 Cow::Borrowed(rest)
@@ -389,6 +443,9 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
             );
         }
     }
+    for file in truncated_files {
+        report.truncated_paths.insert(files[file as usize].clone());
+    }
     report
 }
 
@@ -456,8 +513,171 @@ fn longest_run(values: &BTreeSet<u32>) -> Option<(u32, u32)> {
 /// distance in one file, and another file ends it — plus two binary searches,
 /// and at most three extensions where an uncapped bucket would do one per
 /// remaining occurrence.
-fn bounded_partners(a: &Occurrence, rest: &[Occurrence], tokens_in_file: u32) -> Vec<Occurrence> {
-    let mut chosen: Vec<Occurrence> = Vec::with_capacity(3);
+/// One repeated window hash, split into the stretches of the file it repeats in.
+///
+/// # Why regions, and not one periodic block
+///
+/// A saturated bucket is a window that occurs everywhere, and "everywhere" is
+/// rarely one place. `export const a = [600 rows]`, a helper, `const b = [300
+/// rows]`, the same helper, `const c = [300 rows]` is three stretches of one
+/// repetition with two identical interruptions — and the previous rule, nearest
+/// usable partner plus the two occurrences bracketing the half-file crossing,
+/// was derived for a file where the repetition is contiguous. On that file it
+/// lost the middle: 5499 of 7333 tokens reported, a quarter of the file missed
+/// and stamped `complete`, and a longest clone of 1805 where the answer is
+/// 1863. Splitting the bucket at its own gaps is what makes those boundaries
+/// visible to the pairing at all.
+#[derive(Debug, Default)]
+struct Runs {
+    /// `(first index, last index)` into the bucket, one per region, in order.
+    spans: Vec<(usize, usize)>,
+    /// The region each occurrence belongs to.
+    region_of: Vec<usize>,
+    /// The tightest spacing anywhere in the bucket — the repetition's own
+    /// period, and therefore the widest gap a region may have inside it.
+    stride: u32,
+}
+
+impl Runs {
+    fn of(occurrences: &[Occurrence]) -> Runs {
+        let stride = occurrences
+            .windows(2)
+            .filter(|w| w[0].file == w[1].file)
+            .map(|w| w[1].window - w[0].window)
+            .min()
+            .unwrap_or(0);
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        let mut region_of = Vec::with_capacity(occurrences.len());
+        for (i, o) in occurrences.iter().enumerate() {
+            let continues = i > 0
+                && occurrences[i - 1].file == o.file
+                && o.window - occurrences[i - 1].window <= stride;
+            if continues {
+                spans
+                    .last_mut()
+                    .expect("the first occurrence opens a region")
+                    .1 = i;
+            } else {
+                spans.push((i, i));
+            }
+            region_of.push(spans.len() - 1);
+        }
+        Runs {
+            spans,
+            region_of,
+            stride,
+        }
+    }
+
+    /// What laying every region against every occurrence would cost.
+    ///
+    /// Per file and summed, and over the regions *after* each occurrence rather
+    /// than all of them. Both narrowings are the difference between costing
+    /// what the walk does and costing something it does not:
+    ///
+    /// - the alignment is a token offset and means nothing across a file
+    ///   boundary, so the walk never leaves `a`'s own file. Counting the whole
+    ///   bucket would have called a helper copied into five hundred files too
+    ///   expensive to search.
+    /// - a file whose repetition is one unbroken region has no later region to
+    ///   be laid against and costs nothing at all here. Counting it as
+    ///   `occurrences x 1` reported 200,000 identical lines `partial` — the
+    ///   plainest generated file there is, answered exactly, carrying a caveat
+    ///   about a search that never happened.
+    fn work(&self, occurrences: &[Occurrence]) -> usize {
+        let mut total = 0usize;
+        let mut file: Option<u32> = None;
+        let mut regions = 0usize;
+        let mut members = 0usize;
+        let close = |regions: usize, members: usize, total: usize| {
+            total.saturating_add(members.saturating_mul(regions.saturating_sub(1)))
+        };
+        for &(first, last) in &self.spans {
+            if Some(occurrences[first].file) != file {
+                total = close(regions, members, total);
+                file = Some(occurrences[first].file);
+                regions = 0;
+                members = 0;
+            }
+            regions += 1;
+            members += last - first + 1;
+        }
+        close(regions, members, total)
+    }
+
+    fn members<'a>(&self, occurrences: &'a [Occurrence], region: usize) -> &'a [Occurrence] {
+        let (first, last) = self.spans[region];
+        &occurrences[first..=last]
+    }
+
+    /// The token just past a region.
+    ///
+    /// Derived rather than known: the last occurrence *inside* a region is one
+    /// whose whole window fits inside it, so the region runs on for a window
+    /// past that, and for up to one period more before the next occurrence
+    /// would have started. Both terms are load-bearing — without them the
+    /// crossing landed 12 tokens short on 300 rows followed by a helper, and
+    /// the longest clone came back 888 where the answer is 900. The estimate
+    /// only aims [`bracket`], which takes the occurrences on both sides of
+    /// where it aims, so an error under one period costs nothing.
+    fn end_of(&self, occurrences: &[Occurrence], region: usize) -> u32 {
+        let (_, last) = self.spans[region];
+        occurrences[last].window + WINDOW_TOKENS + self.stride.saturating_sub(1)
+    }
+}
+
+/// The partners one occurrence of a saturated hash is paired with.
+///
+/// # Three rules, because a reportable match is maximized in three places
+///
+/// A same-file pair is reported at `min(extend, lag)` — the overlap rule in
+/// [`detect`] caps a self-clone at its own lag, or the two halves share tokens
+/// and one run of repetition is counted twice. The length therefore rises with
+/// the lag while the lag binds and falls once the content does, and each rule
+/// below is a place that trade-off turns over:
+///
+/// - the **nearest usable** partner, the shortest reportable lag. It is what
+///   finds a helper copied into a hundred files, because a partner in another
+///   file stops the scan immediately; and inside one file it is the tightest
+///   repetition the floor admits.
+/// - the occurrences **bracketing a crossing**, for a match that stays inside
+///   one region. `extend` cannot run past the end of the later copy, so the two
+///   terms cross halfway between `a` and that end. Taken against the end of
+///   `a`'s own region *and* against the end of the file, because a match that
+///   stops at the region boundary is bounded by the first and one that runs on
+///   past it by the second.
+/// - the occurrences **aligning `a` with each later region**, for a match that
+///   crosses a boundary. Two stretches of the same repetition lie against each
+///   other in two ways — heads together and tails together — and which one
+///   produces the longer match depends on which stretch is shorter. Both are
+///   generated: 40 rows, a helper, then 100 rows has its longest clone at the
+///   tail alignment, 543 tokens beginning 60 rows into the second table, while
+///   600/300/300 has its 1863-token clone at the head alignment.
+///
+/// The rule this replaces had the first two and not the third, and the third is
+/// the whole of the repair. Without it nothing is ever laid across an
+/// interruption: the coverage union lost a quarter of a three-table file, and
+/// `largest-clone-tokens` froze at 1794 on a file whose longest clone grows
+/// without bound — the original defect's own signature on a new shape.
+///
+/// # What it costs, and what happens when that is too much
+///
+/// One forward scan for the nearest, two binary searches per crossing, and four
+/// per later region. The region term is `occurrences x regions` over the
+/// bucket, which content bounds and construction does not — so `truncated` says
+/// the budget was reached and only the next region is laid against `a`. That is
+/// the answer this engine reports as `partial`; see
+/// [`CloneReport::truncated_paths`].
+fn bounded_partners(
+    occurrences: &[Occurrence],
+    index: usize,
+    tokens_in_file: u32,
+    runs: &Runs,
+    truncated: bool,
+) -> Vec<Occurrence> {
+    let a = &occurrences[index];
+    let rest = &occurrences[index + 1..];
+    let mut chosen: Vec<Occurrence> = Vec::new();
 
     // Nearest *usable*, not nearest, and the distinction was worth two wrong
     // attempts. In a periodic region the following occurrences are one period
@@ -472,26 +692,62 @@ fn bounded_partners(a: &Occurrence, rest: &[Occurrence], tokens_in_file: u32) ->
         chosen.push(rest[first]);
     }
 
-    // `rest` is sorted by `(file, window)` and begins at `a`'s own file, so the
-    // same-file partners are the prefix up to the first foreign file.
-    let same_file = &rest[..rest.partition_point(|b| b.file == a.file)];
-    if !same_file.is_empty() {
-        let crossing = a.window + tokens_in_file.saturating_sub(a.window) / 2;
-        let at = same_file.partition_point(|b| b.window < crossing);
-        if at > 0 {
-            chosen.push(same_file[at - 1]);
+    let mine = runs.region_of[index];
+    let head_of_mine = runs.members(occurrences, mine)[0].window;
+    let end_of_mine = runs.end_of(occurrences, mine);
+    let regions = mine + 1..runs.spans.len();
+    for region in regions.take(if truncated { 1 } else { usize::MAX }) {
+        let members = runs.members(occurrences, region);
+        if members[0].file != a.file {
+            // A crossing and an alignment are both token offsets in `a`'s file
+            // and say nothing about another one. Regions are in `(file,
+            // window)` order, so the first foreign one ends the walk — and
+            // ending it is what keeps this bounded: pairing every occurrence
+            // with the head of the next file's region turned two copies of a
+            // 5000-deep nested literal from 173 ms into 16 s, because that
+            // pair is a seed by construction and extends the length of the
+            // file every time. What crosses files here is the nearest usable
+            // partner above, as it was before regions existed.
+            break;
         }
-        if at < same_file.len() {
-            chosen.push(same_file[at]);
-        }
+        let head = members[0].window + (a.window - head_of_mine);
+        let tail = runs
+            .end_of(occurrences, region)
+            .saturating_sub(end_of_mine.saturating_sub(a.window));
+        bracket(members, head, &mut chosen);
+        bracket(members, tail, &mut chosen);
     }
 
-    // Sorted and deduplicated so the partner set — and therefore the group
-    // order, and therefore the digests taken over it — does not depend on which
-    // rule proposed a placement first.
+    let same_file = &rest[..rest.partition_point(|b| b.file == a.file)];
+    for limit in [tokens_in_file, end_of_mine] {
+        let crossing = a.window + limit.saturating_sub(a.window) / 2;
+        bracket(same_file, crossing, &mut chosen);
+    }
+
+    // Forward-only, sorted and deduplicated, so the partner set — and therefore
+    // the group order, and therefore the digests taken over it — does not
+    // depend on which rule proposed a placement first. The forward filter is
+    // what keeps an alignment landing behind `a` from turning the pair round
+    // and reporting one clone from both of its ends.
+    chosen.retain(|b| b > a);
     chosen.sort_unstable();
     chosen.dedup();
     chosen
+}
+
+/// The occurrences on either side of `at`, appended to `chosen`.
+///
+/// Both, because the occurrence list is discrete and an aim generally falls
+/// between two of them — with only the lower of the pair, 37 identical lines
+/// report 216 of 222 tokens instead of 222.
+fn bracket(sorted: &[Occurrence], at: u32, chosen: &mut Vec<Occurrence>) {
+    let index = sorted.partition_point(|b| b.window < at);
+    if index > 0 {
+        chosen.push(sorted[index - 1]);
+    }
+    if index < sorted.len() {
+        chosen.push(sorted[index]);
+    }
 }
 
 /// Whether the window pair one position earlier also matches — the test that

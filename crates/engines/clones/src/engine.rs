@@ -577,6 +577,20 @@ impl MeasureEngine for ClonesEngine {
             }
         }
 
+        // A bucket whose region walk hit `REGION_PAIR_BUDGET` was searched with
+        // part of its candidate set never enumerated, and every change-scoped
+        // number is taken over the whole set — so one sampled bucket makes all
+        // four of them answers over less than they claim. Applied after the
+        // parse demotion and never above it: `partial` lowers and does not
+        // raise, so a set that was both unreadable and sampled keeps the
+        // stronger caveat and gains this one.
+        if !self.report.truncated_paths.is_empty() {
+            let caveat = sampled_caveat(&self.report.truncated_paths);
+            for result in &mut results {
+                demote_to_partial(result, caveat.clone());
+            }
+        }
+
         // Per file, in path order — `tokens_by_path` is a `BTreeMap`, so the
         // order of these results is the sorted path order on every machine.
         for path in self.report.tokens_by_path.keys() {
@@ -618,6 +632,14 @@ impl MeasureEngine for ClonesEngine {
                 .filter(|health| health.is_degraded())
             {
                 parse_health::demote(&mut result, health);
+            }
+            // Per file rather than for the whole set, because a per-file count
+            // is a union over the matches confirmed *in that file* and a bucket
+            // this engine sampled names the files it touched. Marking a file no
+            // sampled bucket reached would be claiming a limitation the number
+            // does not have.
+            if self.report.truncated_paths.contains(path) {
+                demote_to_partial(&mut result, sampled_caveat(&self.report.truncated_paths));
             }
             results.push(result);
         }
@@ -668,6 +690,49 @@ impl ClonesEngine {
                 cache: CacheState::Cold,
             },
         }
+    }
+}
+
+/// The honesty line a result carries when a saturated bucket was sampled.
+///
+/// Names the files, for the same reason the parse caveat names how many of how
+/// many: "one generated table was too repetitive to search exhaustively" and
+/// "every file in this change was" are the same `partial` to the digest and
+/// very different things to whoever has to decide what the duplication number
+/// is worth.
+fn sampled_caveat(paths: &std::collections::BTreeSet<String>) -> String {
+    format!(
+        "the whole of the duplication in {}: repetition dense enough there to \
+         exceed this engine's pairing budget was searched by sampling the \
+         regions rather than by walking them, so this number is the union of \
+         what was confirmed and is a lower bound on what is there",
+        paths.iter().cloned().collect::<Vec<_>>().join(", ")
+    )
+}
+
+/// Mark a result as an answer over part of its subject.
+///
+/// The same demotion `andon_engine_tamper` applies to a detector that read its
+/// own subject and could not rank it, for the same reason and with the same
+/// three-way visibility: `Completeness::ParseDegraded` would be a false
+/// statement here — the parser read every token — and `Partial` is the nearest
+/// true value in P0's vocabulary.
+///
+/// Lowers and never raises, so a result that arrived weaker for another reason
+/// keeps the weaker value; and caps severity through the same public ceiling
+/// the parse path uses, so the two demotions cannot disagree about what an
+/// incomplete answer is allowed to do.
+fn demote_to_partial(result: &mut MeasurementResult, caveat: String) {
+    if parse_health::weakness_rank(Completeness::Partial)
+        < parse_health::weakness_rank(result.completeness)
+    {
+        result.completeness = Completeness::Partial;
+    }
+    result.severity = result
+        .severity
+        .min(parse_health::severity_ceiling(Completeness::Partial));
+    if !result.evidence.does_not_predict.contains(&caveat) {
+        result.evidence.does_not_predict.insert(0, caveat);
     }
 }
 
@@ -856,6 +921,97 @@ mod tests {
                 result.evidence.does_not_predict
             );
         }
+    }
+
+    #[test]
+    fn a_number_over_a_sampled_bucket_says_so() {
+        // The other way this engine can answer over less than it claims, and
+        // the parser is not involved in it. A file alternating a short row run
+        // with an identical helper a hundred times puts four thousand
+        // occurrences of one window hash against a hundred regions, which is
+        // four times the pairing budget — so the region list is sampled, and a
+        // sampled search is not a search of everywhere.
+        //
+        // What must not happen is the answer arriving as `complete`. That is
+        // the shape of the defect this whole file's saturation work exists
+        // about: a number that is a lower bound, stamped as the whole one.
+        let mut source = String::from("export const t = [\n");
+        for _ in 0..100 {
+            let rows: Vec<String> = (0..20).map(|i| format!("  [{i}, {}],", i * 3)).collect();
+            source.push_str(&rows.join("\n"));
+            source.push('\n');
+            source.push_str(&block("helper"));
+        }
+        source.push_str("];\n");
+        let engine = ClonesEngine::for_files(
+            vec![
+                input("generated.ts", &source),
+                input("plain.ts", "const x = 1;\n"),
+            ],
+            None,
+        )
+        .unwrap();
+        let results = run_engine(&engine, &context()).unwrap();
+
+        for result in &results {
+            let sampled = result.scope.path.as_deref() != Some("plain.ts");
+            if sampled {
+                assert_eq!(
+                    result.completeness,
+                    Completeness::Partial,
+                    "{} over a sampled bucket",
+                    result.metric_id
+                );
+                assert!(
+                    !result.severity.is_med_plus(),
+                    "{} must not stop the line on an answer it cannot finish",
+                    result.metric_id
+                );
+                assert!(
+                    result.evidence.does_not_predict[0].contains("generated.ts"),
+                    "{}: the caveat has to name the file, or a reader cannot \
+                     tell which number to distrust: {:?}",
+                    result.metric_id,
+                    result.evidence.does_not_predict
+                );
+            } else {
+                // Demotion follows the bucket, not the run: a file no sampled
+                // bucket reached keeps its full-confidence claim.
+                assert_eq!(
+                    result.completeness,
+                    Completeness::Complete,
+                    "{} on a file the sampling never touched",
+                    result.metric_id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_ordinary_generated_table_is_not_demoted_for_being_repetitive() {
+        // The counterweight. The cap engages on any literal table worth the
+        // name, and if `partial` arrived with it then every generated file in
+        // every repository would carry a caveat, the caveat would mean nothing,
+        // and thirty-three copies of a helper would buy a severity cap that
+        // thirty-two do not. Only a bucket the engine actually sampled is
+        // demoted.
+        let rows: Vec<String> = (0..3000).map(|i| format!("  [{i}, {}],", i * i)).collect();
+        let source = format!(
+            "export function f(x: number) {{\n  const t = [\n{}\n  ];\n  return t[x];\n}}\n",
+            rows.join("\n")
+        );
+        let engine = ClonesEngine::for_files(vec![input("table.ts", &source)], None).unwrap();
+        let results = run_engine(&engine, &context()).unwrap();
+        assert!(
+            results
+                .iter()
+                .all(|r| r.completeness == Completeness::Complete),
+            "{:?}",
+            results
+                .iter()
+                .map(|r| (&r.metric_id, r.completeness))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
