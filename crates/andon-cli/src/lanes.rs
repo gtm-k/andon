@@ -8,11 +8,17 @@
 //! async lane.** This build has only the fast one, and every result it produces
 //! is stamped `lane: fast`.
 //!
-//! So `wait` reads the last record and reports what is actually outstanding,
-//! which today is nothing. It does not pretend to wait, it does not sleep for
-//! effect, and it does not report a completed async job that never ran — the
-//! whole thesis of this tool is that a measurement never claims more than it
-//! did, and a subcommand that faked a lane would be the first thing to break it.
+//! So `wait` reads the last record and reports what is actually outstanding. It
+//! does not pretend to wait, it does not sleep for effect, and it does not
+//! report a completed async job that never ran — the whole thesis of this tool
+//! is that a measurement never claims more than it did, and a subcommand that
+//! faked a lane would be the first thing to break it.
+//!
+//! **The lane is not the only thing a measurement can be waiting on.** This said
+//! "today the answer is nothing" and printed it unconditionally, including over
+//! an escalation — where the answer is a person, and where this same command
+//! exited 3 to say so. A sentence and an exit code disagreeing is worst in the
+//! one command somebody runs to find out whether they can move on.
 //!
 //! The answer is derived from the record rather than hardcoded: a result stamped
 //! `lane: async` would be reported as outstanding the day one exists, without an
@@ -20,7 +26,7 @@
 
 use std::fmt::Write as _;
 
-use andon_core::schema::enums::{Completeness, Lane};
+use andon_core::schema::enums::{Completeness, Lane, Verdict};
 use andon_core::schema::payload::MeasurementRecord;
 
 /// What the async lane owes this record.
@@ -90,13 +96,39 @@ pub fn wait(record: &MeasurementRecord) -> String {
             "  lanes    every one of the {} result(s) in this record came from the fast lane.",
             record.results.len()
         );
-        let _ = writeln!(
-            out,
-            "\n  Nothing is outstanding. This build ships no async lane: mutation runs and full \
-             test suites execute repository code, which needs the sandbox, and the sandbox is \
-             not in this binary. When it is, results from it will be stamped `lane: async` and \
-             this command will report them."
-        );
+        // THE ASYNC LANE IS NOT THE ONLY THING A MEASUREMENT CAN BE WAITING ON.
+        //
+        // `wait` answers "what does this measurement still owe?", and on an
+        // escalation the answer is a person. It printed "Nothing is
+        // outstanding." and exited 3 — the code whose documented meaning is
+        // *the loop is over; a human decides* — so the sentence and the exit
+        // code disagreed, in the one command somebody runs to find out whether
+        // they can move on.
+        //
+        // The exit code is right and the sentence was wrong, so the sentence
+        // changed. `ledger ack` is what clears it, and it is named here because
+        // an escalation with no stated way out is the dead end PREMORTEM A4
+        // describes.
+        if record.verdict.iteration.escalated || record.verdict.verdict == Verdict::EscalateToHuman
+        {
+            let _ = writeln!(
+                out,
+                "\n  A HUMAN IS OUTSTANDING. This measurement escalated on pass {} of a cap of \
+                 {}, which means the agent must stop trying and somebody has to look. Nothing \
+                 else is: this build ships no async lane, so every result above came from the \
+                 fast one.\n  \
+                 `andon ledger ack` records that a human looked, and clears the counter.",
+                record.verdict.iteration.count, record.verdict.iteration.cap
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "\n  Nothing is outstanding. This build ships no async lane: mutation runs and \
+                 full test suites execute repository code, which needs the sandbox, and the \
+                 sandbox is not in this binary. When it is, results from it will be stamped \
+                 `lane: async` and this command will report them."
+            );
+        }
     } else {
         let _ = writeln!(
             out,
@@ -175,6 +207,44 @@ mod tests {
     fn a_fast_only_record_reports_nothing_outstanding() {
         let text = wait(&record(vec![sample_result()]));
         assert!(text.contains("Nothing is outstanding"), "{text}");
+    }
+
+    #[test]
+    fn an_escalation_is_outstanding_and_the_sentence_says_so() {
+        // The command printed "Nothing is outstanding." and exited 3 — the code
+        // whose documented meaning is *the loop is over; a human decides*. The
+        // sentence and the exit code disagreed, in the one command somebody runs
+        // to find out whether they can move on.
+        //
+        // The exit code was right, so the sentence changed. And an escalation
+        // with no stated way out is the dead end PREMORTEM A4 describes, so the
+        // command that clears it is named.
+        let mut record = record(vec![sample_result()]);
+        record.verdict.verdict = andon_core::schema::enums::Verdict::EscalateToHuman;
+        record.verdict.iteration = andon_core::schema::payload::IterationState {
+            count: 4,
+            cap: 3,
+            escalated: true,
+        };
+        let text = wait(&record);
+        assert!(
+            !text.contains("Nothing is outstanding"),
+            "an escalation was reported as nothing outstanding:\n{text}"
+        );
+        assert!(text.contains("pass 4 of a cap of 3"), "{text}");
+        assert!(
+            text.contains("ledger ack"),
+            "the escalation is reported with no way out of it:\n{text}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_record_still_reports_nothing_outstanding() {
+        // The other half: the new sentence must not fire on the records it is
+        // not about.
+        let text = wait(&record(vec![sample_result()]));
+        assert!(text.contains("Nothing is outstanding"), "{text}");
+        assert!(!text.contains("A HUMAN IS OUTSTANDING"), "{text}");
     }
 
     #[test]
