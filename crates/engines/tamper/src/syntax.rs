@@ -40,9 +40,16 @@ use tree_sitter::{Node, Parser, Tree};
 /// tamper *signal* — `Classification::tamper_signals` is only ever
 /// `base-fabrication`, and a digest disagreement adds nothing to it — and that
 /// makes the outcome no gentler, because on this axis the attestation is the
-/// accusation. An agent measuring on this build against CI attesting on the
-/// last one would earn it for a version skew, which is PREMORTEM S4 and the
-/// same failure the grammar pins below ride here to prevent.
+/// accusation.
+///
+/// Which is the counterfactual, and it is worth stating as one. *Without* the
+/// move to `4`, an agent measuring on this build and CI attesting on the last
+/// would meet at an equal regime carrying digests that disagree, and step 2
+/// would pass them through to the digest compare: a version skew wearing the
+/// shape of divergence. *With* it the regimes differ, `classify` returns
+/// `unwitnessed-version-skew` at step 2, and no digest is ever looked at. That
+/// is PREMORTEM S4, and the same failure the grammar pins below ride here to
+/// prevent.
 ///
 /// `DETECTOR_SET_REVISION` is deliberately not bumped alongside either: there
 /// are still exactly seven detectors, and that constant answers which ones
