@@ -228,9 +228,18 @@ pub enum ResolveError {
         kind: &'static str,
     },
     /// A rebase, merge, bisect, or cherry-pick is half-finished.
+    ///
+    /// The remedy is in the message because there is no flag that works from
+    /// here. This check runs before anything else in
+    /// [`ResolvedRange::resolve`], so an explicit `--base`/`--head` pair refuses
+    /// too, and `--last-merged` refuses as well — a reader told only what is
+    /// wrong will go looking for the option that gets round it, and there isn't
+    /// one. Nor is "commit the change" actionable with conflict markers on disk.
     #[error(
         "a {operation} is in progress; the working tree is a partial result, \
-         not a change worth measuring"
+         not a change worth measuring. {remedy}, then measure — no option to this tool \
+         measures a half-finished {operation}, because there is no change there to describe",
+        remedy = remedy_for(.operation)
     )]
     OperationInProgress {
         /// Which operation git reports as unfinished.
@@ -450,6 +459,33 @@ fn expect_oid(text: &str, rev: &str) -> Result<String, ResolveError> {
         Err(ResolveError::UnknownRevision {
             rev: rev.to_string(),
         })
+    }
+}
+
+/// How to get out of a half-finished operation, per operation.
+///
+/// Spelled out rather than assembled from the operation name, because
+/// assembling it gets bisect wrong: every other operation here ends with
+/// `--continue` or `--abort` and bisect ends with `git bisect reset`. A remedy
+/// that names a command git does not have is worse than no remedy — the reader
+/// runs it, it fails, and now they distrust the rest of the message too.
+fn remedy_for(operation: &str) -> &'static str {
+    match operation {
+        "rebase" => "Finish it or abort it (`git rebase --continue` or `git rebase --abort`)",
+        "rebase or am" => {
+            "Finish it or abort it (`git rebase --continue` / `--abort`, or `git am \
+             --continue` / `--abort`, whichever this is)"
+        }
+        "cherry-pick" => {
+            "Finish it or abort it (`git cherry-pick --continue` or `git cherry-pick --abort`)"
+        }
+        "revert" => "Finish it or abort it (`git revert --continue` or `git revert --abort`)",
+        "merge" => "Finish it or abort it (`git merge --continue` or `git merge --abort`)",
+        "bisect" => "End it (`git bisect reset`)",
+        // Unreachable from `in_progress_operation`'s fixed table, and stated
+        // rather than defaulted so that adding a row without adding a remedy
+        // produces vague advice rather than wrong advice.
+        _ => "Finish or abort it",
     }
 }
 

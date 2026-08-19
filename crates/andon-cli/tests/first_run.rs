@@ -1335,3 +1335,89 @@ fn a_repository_defined_filter_is_never_executed() {
         "the filter was neutralized and nothing said so:\n{rendered}"
     );
 }
+
+#[test]
+fn a_half_finished_operation_says_so_on_the_default_path() {
+    // The detector for this is complete and correct in
+    // `andon_core::git::resolve` and fires at the top of every resolution. The
+    // default path could not reach it: the base ladder took `Ok(range)` or
+    // `continue`, so every typed error — including this one — was swallowed as
+    // "that candidate does not apply", the ladder exhausted, and what got
+    // printed instead was a refusal about uncommitted work claiming this build
+    // measures committed content only, plus a suggestion of `--last-merged`
+    // that the next command refuses with the error thrown away here.
+    //
+    // A true statement discarded and a false one printed in its place.
+    let repo = stranger_repo();
+    let root = repo.path();
+    let git = Git::open(root).expect("a repository");
+
+    // A conflicting merge, which is the state an agent lands in most often.
+    let base = git
+        .cmd(["rev-parse", "HEAD"])
+        .text()
+        .expect("rev-parse")
+        .trim()
+        .to_string();
+    git.cmd(["checkout", "--quiet", "-b", "side", &base])
+        .output()
+        .expect("branch");
+    std::fs::write(root.join("src").join("greet.ts"), b"export const x = 1;\n").expect("write");
+    git.cmd(["commit", "--quiet", "--all", "-m", "side"])
+        .output()
+        .expect("commit");
+    git.cmd(["checkout", "--quiet", "-"])
+        .output()
+        .expect("checkout back");
+    std::fs::write(root.join("src").join("greet.ts"), b"export const x = 2;\n").expect("write");
+    git.cmd(["commit", "--quiet", "--all", "-m", "ours"])
+        .output()
+        .expect("commit");
+    // Expected to fail: the conflict is the fixture.
+    let _ = git.cmd(["merge", "--quiet", "side"]).output();
+    assert!(
+        git.facts().git_dir.join("MERGE_HEAD").exists(),
+        "the merge did not conflict, so this test asserts nothing"
+    );
+
+    // No flags: the path a person or an agent is actually on.
+    let stderr =
+        |output: &std::process::Output| String::from_utf8_lossy(&output.stderr).into_owned();
+    let default = run(&[
+        "measure",
+        "--repo",
+        root.to_str().expect("utf-8"),
+        "--no-color",
+    ]);
+    let said = stderr(&default);
+    assert!(
+        said.contains("merge is in progress"),
+        "the default path did not name the half-finished operation:\n{said}"
+    );
+    assert!(
+        !said.contains("measures committed content only"),
+        "the refusal claimed this build cannot measure uncommitted content, which this same \
+         binary does:\n{said}"
+    );
+    // The remedy has to be one that works. `--last-merged` was suggested and
+    // refuses; the only true advice is to finish or abort.
+    assert!(
+        said.contains("--abort"),
+        "no remedy that works was offered:\n{said}"
+    );
+
+    // And the suggestion that used to be made is not made, because it does not
+    // work — which the same binary proves in the next two lines.
+    let last_merged = run(&[
+        "measure",
+        "--repo",
+        root.to_str().expect("utf-8"),
+        "--last-merged",
+        "--no-color",
+    ]);
+    assert!(
+        stderr(&last_merged).contains("merge is in progress"),
+        "`--last-merged` was still offered as a way out of a state it refuses"
+    );
+    assert!(!said.contains("--last-merged"), "{said}");
+}

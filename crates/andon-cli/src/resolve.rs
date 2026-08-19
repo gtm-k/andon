@@ -311,11 +311,29 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
         }
         tried.push(candidate);
         let base = Revision::merge_base(*candidate);
-        let Ok(range) = ResolvedRange::resolve(git, &base, &head) else {
+        let range = match ResolvedRange::resolve(git, &base, &head) {
+            Ok(range) => range,
             // A candidate that exists but shares no history — an unrelated
             // remote, a grafted branch. Not an error: the next candidate may be
             // the right one, and the failure is reported only if none is.
-            continue;
+            Err(ResolveError::NoMergeBase { .. }) => continue,
+            // EVERYTHING ELSE IS ABOUT THE REPOSITORY, NOT THE CANDIDATE.
+            //
+            // This arm used to be a `let ... else { continue }`, and the comment
+            // above described what it was meant to catch while the code caught
+            // every error there is. `OperationInProgress` is the one that made
+            // it visible: mid-merge, mid-rebase, mid-cherry-pick, the detector
+            // at the top of `ResolvedRange::resolve` fires correctly, the ladder
+            // swallowed it, and every candidate then failed the same way — so
+            // the ladder exhausted into a refusal about uncommitted work that
+            // suggested `--last-merged`, which the next command refuses with the
+            // typed error that was thrown away here. A true statement was
+            // discarded and a false one printed in its place.
+            //
+            // Trying the next candidate cannot help with any of these: they are
+            // facts about the repository, and the next candidate is in the same
+            // repository.
+            Err(other) => return Err(other.into()),
         };
         let compare_context = range.wire_context()?;
         let changed = ChangedSet::enumerate(git, &range)?;
