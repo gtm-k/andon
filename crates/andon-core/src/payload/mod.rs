@@ -132,7 +132,17 @@ pub enum AssemblyError {
         metric_id: String,
     },
     /// Two results share a `(metric_id, scope)` pair.
-    #[error("two results share the pairing key ('{metric_id}', {scope:?})")]
+    ///
+    /// The scope is spelled rather than dumped. `{scope:?}` printed a line of
+    /// Rust struct syntax — `ResultScope { kind: Function, path: Some(...),
+    /// blob_oid: Some(...), ... }` — at somebody who ran one command, and this
+    /// abort is reachable from an ordinary method chain, so it is an error a
+    /// real user meets rather than a corner a developer reads in a backtrace.
+    #[error(
+        "two results share the pairing key: '{metric_id}' at {}. \
+         A pairing key has to name one result, and this scope names two",
+        describe_scope(.scope)
+    )]
     DuplicateResult {
         /// The metric.
         metric_id: String,
@@ -508,6 +518,26 @@ impl Prepared {
             unreadable_paths: self.unreadable_paths,
         }
     }
+}
+
+/// A scope as a person reads it, for the one error that has to name one.
+///
+/// Not a general renderer: the CLI's `scope_label` writes prose for a report
+/// and the agent profile's `render_scope` writes to a byte budget, and a third
+/// caller of either would be reaching across a boundary for a string it does
+/// not want. This is short, has no budget, and exists so that an error message
+/// stops being Rust struct syntax.
+fn describe_scope(scope: &ResultScope) -> String {
+    let mut out = match (&scope.path, &scope.symbol) {
+        (Some(path), Some(symbol)) => format!("{path} {symbol}"),
+        (Some(path), None) => path.clone(),
+        (None, Some(symbol)) => symbol.clone(),
+        (None, None) => format!("{:?}", scope.kind).to_lowercase(),
+    };
+    if let Some(span) = &scope.line_span {
+        out.push_str(&format!(" (line {})", span.start));
+    }
+    out
 }
 
 /// Validate engine outputs and apply policy, stopping short of the verdict.
