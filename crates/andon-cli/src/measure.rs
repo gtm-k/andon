@@ -66,10 +66,11 @@ pub struct Request {
     pub no_fallback: bool,
     /// Measure the last merged change even when there is uncommitted work.
     ///
-    /// Uncommitted work is otherwise a refusal, because this build cannot seal a
-    /// measurement of bytes that have no commit OID and reporting a verdict
-    /// about *different* bytes is the worse answer. This flag is how a caller
-    /// says they meant the last merged change, having been told.
+    /// A dirty tree is otherwise measured as itself. This flag opts out of that
+    /// and asks about the committed history instead, which is a different
+    /// question about different bytes — so the record announces the
+    /// substitution, and the announcement says there is uncommitted work it is
+    /// not about.
     pub last_merged: bool,
     /// `--registry <dir>`, or `None` for the compiled-in registry.
     pub registry_dir: Option<PathBuf>,
@@ -290,8 +291,11 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
             if !resolution.uncommitted.is_empty() {
                 engine_notes.push(format!(
                     "{} path(s) have uncommitted content and are NOT described by this \
-                     measurement, which covers committed content only: {}. Commit them and \
-                     re-run to measure them.",
+                     measurement, which covers committed content only: {}.\n           \
+                     This measurement was pinned to a commit, which is why. Re-run without \
+                     `--head` (and without `--last-merged`) to measure the working tree \
+                     instead — that is a different measurement of different bytes, and it can \
+                     reach a different verdict.",
                     resolution.uncommitted.len(),
                     resolution.uncommitted.join(", ")
                 ));

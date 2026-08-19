@@ -138,43 +138,65 @@ pub enum ResolveFailure {
         /// The base candidates that resolved, in the order they were tried.
         tried: Vec<String>,
     },
-    /// There is uncommitted work, and this build cannot measure it.
+    /// There is uncommitted work, and this repository offers no working-tree
+    /// head to measure it as.
     ///
-    /// # Why this is a refusal and not a fallback
+    /// # What this used to be, and what it is now
     ///
-    /// This is the state the product exists for: an agent that has just written
-    /// a change and not committed it. Measuring the last merged change instead
-    /// and reporting `pass` is the worst available answer — the caller reads a
-    /// verdict about bytes that are not the ones they are asking about, and a
-    /// hook keyed on the exit code lets the change through.
+    /// It was the refusal for *every* dirty tree, on the grounds that a
+    /// measurement is sealed against a `(base, head)` commit pair and the
+    /// working tree has no commit OID. E22 answered that differently: the head
+    /// says what it **is** ([`HeadKind`]), an uncommitted head carries its
+    /// snapshot's content hash, and `crate::compare` refuses to compare it — so
+    /// the laundering path R2-4 exists to close stays shut without refusing to
+    /// look. An ordinary dirty tree is measured above.
     ///
-    /// The reason it cannot be measured is a contract, not an oversight.
-    /// `andon_core::git::resolve` refuses to build a `CompareContext` from a
-    /// dirty endpoint, because the working tree has no commit OID and writing
-    /// `HEAD`'s in its place produces a record that passes the verifier's
-    /// tuple check while describing bytes that were never committed — the
-    /// laundering path R2-4 exists to close, and false `divergent` verdicts on
-    /// honest work, which is PREMORTEM Story 1. Every result is sealed against
-    /// that context, so there is no arrangement of this crate that measures
-    /// uncommitted bytes into a record.
+    /// What is left here is the residue: the working-tree head produced no
+    /// changed set at all. A bare repository with no worktree to resolve, or a
+    /// snapshot git reported and then could not diff.
     ///
-    /// Staging does not help and the message does not suggest it: an index
-    /// endpoint is dirty too and errors identically.
+    /// The message said "this build measures committed content only" until it
+    /// was pointed out that the same binary, in the same session, prints
+    /// `→ your uncommitted working tree`. A refusal that contradicts the tool
+    /// it comes from is worse than a terse one.
+    ///
+    /// # Two ways in, and they need two sentences
+    ///
+    /// The common one is that the caller **pinned the head** — `--head HEAD` is
+    /// not the same request as omitting `--head`, and pinning it takes the
+    /// working tree out of the measurement by construction. The rare one is the
+    /// residue above. Saying "this repository does not offer a working-tree
+    /// head" to somebody who simply passed `--head` describes a repository they
+    /// do not have, which is the mistake this whole variant is a correction of.
     #[error(
-        "there is uncommitted work here ({}), and this build measures committed content \
-         only.\n  \
-         A measurement is sealed against a (base, head) commit pair, and the working tree has \
-         no commit OID — writing HEAD's in its place would describe bytes that were never \
-         committed, which is the failure the trust model exists to prevent. Staging does not \
-         change this.\n  \
-         What works now:  commit the change, then re-run `andon measure`.\n  \
-         Or, deliberately: `andon measure --last-merged` measures the last merged change \
-         instead and says so.",
-        summarize(.paths)
+        "there is uncommitted work here ({paths}), and it is not what was measured.\n  {why}\n  \
+         What works now:  {remedy}",
+        paths = summarize(.paths),
+        why = if *.head_pinned {
+            "You named `--head`, so the head is that commit and your working tree was never \
+             eligible — omitting `--head` is a different request, not the same one spelled out. \
+             Against that commit, every base candidate this repository offers leaves nothing to \
+             measure."
+        } else {
+            "An ordinary dirty tree IS measured by this build: the head becomes your working \
+             tree and the record says so. Reaching this message means that head produced no \
+             changed set at all — a bare repository with no worktree to resolve, or a snapshot \
+             git reported and then could not diff."
+        },
+        remedy = if *.head_pinned {
+            "re-run without `--head` to measure the working tree, or name a base: \
+             `andon measure --base <rev>`."
+        } else {
+            "commit the change, then re-run `andon measure`. Or, deliberately: \
+             `andon measure --last-merged` measures the last merged change instead and says so."
+        }
     )]
     UncommittedWork {
         /// Every uncommitted path, so the refusal names what it is about.
         paths: Vec<String>,
+        /// Whether the caller named `--head`, which is why the working tree was
+        /// not the head. Decides which of two true sentences the message gets.
+        head_pinned: bool,
     },
     /// Git refused.
     #[error(transparent)]
@@ -349,13 +371,17 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
         }
     }
 
-    // Reaching here with a dirty tree means the working-tree head produced no
-    // changed set at all — a bare repository with no worktree to resolve, or a
-    // snapshot git reported and then could not diff. The representation cannot
-    // describe those, so the refusal remains for them, and that is now the only
-    // thing it covers: an ordinary dirty tree is measured above.
+    // A dirty tree that got this far was never measured as itself. Two ways
+    // that happens, and the refusal has to say which: the caller pinned
+    // `--head`, so the working tree was not eligible, or the working-tree head
+    // produced no changed set at all — a bare repository with no worktree to
+    // resolve, or a snapshot git reported and then could not diff. An ordinary
+    // dirty tree is measured above.
     if !uncommitted.is_empty() && !request.last_merged {
-        return Err(ResolveFailure::UncommittedWork { paths: uncommitted });
+        return Err(ResolveFailure::UncommittedWork {
+            paths: uncommitted,
+            head_pinned: request.head.is_some(),
+        });
     }
 
     // Genuinely clean. This is the checkout PREMORTEM A1 is about — the stranger
@@ -511,10 +537,8 @@ fn last_merged_change(
             } else {
                 format!(
                     "there IS uncommitted work here ({}), and these numbers are not about \
-                     it. You asked for the last merged change; this build cannot measure \
-                     uncommitted bytes into a record, because a measurement is sealed \
-                     against a (base, head) commit pair and the working tree has no commit \
-                     OID.",
+                     it. You asked for the last merged change, which is what `--last-merged` \
+                     means; drop that flag to measure the working tree instead.",
                     summarize(uncommitted)
                 )
             },

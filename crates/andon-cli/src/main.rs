@@ -68,11 +68,14 @@ andon measure [OPTIONS]
   --base <REV>         base revision, or merge-base:<ref>
                        (default: the fork point against this repository's own
                         upstream, falling back to the last merged change)
-  --head <REV>         head revision (default: HEAD)
+  --head <REV>         head revision. Omitting it is NOT the same as passing
+                       HEAD: with uncommitted work in the tree, the default
+                       head is that working tree, and `--head HEAD` asks for
+                       the commit instead — a different measurement, which can
+                       reach a different verdict
   --no-fallback        refuse rather than measure the last merged change
-  --last-merged        measure the last merged change even when there is
-                       uncommitted work (which is otherwise a refusal, because
-                       this build cannot seal a measurement of uncommitted bytes)
+  --last-merged        measure the last merged change even when the tree is
+                       dirty, instead of measuring the working tree
   --registry <DIR>     load the evidence registry from a directory instead of
                        the copy compiled into this binary
   --self-measure       apply [self_measure] excluded_paths from .andon.toml
