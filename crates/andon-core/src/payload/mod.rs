@@ -328,14 +328,79 @@ impl Prepared {
     /// could not see everything must not clear the agent's budget the way a
     /// measurement that found nothing does. See
     /// [`crate::verdict::iteration::LoopOutcome`].
+    ///
+    /// # Why this does not read `completeness`
+    ///
+    /// It used to, and the reset was dead code in production because of it.
+    /// Record completeness is `parse_health::weakest`, and engines emit
+    /// per-result `unwitnessed` **by design** for honest absences — a `.png` has
+    /// no complexity, a repository with no coverage report has no diff coverage,
+    /// a file added in this change has no history. `Unwitnessed` is weakness-rank
+    /// 0, so one honest marker made the whole record `unwitnessed`, and the
+    /// reset branch required `Complete`. Measured across four real repositories:
+    /// **15 of 15 runs were `unwitnessed`**. The counter could therefore advance
+    /// and never reset, so on any branch living longer than a few attempts
+    /// escalation to a human stopped being earned and became guaranteed — which
+    /// is PREMORTEM S6, the anti-grinding mechanism inverting into a flood.
+    ///
+    /// **This is the E20 roll-up biting a second consumer**, and the fix is not
+    /// E20's rejected one. That move was to widen which completeness values a
+    /// gate accepts, and it fails for the reason recorded there: the roll-up
+    /// genuinely cannot tell an honest absence from an engine that could not run.
+    ///
+    /// What is different here is the *vantage point*. `compare::classify` sees a
+    /// [`MeasurementRecord`], which carries no `engine_failures` field — verified
+    /// against the schema in E20, and the reason the discrimination was
+    /// impossible there. [`Prepared`] holds `engine_failures` and every result,
+    /// so it can ask the question directly instead of inferring it from a
+    /// minimum: *did every engine answer, and did it answer over everything it
+    /// was asked to read?*
+    ///
+    /// - An engine that **could not run** is an unanswered question.
+    /// - A result over a **`parse-degraded`** view is an answer about part of a
+    ///   file, with the rest unread.
+    /// - A **`partial`** result is work that has not finished.
+    /// - An **`unwitnessed`** result is an *answer*: the engine ran, looked, and
+    ///   reported that the input does not exist. Nothing is outstanding.
+    ///
+    /// # The blinding hole this leaves, and why it is the right trade
+    ///
+    /// A change that deletes the coverage report turns findings into
+    /// `unwitnessed` markers, and the loop now treats that as finished. That is
+    /// real. It is also not what this counter defends: the module documentation
+    /// says so directly — the counter is *tool state, not a security boundary*,
+    /// its file is local and writable by whoever runs the tool, and deleting it
+    /// resets the count outright. Hardening the reset against a deliberate
+    /// blinding buys nothing when the cheaper move is `rm`. The mechanism
+    /// against dishonest work is the verifier and the tamper suite, and the
+    /// deletion stays loudly visible: the markers name their reason, and the
+    /// verdict carries `measurement-incomplete`.
+    ///
+    /// Weighed against a guaranteed escalation on every long-lived branch, which
+    /// fires on honest work every time, this is the trade PREMORTEM S6 asks for.
     pub fn loop_outcome(&self) -> LoopOutcome {
         if self.countable {
             LoopOutcome::Countable
-        } else if self.completeness == Completeness::Complete {
+        } else if self.every_question_was_answered() {
             LoopOutcome::Finished
         } else {
             LoopOutcome::Inconclusive
         }
+    }
+
+    /// Whether every engine answered, over everything it was asked to read.
+    ///
+    /// Deliberately not `completeness == Complete`: see [`Self::loop_outcome`].
+    /// An `unwitnessed` result is an answer; a failed engine, a half-read file,
+    /// and unfinished work are not.
+    fn every_question_was_answered(&self) -> bool {
+        self.engine_failures.is_empty()
+            && !self.results.iter().any(|result| {
+                matches!(
+                    result.completeness,
+                    Completeness::Partial | Completeness::ParseDegraded
+                )
+            })
     }
 
     /// The results as they will appear in the record.

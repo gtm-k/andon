@@ -1051,3 +1051,80 @@ export const another = 1;
         "an actual edit did not count as an attempt: {after:?}"
     );
 }
+
+#[test]
+fn fixing_the_finding_clears_the_budget_on_a_real_repository() {
+    // THE OTHER HALF OF THE COUNTER, and the one that was dead in production.
+    //
+    // A counter that advances and never resets makes escalation guaranteed
+    // rather than earned: on any branch living longer than a few attempts the
+    // agent is sent to a human whatever it does, including getting it right.
+    // That is PREMORTEM S6 — the anti-grinding mechanism inverting into the
+    // flood it exists to prevent.
+    //
+    // The reset was gated on record completeness being `complete`, and record
+    // completeness is the weakest of the results. Engines emit `unwitnessed`
+    // for honest absences — no coverage report here, no history for a file this
+    // change added — so on an ordinary healthy repository the gate never opened.
+    // Asserted end to end, on a real repository, through the real binary,
+    // because that is the only place the roll-up is real.
+    let repo = stranger_repo();
+    let git = Git::open(repo.path()).expect("a repository");
+    let path = repo.path().to_str().expect("utf-8").to_string();
+    let measure = || run(&["measure", "--repo", &path, "--json", "--exit-zero"]);
+
+    // Three attempts at a finding, each a genuine edit so each one counts.
+    for n in 0..3u8 {
+        let mut source = COMPLEX_TS.to_vec();
+        source.extend_from_slice(format!("\n// attempt {n}\n").as_bytes());
+        std::fs::write(repo.path().join("src").join("greet.ts"), &source).expect("write");
+        git.cmd(["add", "--all", "."]).output().expect("git add");
+        let _ = measure();
+    }
+    let climbing = loop_state(repo.path());
+    assert!(
+        climbing.values().copied().max().unwrap_or(0) >= 3,
+        "three genuine attempts did not accumulate: {climbing:?}"
+    );
+
+    // Now fix it, the way an agent actually fixes a complexity finding: the
+    // branching goes, and part of it moves into a new file. Nothing is left to
+    // act on — and the new file has no history for the process family to read
+    // and no entry in the coverage report, so both answer `unwitnessed`. That is
+    // the ordinary shape of a healthy repository, and it is exactly the state
+    // that used to hold the budget open for ever.
+    std::fs::write(
+        repo.path().join("src").join("greet.ts"),
+        b"import { polite } from \"./polite\";\n\nexport function greet(name: string): string {\n  return polite(name);\n}\n",
+    )
+    .expect("write");
+    std::fs::write(
+        repo.path().join("src").join("polite.ts"),
+        b"export function polite(name: string): string {\n  return `hello, ${name}`;\n}\n",
+    )
+    .expect("write");
+    git.cmd(["add", "--all", "."]).output().expect("git add");
+
+    let output = measure();
+    let record: MeasurementRecord = serde_json::from_slice(&output.stdout).expect("a record");
+    assert_eq!(
+        record.verdict.verdict,
+        andon_core::schema::enums::Verdict::Pass,
+        "the fix did not reach a pass: {:?}",
+        record.verdict.reasons
+    );
+    // The premise: this really is the state that used to block the reset. If a
+    // future engine change made these records `complete`, this test would still
+    // pass while asserting nothing about the defect it was written for.
+    assert_ne!(
+        record.completeness,
+        andon_core::schema::enums::Completeness::Complete,
+        "this repository no longer reproduces the condition the reset was dead under"
+    );
+    assert_eq!(
+        record.verdict.iteration.count, 0,
+        "the loop was fixed and the counter did not clear, so the next attempt starts \
+         part-way to an escalation nobody earned"
+    );
+    assert!(!record.verdict.iteration.escalated);
+}

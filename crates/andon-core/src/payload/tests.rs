@@ -488,6 +488,81 @@ fn a_measurement_that_could_not_see_does_not_clear_the_budget() {
 }
 
 #[test]
+fn an_honest_absence_still_ends_the_loop() {
+    // The other half, and the half that was dead in production. Engines emit
+    // `unwitnessed` results by design for absences that are facts about the
+    // repository — no coverage report, no history for a file added in this
+    // change, no complexity input for a `.png`. Record completeness is the
+    // weakest of the results, and `unwitnessed` is the weakest value there is,
+    // so a reset gated on `Complete` never fired: measured across four real
+    // repositories, 15 of 15 runs were `unwitnessed`.
+    //
+    // A counter that advances and never resets makes escalation guaranteed
+    // rather than earned on any long-lived branch, which is PREMORTEM S6 — the
+    // anti-grinding mechanism inverting into the flood it exists to prevent.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+
+    let mut engines = five_engines(&registry);
+    let marker = engines
+        .iter_mut()
+        .find(|output| output.descriptor.engine_id == "artifacts")
+        .expect("the artifacts engine is in the roster");
+    for result in &mut marker.results {
+        // What the engine really emits when there is no report to read: an
+        // answer, not a failure to answer.
+        result.completeness = Completeness::Unwitnessed;
+        result.value = MetricValue::Text("unwitnessed: no coverage report found".to_string());
+        result
+            .seal(&compare_context())
+            .expect("re-seals after the edit");
+    }
+
+    let honest = prepare(request(&policy, &registry, engines)).expect("assembles");
+    assert!(!honest.has_countable_finding());
+    assert_eq!(
+        honest.completeness(),
+        Completeness::Unwitnessed,
+        "the record still reports the weakest of its results, which is the honest value"
+    );
+    assert_eq!(
+        honest.loop_outcome(),
+        crate::verdict::iteration::LoopOutcome::Finished,
+        "an engine that looked and reported an absence has answered; the loop is over"
+    );
+}
+
+#[test]
+fn a_half_read_file_still_holds_the_budget() {
+    // The distinction the reset now keys on, from the other side. `unwitnessed`
+    // is an answer; `parse-degraded` is an answer about part of a file with the
+    // rest unread, and a change can produce one on purpose (PREMORTEM T3). It
+    // must not clear a budget.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+
+    let mut engines = five_engines(&registry);
+    let degraded = engines
+        .iter_mut()
+        .find(|output| output.descriptor.engine_id == "static-metrics")
+        .expect("the static engine is in the roster");
+    for result in &mut degraded.results {
+        result.completeness = Completeness::ParseDegraded;
+        result
+            .seal(&compare_context())
+            .expect("re-seals after the edit");
+    }
+
+    let blinded = prepare(request(&policy, &registry, engines)).expect("assembles");
+    assert!(!blinded.has_countable_finding());
+    assert_eq!(
+        blinded.loop_outcome(),
+        crate::verdict::iteration::LoopOutcome::Inconclusive,
+        "a number computed over a file the parser gave up on is not evidence the loop ended"
+    );
+}
+
+#[test]
 fn an_inconclusive_run_holds_the_count_rather_than_advancing_or_clearing_it() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let store = crate::verdict::iteration::IterationStore::open(dir.path()).expect("opens");
