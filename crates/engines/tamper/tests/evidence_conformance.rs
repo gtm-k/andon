@@ -169,6 +169,7 @@ fn a_rule_option_that_moved_behind_a_held_severity_is_quoted_with_both_values() 
             "indent",
             "[\"error\", 2]",
             "[\"error\", 4]",
+            "no per-linter rule table ships here",
         ],
     );
 }
@@ -201,8 +202,9 @@ fn a_changed_line_the_scanner_took_no_setting_from_is_quoted_as_the_line_it_is()
     // The probe that was missing, and the reason this file grew a caveat
     // reader. Round 4's sentence said a `partial` result names *the key*; this
     // shape has no key on it — that is precisely what leaves it undecidable —
-    // so the sentence was false of the third of the three shapes it covered,
-    // and a probe asserting only `Partial` could not tell.
+    // so the sentence was false of the third of the three shapes it covered —
+    // and it covered three of the five there are. A probe asserting only
+    // `Partial` could tell neither.
     disclosed("a changed line the scanner took no setting from");
     disclosed("the line's own text for an unread line");
     // A YAML block sequence: no brackets to follow, no separator on the line
@@ -291,6 +293,12 @@ fn a_rule_option_hidden_behind_an_unbound_name_is_quoted_with_both_values() {
             "complexity",
             "[\"error\", 10]",
             "[\"error\", LIMIT]",
+            // The reason, and not only the key and the values: those are the
+            // same for the shape above, so without this the probe passed with
+            // `indirect`'s report removed and `unrankable` catching the case
+            // instead. A probe that cannot tell two shapes apart cannot hold a
+            // claim that enumerates them separately.
+            "a name rather than a number and nothing in this file binds it",
         ],
     );
 }
