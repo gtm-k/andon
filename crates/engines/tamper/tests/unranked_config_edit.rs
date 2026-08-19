@@ -299,3 +299,56 @@ fn an_ordinary_config_edit_is_still_a_complete_answer() {
         );
     }
 }
+
+#[test]
+fn a_firing_that_is_also_unranked_elsewhere_still_stops_the_line() {
+    // The interaction the demotion could have broken, and the one an evasion
+    // would aim at if it could: a change that widens an exclusion in one file
+    // *and* rewrites the list in another, so the detector both fires and is
+    // stumped. `demote_to_partial` caps the severity, which is the same thing
+    // the parse-degraded path does — and blocking is keyed on the flag, never
+    // on the severity, for the muzzle reason `verdict::severity` sets out. If
+    // that ever stopped being true, an attacker could buy a pass with one
+    // unrankable line beside a real widening.
+    let view = ChangeView::new(vec![
+        FileChange::modified(
+            ".nycrc.json",
+            "{\n  \"exclude\": [\"src/generated/**\"]\n}\n",
+            "{\n  \"exclude\": [\"src/**\"]\n}\n",
+        ),
+        FileChange::modified(
+            ".coveragerc",
+            "[run]\nomit =\n    tests/*\n    */__init__.py\n",
+            "[run]\nomit =\n    tests/*\n    */conftest.py\n",
+        ),
+    ]);
+    let results = run_engine(&TamperEngine::for_view(view), &context()).expect("measures");
+    let fired = result(&results, "tamper.coverage-exclusion-drift");
+    assert_eq!(fired.value, MetricValue::Flag(true));
+    assert_eq!(
+        fired.completeness,
+        Completeness::Partial,
+        "it fired on one file and could not rank another"
+    );
+    assert_eq!(
+        fired.severity,
+        Severity::Low,
+        "an incomplete answer is capped below the MED+ band"
+    );
+
+    let policy = Policy::default();
+    let ctx = andon_core::verdict::VerdictContext {
+        completeness: andon_core::parse_health::weakest(&results),
+        policy: &policy,
+        policy_change: None,
+        engine_failures: &[],
+        stale_claim_ids: &[],
+        iteration_state_recovered: false,
+        registry_skew: &[],
+    };
+    assert!(
+        andon_core::verdict::severity::stops_the_line(fired, &ctx),
+        "the capped severity must not buy a pass: the flag is the blocking \
+         route and it is still true"
+    );
+}
