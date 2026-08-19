@@ -85,17 +85,60 @@ fn result<'a>(results: &'a [MeasurementResult], metric_id: &str) -> &'a Measurem
         .unwrap_or_else(|| panic!("{metric_id} is one of the fourteen"))
 }
 
+/// A detector's two results, read as the pair the claim answers for.
+///
+/// Every promise this file holds is a promise about *both* of them. The gate
+/// sentence says so outright — "both of its results come back
+/// `completeness: partial` instead" — and the caveat sentence describes the
+/// honesty line those results carry without singling either one out. So the
+/// properties the claim states of both are asserted of both here, once, before
+/// any probe is handed a value to compare.
+///
+/// The reason it is a helper and not a line in each probe: round 7 read the
+/// magnitude's *value* and the flag's *completeness*, and the magnitude's
+/// demotion — the second `demote_to_partial` call in `engine.rs` — could be
+/// deleted outright with all fifteen probes still green. An assertion that
+/// reads one result cannot hold a promise about two. It is the same defect as
+/// the twelve probes that asserted a status where the sentence was about
+/// content, moved one field over; putting it in the shared reader is what stops
+/// it moving one field over again, because a probe cannot reach a value here
+/// without the pair having been checked.
+fn pair<'a>(
+    results: &'a [MeasurementResult],
+    stem: &str,
+) -> (&'a MeasurementResult, &'a MeasurementResult) {
+    let flag = result(results, stem);
+    let magnitude = result(results, &format!("{stem}.magnitude"));
+    assert_eq!(
+        flag.completeness, magnitude.completeness,
+        "the claim answers for both of {stem}'s results together, so a reader \
+         told the flag is decided and the magnitude is not — or the reverse — \
+         has been given two answers to one question"
+    );
+    // The whole list rather than the caveat alone: the two results resolve to
+    // one claim, so a caller reading either is promised the same prose, and a
+    // probe that reads one holds the claim for both only while that is true.
+    assert_eq!(
+        flag.evidence.does_not_predict, magnitude.evidence.does_not_predict,
+        "{stem} and its magnitude ship different prose, so each probe below \
+         holds the claim only for whichever of the two it happens to read"
+    );
+    (flag, magnitude)
+}
+
 /// The `(flag, magnitude, completeness)` triple a reader of the record sees.
 fn triple(results: &[MeasurementResult], stem: &str) -> (bool, i64, Completeness) {
-    let flag = match result(results, stem).value {
+    let (flag_result, magnitude_result) = pair(results, stem);
+    let flag = match flag_result.value {
         MetricValue::Flag(fired) => fired,
         ref other => panic!("{stem} is a flag, not {other:?}"),
     };
-    let magnitude = match result(results, &format!("{stem}.magnitude")).value {
+    let magnitude = match magnitude_result.value {
         MetricValue::Integer(value) => value,
         ref other => panic!("{stem}.magnitude is an integer, not {other:?}"),
     };
-    (flag, magnitude, result(results, stem).completeness)
+    // Either one, having been asserted equal to the other.
+    (flag, magnitude, flag_result.completeness)
 }
 
 /// What the shipped claim says it does not predict, as the caller receives it.
@@ -105,10 +148,11 @@ fn disclosures() -> Vec<String> {
         "{ \"rules\": { \"eqeqeq\": \"error\" } }",
         "{ \"rules\": { \"eqeqeq\": \"warn\" } }",
     );
-    result(&results, THRESHOLD)
-        .evidence
-        .does_not_predict
-        .clone()
+    // Through the pair reader, so that "the claim ships in every result" is
+    // asserted where the claim is lifted rather than assumed of the one result
+    // this happens to lift it from.
+    let (flag, _) = pair(&results, THRESHOLD);
+    flag.evidence.does_not_predict.clone()
 }
 
 /// The honesty line a `partial` result carries, which is the one the claim
@@ -116,13 +160,19 @@ fn disclosures() -> Vec<String> {
 ///
 /// First, because that is where `demote_to_partial` inserts it — a reader who
 /// stops after one line reads the one that changes how to read the number.
-fn caveat<'a>(results: &'a [MeasurementResult], metric_id: &str) -> &'a str {
+///
+/// Read through `pair`, and not off the flag directly, so that every promise
+/// `caveat_says` goes on to hold is held for the magnitude too: the pair reader
+/// has already established that the two results carry the same prose in the
+/// same order, which is what makes reading one of them an answer about both.
+fn caveat<'a>(results: &'a [MeasurementResult], stem: &str) -> &'a str {
+    let (flag, _) = pair(results, stem);
     assert_eq!(
-        result(results, metric_id).completeness,
+        flag.completeness,
         Completeness::Partial,
-        "{metric_id} carries no undecided-change caveat to read"
+        "{stem} carries no undecided-change caveat to read"
     );
-    &result(results, metric_id).evidence.does_not_predict[0]
+    &flag.evidence.does_not_predict[0]
 }
 
 /// Asserts the caveat says each of `words`.
@@ -132,8 +182,8 @@ fn caveat<'a>(results: &'a [MeasurementResult], metric_id: &str) -> &'a str {
 /// asserted only that the status was `Partial` — so the sentence was wrong and
 /// the suite meant to hold it was green. Status is not content, and a claim
 /// about what a caveat *says* has to be read out of the caveat.
-fn caveat_says(results: &[MeasurementResult], metric_id: &str, words: &[&str]) {
-    let line = caveat(results, metric_id);
+fn caveat_says(results: &[MeasurementResult], stem: &str, words: &[&str]) {
+    let line = caveat(results, stem);
     for word in words {
         assert!(
             line.contains(word),
@@ -238,8 +288,14 @@ fn a_changed_line_the_scanner_took_no_setting_from_is_quoted_as_the_line_it_is()
         "rules:\n  complexity:\n    - error\n    - 10\n",
         "rules:\n  complexity:\n    - error\n    - 100\n",
     );
-    let (_, _, completeness) = triple(&results, THRESHOLD);
-    assert_eq!(completeness, Completeness::Partial);
+    // The whole triple and not the completeness alone: the four probes around
+    // this one assert what the flag and the magnitude say as well as how far
+    // they were decided, and a shape held to less than its neighbours is where
+    // the next gap goes.
+    assert_eq!(
+        triple(&results, THRESHOLD),
+        (false, 0, Completeness::Partial)
+    );
     caveat_says(
         &results,
         THRESHOLD,
