@@ -330,8 +330,16 @@ impl IterationStore {
         // measurement would leave the branch escalating, which is the state the
         // human just said they had dealt with. A lock this cannot take is worth
         // failing on: unlike a measurement, the whole of this operation *is* the
-        // counter write.
-        let _lock = StateLock::acquire(&self.path)?;
+        // counter write, so proceeding without the lock would be doing the one
+        // thing unsafely rather than doing something else safely.
+        let _lock = StateLock::acquire(&self.path)?.ok_or_else(|| IterationError::Io {
+            path: self.path.display().to_string(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "another measurement held the loop counter for longer than the wait; the \
+                 acknowledgement was not recorded, so re-run `andon ledger ack`",
+            ),
+        })?;
         let (mut file, _) = self.read();
         file.branches.remove(branch);
         self.write(&file)

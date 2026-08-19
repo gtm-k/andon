@@ -1746,3 +1746,55 @@ fn an_unreadable_path_survives_into_every_later_reading_of_the_record() {
         "the agent profile does not say what its head_oid is: {profile}"
     );
 }
+
+#[test]
+fn a_filter_driver_that_cannot_be_neutralized_is_refused() {
+    // The fail-closed half of the filter defence, and the only branch of it
+    // that refuses rather than proceeds.
+    //
+    // Neutralization works by pinning `filter.<name>.clean` and friends empty
+    // with `-c`, which outranks every config file. A driver whose *name*
+    // contains `=` cannot be written as a `-c` key at all — git parses the key
+    // at the first `=` and sets something else — so the pin would silently miss
+    // and the program would run on the next `status`. Git accepts such a name
+    // (`[filter "a=b"]` is a legal subsection), so this is reachable rather
+    // than theoretical.
+    //
+    // Without this test the refusal is code nobody has run, which is the state
+    // this whole round was called to fix.
+    let repo = stranger_repo();
+    let root = repo.path();
+
+    unpinned_git(
+        root,
+        &[
+            "config",
+            "filter.a=b.clean",
+            "git update-ref refs/heads/unneutralizable HEAD",
+        ],
+    );
+    // The name really is what this test thinks it is.
+    let listed = unpinned_git(root, &["config", "--get-regexp", "^filter\\."]);
+    assert!(
+        String::from_utf8_lossy(&listed.stdout).contains("filter.a=b.clean"),
+        "git did not keep the driver name this test is about, so it asserts nothing"
+    );
+
+    let output = run(&[
+        "measure",
+        "--repo",
+        root.to_str().expect("utf-8"),
+        "--no-color",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a filter driver that cannot be pinned inert was measured anyway:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("a=b") && stderr.contains("neutralize"),
+        "the refusal does not name the driver or say why it refused:\n{stderr}"
+    );
+    // And it says what to do, because the reader has run one command.
+    assert!(stderr.contains("unset"), "{stderr}");
+}

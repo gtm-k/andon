@@ -127,16 +127,35 @@ pub enum ResolveFailure {
     /// reader to fix something that is not broken.
     #[error(
         "there is no working change to measure here: HEAD ({head_short}) matches every base \
-         this repository offers ({}), and the tree is clean.\n  \
+         this repository offers ({bases}).{dirty}\n  \
          `--no-fallback` is what refuses rather than measuring the last merged change instead. \
          Drop it to measure that, or name a base: `andon measure --base <rev>`",
-        if .tried.is_empty() { "none were found".to_string() } else { .tried.join(", ") }
+        bases = if .tried.is_empty() { "none were found".to_string() } else { .tried.join(", ") },
+        // Read rather than asserted. An earlier version of this sentence ended
+        // "and the tree is clean", which `--last-merged --no-fallback` on a
+        // dirty tree makes false: `--last-merged` skips the uncommitted-work
+        // return above, the ladder exhausts, and this fires over a tree that is
+        // anything but clean. Contradictory flags are still expressible, and a
+        // message that describes a state the caller can check in one command
+        // has to be right about it.
+        dirty = if .uncommitted.is_empty() {
+            " The tree is clean.".to_string()
+        } else {
+            format!(
+                " There IS uncommitted work here ({}), and it is not what was asked about — \
+                 `--last-merged` asks about the committed history.",
+                summarize(.uncommitted)
+            )
+        }
     )]
     NoWorkingChange {
         /// Abbreviated HEAD.
         head_short: String,
         /// The base candidates that resolved, in the order they were tried.
         tried: Vec<String>,
+        /// Uncommitted paths, so the message can read the tree rather than
+        /// assert something about it.
+        uncommitted: Vec<String>,
     },
     /// There is uncommitted work, and this repository offers no working-tree
     /// head to measure it as.
@@ -403,6 +422,7 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
             return Err(ResolveFailure::NoWorkingChange {
                 head_short,
                 tried: tried.iter().map(|c| c.to_string()).collect(),
+                uncommitted,
             });
         }
         return Err(ResolveFailure::NoParent {

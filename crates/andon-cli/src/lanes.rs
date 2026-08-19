@@ -38,6 +38,27 @@ pub fn wait(record: &MeasurementRecord) -> String {
         crate::resolve::change_line(&record.compare_context)
     );
 
+    // `wait` is a rendering of the record, so it carries what every rendering of
+    // the record has to carry. It named neither of these, which is half of why
+    // `report` and `wait` disagreed with the measurement that produced them —
+    // one line each rather than the terminal render's block, because this
+    // command's subject is the lanes and a reader is here to ask about those.
+    if let Some(substitution) = &record.substitution {
+        let _ = writeln!(
+            out,
+            "  NOTE     these numbers are not about your working change — {}",
+            substitution.measured
+        );
+    }
+    if !record.unreadable_paths.is_empty() {
+        let _ = writeln!(
+            out,
+            "  NOT READ {} changed path(s) could not be read, so nothing here describes them: {}",
+            record.unreadable_paths.len(),
+            record.unreadable_paths.join(", ")
+        );
+    }
+
     if async_results.is_empty() {
         let _ = writeln!(
             out,
