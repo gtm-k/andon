@@ -37,7 +37,7 @@
 use std::collections::BTreeMap;
 
 use crate::change::ChangeView;
-use crate::config;
+use crate::config::{self, tools};
 use crate::detectors::{Detector, Finding, Outcome};
 use andon_core::schema::enums::{Severity, TamperSignal};
 
@@ -46,40 +46,41 @@ pub struct ThresholdConfigEdit;
 
 /// The tools whose configuration carries quality thresholds.
 ///
-/// Stems rather than file names, for the reason [`config::Tool`] sets out: the
-/// exact list held `.eslintrc.js` and not `.eslintrc.cjs`, `.eslintrc.yml` and
-/// not `.eslintrc.yaml`, three flat-config spellings and not `eslint.config.cjs`,
+/// Which tools, not which file names: [`config::tools`] holds the names, for
+/// the reason [`config::Tool`] sets out. The exact list this replaced held
+/// `.eslintrc.js` and not `.eslintrc.cjs`, `.eslintrc.yml` and not
+/// `.eslintrc.yaml`, three flat-config spellings and not `eslint.config.cjs`,
 /// `.golangci.yml` and not `.golangci.toml` — and every one of those returned a
 /// confident zero on byte-identical content that fired in its sibling spelling.
 const THRESHOLD_TOOLS: &[config::Tool] = &[
-    config::Tool::any(".andon"),
-    config::Tool::family("tsconfig"),
-    config::Tool::any(".eslintrc"),
-    config::Tool::family("eslint.config"),
-    config::Tool::any("biome"),
-    config::Tool::any(".flake8"),
-    config::Tool::any("pyproject"),
-    config::Tool::any("mypy"),
-    config::Tool::any(".mypy"),
-    config::Tool::any("ruff"),
-    config::Tool::any(".ruff"),
-    config::Tool::any("clippy"),
-    config::Tool::any(".golangci"),
-    config::Tool::family("sonar-project"),
-    config::Tool::family("jest.config"),
-    config::Tool::family("vitest.config"),
+    tools::ANDON,
+    tools::TSCONFIG,
+    tools::ESLINTRC,
+    tools::ESLINT_FLAT,
+    tools::BIOME,
+    tools::FLAKE8,
+    tools::PYPROJECT,
+    tools::MYPY,
+    tools::MYPY_DOT,
+    tools::RUFF,
+    tools::RUFF_DOT,
+    tools::CLIPPY,
+    tools::GOLANGCI,
+    tools::SONAR,
+    tools::JEST,
+    tools::VITEST,
     // Coverage configuration carries thresholds too, and they were reachable in
     // some of these files and not others: `.nycrc.json` dropping `lines` from
     // 90 to 10 is a floor lowered, in a file this detector was not opening.
-    config::Tool::any(".coveragerc"),
-    config::Tool::any(".nycrc"),
-    config::Tool::any(".c8rc"),
-    config::Tool::any("codecov"),
-    config::Tool::any(".codecov"),
-    config::Tool::any("tarpaulin"),
-    config::Tool::only("setup", &["cfg"]),
-    config::Tool::only("package", &["json"]),
-    config::Tool::only("tox", &["ini"]),
+    tools::COVERAGERC,
+    tools::NYCRC,
+    tools::C8RC,
+    tools::CODECOV,
+    tools::CODECOV_DOT,
+    tools::TARPAULIN,
+    tools::SETUP_CFG,
+    tools::PACKAGE_JSON,
+    tools::TOX_INI,
 ];
 
 /// Whether a path is threshold configuration.

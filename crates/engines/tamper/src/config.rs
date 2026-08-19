@@ -46,14 +46,27 @@
 ///
 /// A name can always be added, and there will always be another one. So what is
 /// matched is the *stem* — the file name with its syntax extension taken off —
-/// and a tool whose stem is its own gets every extension, including the one
-/// nobody has written yet. That is what closes the class rather than the cases.
+/// and the extension is then read against the syntaxes that tool actually
+/// reads. That is what closes the class rather than the cases: `.nycrc.json5`
+/// is nyc configuration before anybody writes one.
 ///
-/// The looseness has to stop somewhere, and it stops at stems an ordinary
-/// source file could carry. `setup`, `package` and `tox` name their tool only
-/// in one syntax each; matching `setup.ts` as coverage configuration would
-/// undo the bound that keeps a `:` in a source file from reaching this scanner
-/// at all.
+/// # And then the stem was the bug
+///
+/// Taking *any* extension off *any* stem is one step too wide, and the step
+/// lands on ordinary source. `pyproject` is configuration as `.toml` and a
+/// perfectly ordinary Python module as `.py`, so `src/pyproject.py` raising
+/// `max_warnings` from 10 to 100 came back as a tamper firing on somebody's
+/// honest code. `tarpaulin.rs`, `clippy.rs`, `mypy.py`, `ruff.py`, `biome.ts`
+/// and `codecov.py` are the same shape, and a tool that accuses honest work
+/// gets uninstalled (PREMORTEM A4) — which is a worse outcome than the missed
+/// detection the stem rule was widened to fix.
+///
+/// The line is drawn where it can be drawn without another list: a **dotfile
+/// stem cannot be ordinary source**, because nothing in these ecosystems
+/// compiles `.nycrc.ts` as a module. So [`Match::AnySyntax`] — the open class,
+/// the one that covers the syntax nobody has written yet — is reserved for
+/// stems beginning with a dot, and [`Tool::any`] refuses to construct anything
+/// else. Every other stem names the syntaxes its own tool reads.
 #[derive(Debug, Clone, Copy)]
 pub struct Tool {
     /// The stem, lower-cased and without its syntax extension.
@@ -65,42 +78,140 @@ pub struct Tool {
 /// How a [`Tool`]'s stem is matched against a file name.
 #[derive(Debug, Clone, Copy)]
 pub enum Match {
-    /// This exact stem, in any syntax. For stems that are the tool's name and
-    /// nobody else's: `.nycrc`, `.golangci`, `tarpaulin`.
+    /// This exact stem, in any syntax — including one nobody has written yet.
+    ///
+    /// Legal only for a dotfile stem, which is the condition under which "any
+    /// syntax" cannot reach ordinary source: `.nycrc`, `.golangci`, `.eslintrc`.
+    /// [`Tool::any`] enforces it.
     AnySyntax,
-    /// Any stem beginning with this one, in any syntax — for the families that
-    /// spell a variant into the name itself: `tsconfig.base.json`,
-    /// `jest.config.ci.js`.
-    Family,
-    /// This exact stem, and only in these syntaxes. For stems an ordinary file
-    /// could carry: `setup.cfg` is configuration and `setup.ts` is code.
+    /// This stem, or one that extends it with a further `.` segment, in these
+    /// syntaxes — for the families that spell a variant into the name itself:
+    /// `tsconfig.base.json`, `jest.config.ci.js`.
+    Family(&'static [&'static str]),
+    /// This exact stem, and only in these syntaxes. For every stem an ordinary
+    /// file could carry: `setup.cfg` is configuration and `setup.ts` is code,
+    /// `pyproject.toml` is configuration and `pyproject.py` is code.
     Syntaxes(&'static [&'static str]),
 }
 
 impl Tool {
-    /// A stem that is its tool's own name, in any syntax.
+    /// A dotfile stem, in any syntax.
+    ///
+    /// # Why this asserts rather than documenting a rule
+    ///
+    /// The tool tables are `const`, so the assertion runs at compile time and a
+    /// non-dotfile stem is a build failure rather than a false positive
+    /// somebody's CI discovers. The alternative — a sentence in a doc comment
+    /// saying "only for stems nobody else could carry" — is exactly what stood
+    /// here when `pyproject` was declared with this constructor. A rule the
+    /// constructor does not enforce is a rule the next tool breaks.
     pub const fn any(stem: &'static str) -> Tool {
+        assert!(
+            !stem.is_empty() && stem.as_bytes()[0] == b'.',
+            "Tool::any is the open class, and only a dotfile stem is safe in it: any \
+             other stem answers for every extension, including the one an ordinary \
+             source file carries. Use Tool::only with the syntaxes this tool reads."
+        );
         Tool {
             stem,
             how: Match::AnySyntax,
         }
     }
 
-    /// A family of stems, matched by prefix, in any syntax.
-    pub const fn family(stem: &'static str) -> Tool {
+    /// A family of stems, matched by prefix, in these syntaxes.
+    pub const fn family(stem: &'static str, syntaxes: &'static [&'static str]) -> Tool {
         Tool {
             stem,
-            how: Match::Family,
+            how: Match::Family(syntaxes),
         }
     }
 
-    /// A stem an ordinary file could carry, in these syntaxes only.
+    /// One stem, in these syntaxes only.
     pub const fn only(stem: &'static str, syntaxes: &'static [&'static str]) -> Tool {
         Tool {
             stem,
             how: Match::Syntaxes(syntaxes),
         }
     }
+}
+
+/// The file names each tool writes its configuration under.
+///
+/// # Declared once, because the drift between two lists was the original defect
+///
+/// Nine of these are read by both [`crate::detectors::coverage_exclusion_drift`]
+/// and [`crate::detectors::threshold_config_edit`], and the defect that started
+/// all of this — `.nycrc.yml` answering a widening with silence while
+/// `.nycrc.json` fired — was one list holding a spelling the other did not. Two
+/// tables that each named their own syntaxes would have the same failure mode
+/// one level up: `codecov.yaml` added to one detector and forgotten in the
+/// other. So a tool's file names are a fact about the tool, stated here once,
+/// and a detector's table says only *which* tools it reads.
+pub mod tools {
+    use super::Tool;
+
+    /// The syntaxes a JavaScript-ecosystem config file is written in. A loader
+    /// that takes `.js` takes `.mjs`, and the TypeScript spellings are what
+    /// `eslint.config.mts` is.
+    const JS: &[&str] = &["js", "cjs", "mjs", "ts", "mts", "cts"];
+    /// The same, plus JSON, for the loaders that also accept a data file.
+    const JS_OR_JSON: &[&str] = &["js", "cjs", "mjs", "ts", "mts", "cts", "json"];
+    /// JSON, with comments allowed — TypeScript's and Biome's own spelling.
+    const JSONC: &[&str] = &["json", "jsonc"];
+
+    /// This tool's own policy file.
+    pub const ANDON: Tool = Tool::any(".andon");
+    /// TypeScript. `tsconfig.base.json` is the same file with a variant spelled
+    /// into the name; `src/tsconfig.ts` is a module that reads one.
+    pub const TSCONFIG: Tool = Tool::family("tsconfig", JSONC);
+    /// ESLint's legacy rc file, in all six spellings and the next one.
+    pub const ESLINTRC: Tool = Tool::any(".eslintrc");
+    /// ESLint's flat config.
+    pub const ESLINT_FLAT: Tool = Tool::family("eslint.config", JS);
+    /// Biome. `biome.ts` is a module.
+    pub const BIOME: Tool = Tool::only("biome", JSONC);
+    /// flake8's dotfile.
+    pub const FLAKE8: Tool = Tool::any(".flake8");
+    /// Python's standard project file. `pyproject.py` is a Python module.
+    pub const PYPROJECT: Tool = Tool::only("pyproject", &["toml"]);
+    /// mypy. `mypy.py` is a Python module.
+    pub const MYPY: Tool = Tool::only("mypy", &["ini"]);
+    /// mypy's dotfile form.
+    pub const MYPY_DOT: Tool = Tool::any(".mypy");
+    /// Ruff. `ruff.py` is a Python module.
+    pub const RUFF: Tool = Tool::only("ruff", &["toml"]);
+    /// Ruff's dotfile form.
+    pub const RUFF_DOT: Tool = Tool::any(".ruff");
+    /// Clippy. `clippy.rs` is a Rust module.
+    pub const CLIPPY: Tool = Tool::only("clippy", &["toml"]);
+    /// golangci-lint.
+    pub const GOLANGCI: Tool = Tool::any(".golangci");
+    /// SonarQube's project descriptor.
+    pub const SONAR: Tool = Tool::family("sonar-project", &["properties"]);
+    /// Jest. Its loader also accepts a JSON file.
+    pub const JEST: Tool = Tool::family("jest.config", JS_OR_JSON);
+    /// Vitest.
+    pub const VITEST: Tool = Tool::family("vitest.config", JS);
+    /// nyc's JavaScript config form.
+    pub const NYC_CONFIG: Tool = Tool::family("nyc.config", JS);
+    /// coverage.py's dotfile.
+    pub const COVERAGERC: Tool = Tool::any(".coveragerc");
+    /// nyc's rc file.
+    pub const NYCRC: Tool = Tool::any(".nycrc");
+    /// c8's rc file.
+    pub const C8RC: Tool = Tool::any(".c8rc");
+    /// Codecov. `codecov.py` is the uploader's Python client.
+    pub const CODECOV: Tool = Tool::only("codecov", &["yml", "yaml"]);
+    /// Codecov's dotfile form.
+    pub const CODECOV_DOT: Tool = Tool::any(".codecov");
+    /// cargo-tarpaulin. `tarpaulin.rs` is a Rust module.
+    pub const TARPAULIN: Tool = Tool::only("tarpaulin", &["toml"]);
+    /// setuptools' config, which flake8 and coverage.py also read.
+    pub const SETUP_CFG: Tool = Tool::only("setup", &["cfg"]);
+    /// npm's manifest, which carries a `jest` block.
+    pub const PACKAGE_JSON: Tool = Tool::only("package", &["json"]);
+    /// tox, which coverage.py reads `[coverage:run]` out of.
+    pub const TOX_INI: Tool = Tool::only("tox", &["ini"]);
 }
 
 /// Whether `path` names one of `tools`.
@@ -114,11 +225,12 @@ pub fn names_one_of(path: &str, tools: &[Tool]) -> bool {
         // `tsconfig-loader.ts` and a source file becomes threshold
         // configuration. A family spells its variant as a further name segment
         // — `tsconfig.base`, `jest.config.ci` — and never as a suffix.
-        Match::Family => {
-            stem == tool.stem
+        Match::Family(syntaxes) => {
+            let named = stem == tool.stem
                 || stem
                     .strip_prefix(tool.stem)
-                    .is_some_and(|rest| rest.starts_with('.'))
+                    .is_some_and(|rest| rest.starts_with('.'));
+            named && syntaxes.contains(&syntax)
         }
         Match::Syntaxes(syntaxes) => stem == tool.stem && syntaxes.contains(&syntax),
     })
@@ -405,9 +517,10 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_whose_stem_is_its_own_name_answers_for_every_syntax() {
+    fn a_dotfile_stem_answers_for_every_syntax() {
         // Including one nobody has written yet, which is the whole point: the
-        // list of names was the defect, so the list is not the answer.
+        // list of names was the defect, so the list is not the answer. Safe
+        // here and only here, because nothing compiles a dotfile as a module.
         const TOOLS: &[Tool] = &[Tool::any(".nycrc")];
         for name in [
             ".nycrc",
@@ -424,15 +537,25 @@ mod tests {
 
     #[test]
     fn a_stem_an_ordinary_file_could_carry_answers_only_for_its_own_syntax() {
-        const TOOLS: &[Tool] = &[Tool::only("setup", &["cfg"])];
+        const TOOLS: &[Tool] = &[
+            Tool::only("setup", &["cfg"]),
+            Tool::only("pyproject", &["toml"]),
+        ];
         assert!(names_one_of("setup.cfg", TOOLS));
         assert!(!names_one_of("src/setup.ts", TOOLS));
         assert!(!names_one_of("setup.py", TOOLS));
+        // The reported false positive: one stem, configuration in one syntax
+        // and a Python module in another.
+        assert!(names_one_of("pyproject.toml", TOOLS));
+        assert!(!names_one_of("src/pyproject.py", TOOLS));
     }
 
     #[test]
     fn a_family_matches_the_variants_spelled_into_the_name() {
-        const TOOLS: &[Tool] = &[Tool::family("tsconfig"), Tool::family("jest.config")];
+        const TOOLS: &[Tool] = &[
+            Tool::family("tsconfig", &["json"]),
+            Tool::family("jest.config", &["mjs"]),
+        ];
         assert!(names_one_of("tsconfig.json", TOOLS));
         assert!(names_one_of("tsconfig.base.json", TOOLS));
         assert!(names_one_of("jest.config.ci.mjs", TOOLS));
@@ -441,5 +564,80 @@ mod tests {
         // merely begins with the same letters is not one of them.
         assert!(!names_one_of("src/tsconfig-loader.ts", TOOLS));
         assert!(!names_one_of("tsconfiguration.json", TOOLS));
+        // And a family is a stem an ordinary file can carry too, so it answers
+        // only for the syntaxes its own loader reads.
+        assert!(!names_one_of("src/tsconfig.ts", TOOLS));
     }
+
+    #[test]
+    fn the_open_class_is_reserved_for_stems_nothing_compiles() {
+        // `Tool::any` asserts this in a `const fn`, so the tables below cannot
+        // be built wrong — but a table is data and this is the property that
+        // data has to have, stated where a reader looking for it will find it.
+        for tool in ALL_TOOLS {
+            if matches!(tool.how, Match::AnySyntax) {
+                assert!(
+                    tool.stem.starts_with('.'),
+                    "{} answers for every extension and is a name an ordinary \
+                     source file can carry",
+                    tool.stem
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_declared_tool_claims_a_source_extension() {
+        // The other half, over the real tables rather than over a rule: every
+        // syntax any tool answers for, checked against the extensions these
+        // ecosystems compile. `.eslintrc.ts` reaching this list would be
+        // harmless — nothing imports it — and `pyproject.py` reaching it is the
+        // uninstall.
+        const COMPILED: &[&str] = &["py", "rs", "go", "rb", "java", "kt", "php"];
+        for tool in ALL_TOOLS {
+            let syntaxes = match tool.how {
+                Match::AnySyntax => continue,
+                Match::Family(s) | Match::Syntaxes(s) => s,
+            };
+            for syntax in syntaxes {
+                assert!(
+                    !COMPILED.contains(syntax),
+                    "{}.{syntax} is a source file in a language this repository \
+                     measures, and naming it configuration accuses honest code",
+                    tool.stem
+                );
+            }
+        }
+    }
+
+    /// Every tool either detector declares, so the properties above are stated
+    /// over what ships rather than over an example.
+    const ALL_TOOLS: &[Tool] = &[
+        tools::ANDON,
+        tools::TSCONFIG,
+        tools::ESLINTRC,
+        tools::ESLINT_FLAT,
+        tools::BIOME,
+        tools::FLAKE8,
+        tools::PYPROJECT,
+        tools::MYPY,
+        tools::MYPY_DOT,
+        tools::RUFF,
+        tools::RUFF_DOT,
+        tools::CLIPPY,
+        tools::GOLANGCI,
+        tools::SONAR,
+        tools::JEST,
+        tools::VITEST,
+        tools::NYC_CONFIG,
+        tools::COVERAGERC,
+        tools::NYCRC,
+        tools::C8RC,
+        tools::CODECOV,
+        tools::CODECOV_DOT,
+        tools::TARPAULIN,
+        tools::SETUP_CFG,
+        tools::PACKAGE_JSON,
+        tools::TOX_INI,
+    ];
 }

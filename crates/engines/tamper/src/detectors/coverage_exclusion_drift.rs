@@ -54,7 +54,7 @@
 //! nothing (see [`crate::detectors::Outcome::unassessed`]).
 
 use crate::change::ChangeView;
-use crate::config;
+use crate::config::{self, tools};
 use crate::detectors::{Detector, Finding, Outcome};
 use andon_core::schema::enums::TamperSignal;
 
@@ -85,28 +85,29 @@ const EXCLUSION_KEY_FRAGMENTS: &[&str] = &["exclude", "exclusion", "omit", "igno
 
 /// The tools whose configuration carries coverage exclusions.
 ///
-/// See [`config::Tool`] for why these are stems and not file names.
+/// Which tools, not which file names: [`config::tools`] holds the names, and
+/// [`config::Tool`] says why one place holds them for both detectors.
 const COVERAGE_TOOLS: &[config::Tool] = &[
-    config::Tool::any(".coveragerc"),
-    config::Tool::any("codecov"),
-    config::Tool::any(".codecov"),
-    config::Tool::any(".nycrc"),
-    config::Tool::any(".c8rc"),
-    config::Tool::any("tarpaulin"),
-    config::Tool::any("pyproject"),
+    tools::COVERAGERC,
+    tools::CODECOV,
+    tools::CODECOV_DOT,
+    tools::NYCRC,
+    tools::C8RC,
+    tools::TARPAULIN,
+    tools::PYPROJECT,
     // Sonar's `sonar.coverage.exclusions` takes whole directories out of the
     // number the dashboard shows, which is the same move in a file this
     // detector was not reading at all.
-    config::Tool::family("sonar-project"),
-    config::Tool::family("jest.config"),
-    config::Tool::family("vitest.config"),
-    config::Tool::family("nyc.config"),
-    config::Tool::only("setup", &["cfg"]),
-    config::Tool::only("package", &["json"]),
+    tools::SONAR,
+    tools::JEST,
+    tools::VITEST,
+    tools::NYC_CONFIG,
+    tools::SETUP_CFG,
+    tools::PACKAGE_JSON,
     // coverage.py reads `[coverage:run]` out of `tox.ini` exactly as it reads
     // `[run]` out of `.coveragerc`; the identical block in `setup.cfg` fired
     // and this one was silent.
-    config::Tool::only("tox", &["ini"]),
+    tools::TOX_INI,
 ];
 
 /// Whether a path is a coverage configuration file.

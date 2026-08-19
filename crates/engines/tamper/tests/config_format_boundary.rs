@@ -302,6 +302,151 @@ fn code_is_still_code() {
 }
 
 #[test]
+fn a_tool_stem_in_a_source_syntax_is_source() {
+    // The reported false positive, and its whole family. Closing the spelling
+    // class by taking *any* extension off *any* stem walked straight into
+    // ordinary code: `src/pyproject.py` raising `max_warnings` from 10 to 100
+    // came back `{flag: true, magnitude: 1, completeness: "complete"}` — a
+    // tamper accusation against somebody's honest module, which is the
+    // uninstall PREMORTEM A4 describes and a worse failure than the missed
+    // detection the widening was for.
+    //
+    // Every one of these stems is a real configuration file in one syntax and a
+    // real source file in another. The edit is the one that fired.
+    for (signal, path, base, head) in [
+        (
+            THRESHOLD,
+            "src/pyproject.py",
+            "max_warnings = 10\n",
+            "max_warnings = 100\n",
+        ),
+        (
+            COVERAGE,
+            "src/pyproject.py",
+            "exclude = ['a']\n",
+            "exclude = ['a', 'b']\n",
+        ),
+        (
+            THRESHOLD,
+            "src/tarpaulin.rs",
+            "pub const MAX_WARNINGS: u32 = 10;\n",
+            "pub const MAX_WARNINGS: u32 = 100;\n",
+        ),
+        (
+            THRESHOLD,
+            "src/clippy.rs",
+            "pub const MAX_WARNINGS: u32 = 10;\n",
+            "pub const MAX_WARNINGS: u32 = 100;\n",
+        ),
+        (
+            THRESHOLD,
+            "tools/mypy.py",
+            "max_warnings = 10\n",
+            "max_warnings = 100\n",
+        ),
+        (
+            THRESHOLD,
+            "tools/ruff.py",
+            "max_warnings = 10\n",
+            "max_warnings = 100\n",
+        ),
+        (
+            THRESHOLD,
+            "src/biome.ts",
+            "export const maxWarnings = 10;\n",
+            "export const maxWarnings = 100;\n",
+        ),
+        (
+            COVERAGE,
+            "src/codecov.py",
+            "exclude = ['a']\n",
+            "exclude = ['a', 'b']\n",
+        ),
+        (
+            THRESHOLD,
+            "src/tsconfig.ts",
+            "export const strict = true;\n",
+            "export const strict = false;\n",
+        ),
+    ] {
+        let outcome = run(signal, path, base, head);
+        assert!(
+            !outcome.fired,
+            "{signal} accused {path}, which is source code in a language this \
+             tool measures: {outcome:?}"
+        );
+        assert!(
+            outcome.unassessed.is_empty(),
+            "{signal} spent a caveat on {path}, which is code: {outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn the_same_stem_in_its_own_syntax_is_still_configuration() {
+    // The control beside the case above: constraining the syntaxes must not
+    // have closed the file. Each of these is the same stem, in the syntax its
+    // tool actually reads, carrying the same edit.
+    for (signal, path, base, head) in [
+        (
+            THRESHOLD,
+            "pyproject.toml",
+            "[tool.coverage.report]\nfail_under = 85\n",
+            "[tool.coverage.report]\nfail_under = 60\n",
+        ),
+        (
+            COVERAGE,
+            "pyproject.toml",
+            "[tool.coverage.run]\nomit = [\"tests/*\"]\n",
+            "[tool.coverage.run]\nomit = [\"tests/*\", \"src/payments/*\"]\n",
+        ),
+        (
+            COVERAGE,
+            "tarpaulin.toml",
+            "[report]\nexclude_files = [\"src/generated/*\"]\n",
+            "[report]\nexclude_files = [\"src/*\"]\n",
+        ),
+        (
+            THRESHOLD,
+            "clippy.toml",
+            "cognitive-complexity-threshold = 10\n",
+            "cognitive-complexity-threshold = 100\n",
+        ),
+        (
+            THRESHOLD,
+            "mypy.ini",
+            "[mypy]\ndisallow_untyped_defs = True\n",
+            "[mypy]\ndisallow_untyped_defs = False\n",
+        ),
+        (
+            THRESHOLD,
+            "ruff.toml",
+            "[lint.mccabe]\nmax-complexity = 10\n",
+            "[lint.mccabe]\nmax-complexity = 100\n",
+        ),
+        (
+            THRESHOLD,
+            "biome.json",
+            "{ \"linter\": { \"rules\": { \"complexity\": [\"error\", 10] } } }",
+            "{ \"linter\": { \"rules\": { \"complexity\": [\"error\", 100] } } }",
+        ),
+        (
+            THRESHOLD,
+            "tsconfig.json",
+            "{ \"compilerOptions\": { \"strict\": true } }",
+            "{ \"compilerOptions\": { \"strict\": false } }",
+        ),
+    ] {
+        let outcome = run(signal, path, base, head);
+        assert!(
+            outcome.fired,
+            "{signal} stopped reading {path}, which is that tool's own \
+             configuration syntax: {outcome:?}"
+        );
+    }
+}
+
+#[test]
 fn an_ordinary_config_edit_does_not_become_a_caveat() {
     // The counterweight to the property. A detector could satisfy every
     // assertion above by marking every config file unassessed, and the caveat
