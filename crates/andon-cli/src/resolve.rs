@@ -293,6 +293,27 @@ fn summarize(paths: &[String]) -> String {
 
 /// Resolve a range, applying the base ladder and the no-diff fallback.
 pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailure> {
+    // A HALF-FINISHED OPERATION IS ASKED ABOUT BEFORE ANYTHING ELSE IS.
+    //
+    // `ResolvedRange::resolve` refuses on this too, and last round the ladder was
+    // taught to propagate that refusal instead of swallowing it. That fixed the
+    // repositories where a base candidate exists. It left the ones where none
+    // does: the loop body never runs, `resolve` is never called, nothing asks the
+    // question, and the fall-through returns `UncommittedWork` — a message about
+    // conflict markers as though they were an ordinary dirty tree, recommending
+    // `--last-merged`, which the next command refuses with the typed error that
+    // was never reached. A repository with a `trunk` branch and no remote is that
+    // repository, and so is one five minutes after `git init`.
+    //
+    // The same dead end, surviving on the path where the ladder cannot reach it.
+    // Whether the question gets asked must not depend on which refs happen to
+    // exist, so it is asked here, of the repository, before any of them are
+    // consulted — including before `status`, whose answer over a conflicted tree
+    // is a list of paths that are neither side of the merge.
+    if let Some(operation) = andon_core::git::in_progress_operation(git)? {
+        return Err(ResolveError::OperationInProgress { operation }.into());
+    }
+
     let head_spec = request.head.clone().unwrap_or_else(|| "HEAD".to_string());
     // Read once, before any branch, so every outcome can use it.
     let uncommitted = uncommitted_paths(git)?;

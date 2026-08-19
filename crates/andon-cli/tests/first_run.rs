@@ -1434,6 +1434,104 @@ fn a_half_finished_operation_says_so_on_the_default_path() {
     assert!(!said.contains("--last-merged"), "{said}");
 }
 
+#[test]
+fn a_half_finished_operation_says_so_where_the_ladder_finds_no_candidate() {
+    // THE SAME DEAD END, on the path the ladder cannot reach.
+    //
+    // Propagating the typed error out of the ladder fixed the repositories where
+    // a base candidate exists. Where none does — a `trunk` branch, no remote,
+    // which is every checkout five minutes after `git init` — the loop body never
+    // runs, `ResolvedRange::resolve` is never called, nothing asks whether an
+    // operation is half-finished, and the fall-through prints the generic
+    // uncommitted-work refusal recommending `--last-merged`. Which the next
+    // command refuses with the typed error. Reproduced exactly that way before
+    // this test existed.
+    //
+    // Whether the question gets asked must not depend on which refs happen to
+    // exist, so it is asked of the repository before any of them are consulted.
+    let repo = stranger_repo();
+    let root = repo.path();
+    let path = root.to_str().expect("utf-8").to_string();
+    let git = Git::open(root).expect("a repository");
+
+    // No name in `BASE_CANDIDATES`, and no remote to supply one.
+    git.cmd(["branch", "--move", "trunk"])
+        .output()
+        .expect("rename the branch");
+
+    // A conflicting cherry-pick, which is the state a rebase-heavy agent lands in.
+    let base = head_of(&git);
+    git.cmd(["checkout", "--quiet", "-b", "side", &base])
+        .output()
+        .expect("branch");
+    std::fs::write(root.join("src").join("greet.ts"), b"export const x = 1;\n").expect("write");
+    git.cmd(["commit", "--quiet", "--all", "-m", "side"])
+        .output()
+        .expect("commit");
+    git.cmd(["checkout", "--quiet", "trunk"])
+        .output()
+        .expect("checkout back");
+    std::fs::write(root.join("src").join("greet.ts"), b"export const x = 2;\n").expect("write");
+    git.cmd(["commit", "--quiet", "--all", "-m", "ours"])
+        .output()
+        .expect("commit");
+    // Expected to fail: the conflict is the fixture.
+    let _ = git.cmd(["cherry-pick", "side"]).output();
+    assert!(
+        git.facts().git_dir.join("CHERRY_PICK_HEAD").exists(),
+        "the cherry-pick did not conflict, so this test asserts nothing"
+    );
+
+    // The premise: no base candidate resolves, so the ladder cannot be what asks.
+    for candidate in [
+        "@{upstream}",
+        "origin/HEAD",
+        "origin/main",
+        "origin/master",
+        "upstream/main",
+        "main",
+        "master",
+    ] {
+        // An error and a quiet nothing both mean "this repository does not have
+        // it": `@{upstream}` exits 128 with no upstream configured, the rest exit
+        // 1 with no output.
+        assert!(
+            !matches!(
+                git.cmd(["rev-parse", "--verify", "--quiet", candidate])
+                    .succeeds_with_output(),
+                Ok(Some(_))
+            ),
+            "{candidate} resolves here, so this test is the ladder path again"
+        );
+    }
+
+    let stderr =
+        |output: &std::process::Output| String::from_utf8_lossy(&output.stderr).into_owned();
+    for flags in [
+        vec!["measure", "--repo", &path, "--no-color"],
+        vec!["measure", "--repo", &path, "--no-color", "--last-merged"],
+        vec!["measure", "--repo", &path, "--no-color", "--no-fallback"],
+    ] {
+        let named = flags.join(" ");
+        let said = stderr(&run(&flags));
+        assert!(
+            said.contains("cherry-pick is in progress"),
+            "`{named}` did not name the half-finished operation:\n{said}"
+        );
+        // The remedy has to be one that works, and the dead-end suggestion must
+        // not be made — the same binary refuses it two lines up.
+        assert!(said.contains("--abort"), "no remedy that works:\n{said}");
+        assert!(
+            !said.contains("--last-merged"),
+            "`{named}` offered a way out of a state it refuses:\n{said}"
+        );
+        assert!(
+            !said.contains("uncommitted work here"),
+            "`{named}` described conflict markers as an ordinary dirty tree:\n{said}"
+        );
+    }
+}
+
 /// The complex function these tests write when they need one that measures.
 const NESTED_TS: &str = r#"
 export function classify(a: number, b: number, c: number): string {

@@ -494,7 +494,22 @@ fn remedy_for(operation: &str) -> &'static str {
 /// Detected by the marker directories and files git itself uses, so the answer
 /// does not depend on parsing a localized message — and `LC_ALL=C` notwithstanding,
 /// a state machine read from prose is a state machine read wrong.
-fn in_progress_operation(git: &Git) -> Result<Option<&'static str>, ResolveError> {
+///
+/// # Why this is public
+///
+/// [`ResolvedRange::resolve`] refuses on it, and that turned out to be one call
+/// site too few. A caller that walks a ladder of base candidates only reaches
+/// `resolve` if a candidate exists, so a repository with no remote and no branch
+/// called `main` — a trunk-only checkout, `git init` an hour ago — never asked
+/// the question at all and fell through to a message about uncommitted work. The
+/// operation state is a fact about the repository, and whether it gets asked must
+/// not depend on which refs happen to be present.
+///
+/// So the detector is callable before a ladder runs, and there is still exactly
+/// one implementation of it. Exported rather than duplicated for the reason the
+/// muzzle rule in [`crate::verdict::severity`] is: a second copy is a copy that
+/// can drift, and the drift would be silent.
+pub fn in_progress_operation(git: &Git) -> Result<Option<&'static str>, ResolveError> {
     let git_dir = &git.facts().git_dir;
     for (marker, operation) in [
         ("rebase-merge", "rebase"),
