@@ -65,6 +65,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
+      # Before the script runs, a check that what it says about the ledger is
+      # true. The line that prints the note once read it through `head -c 400`
+      # under `pipefail`: the bound closed the pipe, `git notes show` died on the
+      # broken pipe, and the `||` branch printed "(no note is recorded against
+      # HEAD)" onto the end of the note it had just printed. A real note here is
+      # one canonical line of about 640 KB, so that fired on every run — the step
+      # whose job is to show the run was filed was the step denying it was.
+      #
+      # It needs no toolchain and takes seconds. It runs first so that a
+      # regression is reported as a broken claim rather than read as one.
+      - name: Regression test — the ledger line reports the truth
+        run: bash scripts/tests/self-measure-ledger.test.sh
+
       # The measurement itself, printed for a reader. `--exit-zero` because the
       # verdict does not gate here (see the header); the gate is the next step.
       - name: Measure
