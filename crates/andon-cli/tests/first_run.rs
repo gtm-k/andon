@@ -1768,30 +1768,57 @@ fn a_dirty_record_reads_as_uncommitted_on_every_surface() {
     );
     let head_short: String = record.compare_context.head_oid.chars().take(12).collect();
 
-    for surface in [
-        vec!["report", "--repo", &path, "--no-color"],
-        vec!["wait", "--repo", &path, "--no-color"],
+    // The trust sentence, read from the one function every surface renders it
+    // from, so a reworded line cannot make this test stop checking anything.
+    let trust = andon_cli::render::attestation_line(record.attestation.value);
+    assert!(
+        trust.contains("no CI recompute is possible"),
+        "the fixture is not the unwitnessed-uncommitted case: {trust}"
+    );
+
+    // Asserted inside the loop rather than beside it. It used to be checked once,
+    // for `report`, after the loop — so `wait` was taught the change line and the
+    // exit code and not this, and three surfaces said a recompute of this record
+    // is impossible while the fourth said nothing. A per-surface claim checked on
+    // one surface is how the next surface goes missing.
+    let html = repo.path().join("dirty.html");
+    let html_arg = html.to_str().expect("utf-8").to_string();
+    let _ = run(&["report", "--repo", &path, "--html", &html_arg]);
+    for (name, rendered) in [
+        (
+            "report".to_string(),
+            stdout(&run(&["report", "--repo", &path, "--no-color"])),
+        ),
+        (
+            "wait".to_string(),
+            stdout(&run(&["wait", "--repo", &path, "--no-color"])),
+        ),
+        (
+            "report --html".to_string(),
+            std::fs::read_to_string(&html).expect("the HTML report reads back"),
+        ),
     ] {
-        let name = surface[0].to_string();
-        let rendered = stdout(&run(&surface));
         assert!(
             rendered.contains("uncommitted working tree"),
             "`andon {name}` did not say the head was a working tree:\n{rendered}"
         );
         assert!(
-            !rendered.contains(&head_short),
-            "`andon {name}` printed the snapshot hash abbreviated like a commit OID \
-             ({head_short}):\n{rendered}"
+            rendered.contains("no CI recompute is possible"),
+            "`andon {name}` carried no trust line, so it disagrees with the surfaces that \
+             do about whether CI can ever witness this record:\n{rendered}"
         );
+        // Abbreviation is what made a snapshot hash look like a commit OID, and
+        // only the terminal surfaces abbreviate. The HTML prints the whole
+        // sixty-four characters, which no commit OID has, in a row whose headline
+        // three lines up already says the head is a working tree.
+        if name != "report --html" {
+            assert!(
+                !rendered.contains(&head_short),
+                "`andon {name}` printed the snapshot hash abbreviated like a commit OID \
+                 ({head_short}):\n{rendered}"
+            );
+        }
     }
-
-    // And the trust line, which is the sentence that says a recompute is not
-    // merely absent but impossible.
-    let reported = stdout(&run(&["report", "--repo", &path, "--no-color"]));
-    assert!(
-        reported.contains("no CI recompute is possible"),
-        "the read-back render carried no trust line:\n{reported}"
-    );
 }
 
 #[test]

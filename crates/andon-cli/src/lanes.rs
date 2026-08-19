@@ -37,6 +37,22 @@ pub fn wait(record: &MeasurementRecord) -> String {
         "\n  change   {}",
         crate::resolve::change_line(&record.compare_context)
     );
+    // How much trust the record has earned, from the one function that answers
+    // that question for every surface.
+    //
+    // This was the last surface not calling it. `wait` learned to label an
+    // uncommitted head and stopped there, so terminal `report`, the read-back
+    // report, the HTML report and `attest-stub` all told a reader that no CI
+    // recompute of this record is possible — *not now and not later* — and `wait`
+    // said nothing at all about it. Three surfaces agreeing and a fourth silent
+    // is a cross-surface disagreement, not a disclosure: a reader who reaches for
+    // `wait` to ask what is still outstanding is asking exactly the question
+    // whose answer is "nothing, and nothing ever can be".
+    let _ = writeln!(
+        out,
+        "  trust    {}",
+        crate::render::attestation_line(record.attestation.value)
+    );
 
     // `wait` is a rendering of the record, so it carries what every rendering of
     // the record has to carry. It named neither of these, which is half of why
