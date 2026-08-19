@@ -96,7 +96,7 @@ const BASE_CANDIDATES: &[&str] = &[
 /// Why no range could be resolved at all.
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveFailure {
-    /// The repository's HEAD has no parent this checkout can see.
+    /// The head has no parent this checkout can see.
     ///
     /// The one honest dead end: there is no earlier state to compare against, so
     /// every alternative would mean measuring something against itself and
@@ -114,6 +114,17 @@ pub enum ResolveFailure {
     /// `git.facts().shallow` is the same fact [`ResolveError::NoMergeBase`]
     /// already reads for the same reason; this is that reading applied one
     /// dead end over.
+    ///
+    /// # Why it also asks how many commits there are
+    ///
+    /// "This repository has a single commit" is a statement about the
+    /// repository, and the head that has no parent is not always the only
+    /// commit in one. `--head <root>` on a three-commit repository reaches here,
+    /// and so does a detached checkout of a root commit — both were told the
+    /// repository had one commit while `git rev-list --count HEAD` on the branch
+    /// beside them said three. The count is read, and the sentence says what was
+    /// found: for the repository that really has one commit it is unchanged, and
+    /// for the other two it names the head rather than the repository.
     #[error(
         "{}. {}",
         if *.shallow {
@@ -121,6 +132,12 @@ pub enum ResolveFailure {
                 "this is a shallow clone and {head_short} is at the boundary of the history it \
                  was given, so there is no earlier state here to compare it against — the \
                  commits before it exist, they were just not fetched"
+            )
+        } else if *.other_commits {
+            format!(
+                "{head_short} is a root commit: it has no parent, so there is no earlier state \
+                 to compare it against. This repository does hold other commits — none of them \
+                 is its parent"
             )
         } else {
             format!(
@@ -131,17 +148,24 @@ pub enum ResolveFailure {
         if *.shallow {
             "Fetch the rest — `git fetch --unshallow`, or `--deepen <n>` — or name both ends \
              explicitly: `andon measure --base <rev> --head <rev>`"
+        } else if *.other_commits {
+            "Measure a head that has history behind it — `andon measure --head <rev>` — or name \
+             both ends explicitly: `andon measure --base <rev> --head <rev>`"
         } else {
             "Commit something, or name both ends explicitly: \
              `andon measure --base <rev> --head <rev>`"
         }
     )]
     NoParent {
-        /// Abbreviated HEAD, so the message names the commit it is about.
+        /// Abbreviated head, so the message names the commit it is about.
         head_short: String,
         /// Whether the history is truncated rather than absent. Decides which
         /// of two remedies is the true one.
         shallow: bool,
+        /// Whether this repository holds any commit besides the head. Read, so
+        /// that a root commit in a repository full of them is not described as
+        /// the only one.
+        other_commits: bool,
     },
     /// Every base candidate resolved, and none of them left anything to measure.
     ///
@@ -615,6 +639,7 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
         return Err(ResolveFailure::NoParent {
             head_short,
             shallow: git.facts().shallow,
+            other_commits: more_than_one_commit(git),
         });
     }
     last_merged_change(git, &head_spec, &asked_for, &uncommitted)
@@ -697,6 +722,7 @@ fn last_merged_change(
             // the shallow case PREMORTEM A1 rather than a corner: a CI checkout
             // at `fetch-depth: 1` is a stranger's first command.
             shallow: git.facts().shallow,
+            other_commits: more_than_one_commit(git),
         });
     }
 
@@ -759,6 +785,33 @@ fn parse_base(spec: &str) -> Revision {
         Some(reference) => Revision::merge_base(reference),
         None => Revision::Rev(spec.to_string()),
     }
+}
+
+/// Whether this repository holds more than one commit.
+///
+/// Asked so that [`ResolveFailure::NoParent`] can say "this repository has a
+/// single commit" only where that is true. `--head <root>` and a detached
+/// checkout of a root commit both reach that refusal in repositories with
+/// plenty of history, and both were told they had one commit.
+///
+/// Counts over every ref and over `HEAD`, so a detached head that no ref points
+/// at is included, and stops at two — the question is a yes or no, not a size.
+/// A repository git will not count is treated as "no", which keeps the sentence
+/// the conservative one: the head really does have no parent either way, and the
+/// extra clause is the part that could be wrong.
+fn more_than_one_commit(git: &Git) -> bool {
+    git.cmd([
+        "rev-list",
+        "--count",
+        "--max-count=2",
+        "--all",
+        "HEAD",
+        "--end-of-options",
+    ])
+    .text()
+    .ok()
+    .and_then(|text| text.trim().parse::<u32>().ok())
+    .is_some_and(|count| count > 1)
 }
 
 /// Whether a revision resolves to a commit in this repository.

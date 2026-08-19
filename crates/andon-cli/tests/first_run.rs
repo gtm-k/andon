@@ -2687,3 +2687,69 @@ fn the_machine_surface_stays_machine_readable_beside_every_other_flag() {
         "the operational line was moved off the human surface too:\n{printed}"
     );
 }
+
+#[test]
+fn a_root_commit_in_a_repository_full_of_them_is_not_called_the_only_one() {
+    // "This repository has a single commit" is a statement about the
+    // repository, and the head with no parent is not always the only commit in
+    // one. Two ways to reach the refusal in a three-commit repository — pinning
+    // `--head <root>`, and a detached checkout of the root — and both were told
+    // the repository had one commit while `git rev-list --count HEAD` on the
+    // branch beside them said three.
+    //
+    // The count is read now, so the sentence says what was found rather than
+    // asserting something the reader can disprove in one command.
+    let repo = scratch_on_branch("main");
+    let path = repo.path().to_str().expect("utf-8").to_string();
+    let git = Git::open(repo.path()).expect("a repository");
+    // A history to be wrong about.
+    commit_fixture(&git, "second");
+    std::fs::write(repo.path().join("src.ts"), b"export const c = 3;\n").expect("write");
+    commit_fixture(&git, "third");
+    let root = git
+        .cmd(["rev-list", "--max-parents=0", "HEAD"])
+        .text()
+        .expect("rev-list")
+        .trim()
+        .to_string();
+    let count = git
+        .cmd(["rev-list", "--count", "HEAD"])
+        .text()
+        .expect("rev-list")
+        .trim()
+        .to_string();
+    assert_eq!(
+        count, "3",
+        "the fixture is not the repository this test is about"
+    );
+
+    for args in [
+        vec!["measure", "--repo", &path, "--head", &root, "--no-color"],
+        vec!["measure", "--repo", &path, "--no-color"],
+    ] {
+        // The second shape needs the detached checkout; the first does not.
+        if args.len() == 4 {
+            git.cmd(["checkout", "--quiet", &root])
+                .output()
+                .expect("detach");
+        }
+        let output = run(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            !stderr.contains("single commit"),
+            "a three-commit repository was told it has one:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("root commit"),
+            "the refusal does not name what is actually true of the head:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("Commit something"),
+            "a repository with three commits was told to commit something:\n{stderr}"
+        );
+    }
+    git.cmd(["checkout", "--quiet", "main"])
+        .output()
+        .expect("reattach");
+}
