@@ -1128,3 +1128,41 @@ fn fixing_the_finding_clears_the_budget_on_a_real_repository() {
     );
     assert!(!record.verdict.iteration.escalated);
 }
+
+#[test]
+fn a_renamed_path_is_named_as_the_file_it_became() {
+    // `git status --porcelain` reports a rename as `R  old -> new`, and a naive
+    // read of the line yields "old.ts -> new.ts" as though it were one path —
+    // a string that names nothing in the repository, printed in a message whose
+    // entire job is to say which files were not measured.
+    let repo = stranger_repo();
+    let git = Git::open(repo.path()).expect("a repository");
+    git.cmd(["mv", "src/greet.ts", "src/hello.ts"])
+        .output()
+        .expect("git mv");
+
+    // A pinned commit range, so the head is a commit and the rename sits beside
+    // it as uncommitted work — which is the case this disclosure is for.
+    let rendered = stdout(&run(&[
+        "measure",
+        "--repo",
+        repo.path().to_str().expect("utf-8"),
+        "--base",
+        &repo.base_oid,
+        "--head",
+        "HEAD",
+        "--no-color",
+        "--exit-zero",
+    ]));
+    if !rendered.contains("uncommitted content") {
+        // The disclosure only appears on a commit head with uncommitted work
+        // beside it; if the fixture stops producing that, say so rather than
+        // asserting nothing.
+        panic!("the disclosure this checks did not appear:\n{rendered}");
+    }
+    assert!(
+        !rendered.contains(" -> "),
+        "a rename was reported as one path with an arrow in it:\n{rendered}"
+    );
+    assert!(rendered.contains("src/hello.ts"), "{rendered}");
+}

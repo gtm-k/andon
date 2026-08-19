@@ -315,6 +315,16 @@ fn uncommitted_paths(git: &Git) -> Result<Vec<String>, ResolveFailure> {
     Ok(text
         .lines()
         .filter_map(|line| line.get(3..).map(str::trim))
+        // A rename is reported as `R  old -> new`, and the path this is about is
+        // the destination. Without this the note names `old.ts -> new.ts` as
+        // though it were one file — a sentence that does not describe anything
+        // in the repository, in a message whose whole job is to name what was
+        // not measured.
+        //
+        // Non-ASCII paths need no handling: `core.quotepath` is pinned off by
+        // the hygiene wrapper, so they arrive as themselves rather than
+        // octal-escaped.
+        .map(|path| path.rsplit(" -> ").next().unwrap_or(path).trim())
         .filter(|path| !path.is_empty())
         .map(|path| path.to_string())
         .collect())
