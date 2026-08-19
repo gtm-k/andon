@@ -59,7 +59,8 @@ use andon_core::parse_health::{self, ParseHealth};
 use andon_core::registry::{lint, parse_file, EngineRegistryFile, Registry};
 use andon_core::schema::enums::{Completeness, EngineClass, EngineFamily, Severity};
 use andon_core::schema::payload::{
-    CacheState, EvidenceRef, Freshness, MeasurementResult, MetricValue, ResultScope, ScopeKind,
+    CacheState, EvidenceRef, Freshness, LineSpan, MeasurementResult, MetricValue, ResultScope,
+    ScopeKind,
 };
 use andon_core::schema::regime::MeasurementRegime;
 use andon_core::verdict::ladder::SeverityLadder;
@@ -393,6 +394,60 @@ impl ClonesEngine {
     /// Returned as a triple rather than folded into one number because the
     /// change-scoped caveat needs all three, and because a merged `ParseHealth`
     /// on its own cannot say whether ten ERROR nodes were one bad file or ten.
+    /// Where the longest clone is, for the result that reports its length.
+    ///
+    /// # A change-scoped number that is nonetheless about one place
+    ///
+    /// The other three change-scoped metrics are aggregates over the measured
+    /// set and have no location: a duplicated-token total is about every file at
+    /// once, and naming one of them would be picking a scapegoat. The longest
+    /// clone is not an aggregate — it is a specific fragment — and it was the
+    /// one number in this engine an agent could act on if only it said where.
+    /// It shipped with `path: null` and `line_span: null` alongside the rest.
+    ///
+    /// So the kind stays `Change` (the *question* is still "what is the longest
+    /// clone in this change") and the location is filled in. Deterministic: the
+    /// groups are sorted longest-first and each group's fragments are sorted, so
+    /// two machines name the same side of the same clone, which matters because
+    /// `scope` is inside the per-result digest and is the pairing key.
+    ///
+    /// # What this cannot say, and where that goes
+    ///
+    /// A clone has at least two sides and `ResultScope` has room for one path.
+    /// "Duplicated with `src/b.ts:12-40`" is what makes a duplication fixable,
+    /// and it is computed and sitting in [`ClonesEngine::report`] — what is
+    /// missing is a field to carry it. That is P0-owned schema, so this names
+    /// one side and the twin is routed rather than crammed into `symbol`, which
+    /// is typed as a function or class name and rendered as one.
+    fn largest_clone_scope(&self) -> ResultScope {
+        let Some(fragment) = self
+            .report
+            .groups
+            .first()
+            .and_then(|group| group.fragments.first())
+        else {
+            // No duplication found, so there is no longest clone and nothing to
+            // point at. A location here would be a fabricated one.
+            return ResultScope {
+                kind: ScopeKind::Change,
+                path: None,
+                blob_oid: None,
+                symbol: None,
+                line_span: None,
+            };
+        };
+        ResultScope {
+            kind: ScopeKind::Change,
+            path: Some(fragment.path.clone()),
+            blob_oid: self.blob_by_path.get(&fragment.path).cloned(),
+            symbol: None,
+            line_span: Some(LineSpan {
+                start: fragment.line_start,
+                end: fragment.line_end,
+            }),
+        }
+    }
+
     fn measured_set_health(&self) -> (ParseHealth, usize, usize) {
         let mut merged = ParseHealth::default();
         let mut degraded = 0usize;
@@ -502,7 +557,7 @@ impl MeasureEngine for ClonesEngine {
             ),
             self.result(
                 METRIC_LARGEST_CLONE,
-                change_scope(),
+                self.largest_clone_scope(),
                 MetricValue::Count(self.report.largest_clone_tokens()),
                 evidence_for(METRIC_LARGEST_CLONE),
             ),
@@ -540,7 +595,18 @@ impl MeasureEngine for ClonesEngine {
                     // who doubts a digest can fetch exactly these bytes.
                     blob_oid: self.blob_by_path.get(path).cloned(),
                     symbol: None,
-                    line_span: None,
+                    // Where to start reading. A count with no location tells an
+                    // agent that duplication happened and not where, which is
+                    // one short of what it needs to act — see
+                    // `CloneReport::duplicated_span_by_path` for why this is the
+                    // longest unbroken stretch rather than the whole envelope.
+                    // Absent, never a `1-1`, when the file holds no duplication.
+                    line_span: self.report.duplicated_span_by_path.get(path).map(|range| {
+                        LineSpan {
+                            start: range.start,
+                            end: range.end,
+                        }
+                    }),
                 },
                 MetricValue::Count(duplicated as u64),
                 evidence_for(METRIC_FILE_DUPLICATED_TOKENS),

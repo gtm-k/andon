@@ -98,6 +98,12 @@ pub const SATURATED_OCCURRENCES: usize = 32;
 /// bucket pairs — and that moves every reported number on periodic content, so
 /// a run before this change and a run after it are not comparable measurements
 /// and must not meet at an equal regime.
+///
+/// It carries the location change too, which arrived in the same revision:
+/// `ResultScope` is inside `ResultDigestInput`, so filling in a path and a line
+/// span moves every per-result digest this engine produces even where the number
+/// is unchanged. One regime move for both, because they ship together and no
+/// build exists with one and not the other.
 pub const ALGORITHM: &str = "rabin-karp+sat32-mid";
 
 /// Rolling-hash base. An odd constant, so multiplication is invertible modulo

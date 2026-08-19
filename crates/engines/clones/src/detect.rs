@@ -69,8 +69,37 @@ pub struct CloneReport {
     /// A union over every confirmed match, taken before group selection — see
     /// the note in [`detect`] on why the two answers come from different sets.
     pub duplicated_tokens_by_path: BTreeMap<String, u32>,
+    /// The longest unbroken duplicated stretch in each file, as lines.
+    ///
+    /// # Why the longest run and not the whole covered envelope
+    ///
+    /// Coverage is a set of token positions and can be full of holes: a file
+    /// with a copied helper at the top and another at the bottom is duplicated
+    /// in two places and ordinary in between. A span from the first covered
+    /// token to the last would say the whole file is a copy, which is a
+    /// different and false claim. The longest contiguous run is the one place a
+    /// reader should open first, and it is a statement the coverage set
+    /// actually supports.
+    ///
+    /// Present for exactly the paths in [`CloneReport::duplicated_tokens_by_path`]
+    /// with a non-zero count — including the files that hold a copy but appear
+    /// in no reported group, which is the case `groups` alone cannot answer.
+    pub duplicated_span_by_path: BTreeMap<String, LineRange>,
     /// Tokens in the measured set, per path.
     pub tokens_by_path: BTreeMap<String, u32>,
+}
+
+/// A 1-based inclusive range of lines.
+///
+/// Deliberately this crate's own type rather than P0's `LineSpan`: `detect` is
+/// the pure detection layer and has no schema dependency, and the engine
+/// converts on the way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LineRange {
+    /// First line, 1-based and inclusive.
+    pub start: u32,
+    /// Last line, 1-based and inclusive.
+    pub end: u32,
 }
 
 impl CloneReport {
@@ -340,11 +369,50 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
     report.groups = out_groups;
 
     for (file, tokens) in covered {
+        let path = files[file as usize];
         report
             .duplicated_tokens_by_path
-            .insert(files[file as usize].clone(), tokens.len() as u32);
+            .insert(path.clone(), tokens.len() as u32);
+        // Where to open the file. Derived from the coverage set rather than
+        // from `groups`, because a file can hold a copy and appear in no
+        // reported group — the greedy selection drops a whole group when one
+        // member overlaps something already kept, and the other members are
+        // still duplicated code somebody has to find.
+        if let Some((first, last)) = longest_run(&tokens) {
+            let rows = &index.files[path].rows;
+            report.duplicated_span_by_path.insert(
+                path.clone(),
+                LineRange {
+                    start: rows.get(first as usize).copied().unwrap_or(0) + 1,
+                    end: rows.get(last as usize).copied().unwrap_or(0) + 1,
+                },
+            );
+        }
     }
     report
+}
+
+/// The longest run of consecutive values in a sorted set, as an inclusive pair.
+fn longest_run(values: &BTreeSet<u32>) -> Option<(u32, u32)> {
+    let mut best: Option<(u32, u32)> = None;
+    let mut run: Option<(u32, u32)> = None;
+    for value in values {
+        run = match run {
+            Some((start, end)) if *value == end + 1 => Some((start, *value)),
+            Some((start, end)) => {
+                if best.is_none_or(|(b0, b1)| b1 - b0 < end - start) {
+                    best = Some((start, end));
+                }
+                Some((*value, *value))
+            }
+            None => Some((*value, *value)),
+        };
+    }
+    match (best, run) {
+        (Some((b0, b1)), Some((r0, r1))) if r1 - r0 > b1 - b0 => Some((r0, r1)),
+        (Some(b), _) => Some(b),
+        (None, run) => run,
+    }
 }
 
 /// The partners one occurrence of a saturated hash is paired with.
