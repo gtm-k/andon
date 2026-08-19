@@ -93,6 +93,7 @@ does_not_predict = [
     "defect density, maintainability, or review effort",
     "duplication outside the measured file set, which the number never looked at",
     "duplication inside a region the parser could not read — the token stream stops where the grammar does, so a copied block hidden behind a parse error is not counted. Results over a file the parser did not finish, and every change-scoped number computed over a set containing one, are marked `parse-degraded` and are lower bounds (PREMORTEM T3)",
+    "the whole of the duplication in content repetitive enough to saturate the detector's cost cap. Above 32 occurrences of one 25-token window — generated code, literal tables, minified bundles — an occurrence is paired with a bounded set of partners rather than all of them, so a long match between two occurrences at neither extreme of that set can be missed. Measured against an uncapped run over a battery of periodic shapes, the only one that differs is two copies of a distinct block at opposite ends of repetitive filler, at 98% of the uncapped count; the cap is named in the `measurement_regime` as `sat32-mid`. The error is one-directional: coverage is a union over confirmed matches, so the number is a lower bound and never an overstatement",
 ]
 owner = "gtm-k"
 expiry = "2027-03-15"

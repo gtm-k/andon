@@ -22,6 +22,7 @@
 //! clone that is not one. In a compare-set value, "almost certainly right" is
 //! not a property worth having.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::fingerprint::{self, MIN_CLONE_TOKENS, SATURATED_OCCURRENCES, WINDOW_TOKENS};
@@ -178,37 +179,23 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
         if occurrences.len() < 2 {
             continue;
         }
-        // A saturated bucket pairs each occurrence with its **nearest usable**
-        // partner instead of with all of them. See
-        // `fingerprint::SATURATED_OCCURRENCES` for why that bounds the cost.
-        //
-        // Nearest *usable*, not nearest, and the distinction was worth two
-        // wrong attempts. In a periodic region the following occurrences are one
-        // period apart, and a same-file pair is reported at no more than its lag
-        // — so a partner closer than `MIN_CLONE_TOKENS` can never produce a
-        // clone that clears the floor. Stopping at the first non-overlapping
-        // partner found nothing at all on a three-thousand-row table: zero
-        // groups where the answer is one.
-        //
-        // So the scan walks to the first partner that could yield a reportable
-        // clone. It is bounded: at most `MIN_CLONE_TOKENS` occurrences of one
-        // hash fit within that distance in one file, and a partner in another
-        // file stops it immediately.
+        // A saturated bucket pairs each occurrence with a **bounded set** of
+        // partners instead of with all of them. See `bounded_partners` for
+        // which ones and why, and `fingerprint::SATURATED_OCCURRENCES` for the
+        // cost this is buying and the wrong number the previous rule produced.
         let saturated = occurrences.len() > SATURATED_OCCURRENCES;
         for (i, a) in occurrences.iter().enumerate() {
             let rest = &occurrences[i + 1..];
-            let partners: &[Occurrence] = if saturated {
-                match rest
-                    .iter()
-                    .position(|b| a.file != b.file || b.window >= a.window + MIN_CLONE_TOKENS)
-                {
-                    Some(first) => &rest[first..first + 1],
-                    None => &[],
-                }
+            let partners: Cow<'_, [Occurrence]> = if saturated {
+                Cow::Owned(bounded_partners(
+                    a,
+                    rest,
+                    symbols[a.file as usize].len() as u32,
+                ))
             } else {
-                rest
+                Cow::Borrowed(rest)
             };
-            for b in partners {
+            for b in partners.iter() {
                 // Seeds only. If the preceding window pair also matches, this
                 // pair is the interior of a match already being extended from
                 // its own start, and extending it again would report the same
@@ -358,6 +345,85 @@ pub fn detect(index: &Index, paths: &[String]) -> CloneReport {
             .insert(files[file as usize].clone(), tokens.len() as u32);
     }
     report
+}
+
+/// The partners one occurrence of a saturated hash is paired with.
+///
+/// `rest` is the occurrences after `a`, in `(file, window)` order, so the ones
+/// sharing `a`'s file are a prefix of it. `tokens_in_file` is the length of
+/// `a`'s token stream.
+///
+/// # Two extremes, because the two answers this engine reports live at
+/// different ones
+///
+/// A same-file pair is reported at `min(extend, lag)` — the overlap rule a few
+/// lines above caps a self-clone at its own lag, or the two halves share tokens
+/// and one run of repetition is counted twice. `extend` cannot run past the end
+/// of the later copy, so that length is bounded by
+/// `min(b.window - a.window, tokens_in_file - b.window)`: it *rises* with the
+/// lag while the first term binds and *falls* with it once the second does. The
+/// two terms cross at `a.window + (tokens_in_file - a.window) / 2`, and no
+/// partner anywhere in the bucket can yield a longer reportable clone than one
+/// at that crossing.
+///
+/// So the two extremes are:
+///
+/// - the **nearest usable** partner, which is the shortest reportable lag. It
+///   is what finds a helper copied into a hundred files, because a partner in
+///   another file stops the scan immediately; and in one file it is the
+///   tightest repetition the floor admits.
+/// - the two same-file occurrences **bracketing the crossing**, which is where
+///   the longest reportable clone can be. Two, not one, because the occurrence
+///   list is discrete and the crossing generally falls between two of them —
+///   with only the lower of the pair, 37 identical lines report 216 of 222
+///   tokens instead of 222.
+///
+/// Both are needed and neither substitutes for the other: `largest-clone-tokens`
+/// and the greedy group selection read the longest match, while the coverage
+/// union reads every confirmed one. Generating only the nearest is what froze
+/// the duplicated-token count at 108 for every file above the cap.
+///
+/// Bounded work, which is the whole point of the cap: one forward scan for the
+/// nearest — at most `MIN_CLONE_TOKENS` occurrences of one hash fit inside that
+/// distance in one file, and another file ends it — plus two binary searches,
+/// and at most three extensions where an uncapped bucket would do one per
+/// remaining occurrence.
+fn bounded_partners(a: &Occurrence, rest: &[Occurrence], tokens_in_file: u32) -> Vec<Occurrence> {
+    let mut chosen: Vec<Occurrence> = Vec::with_capacity(3);
+
+    // Nearest *usable*, not nearest, and the distinction was worth two wrong
+    // attempts. In a periodic region the following occurrences are one period
+    // apart, and a partner closer than `MIN_CLONE_TOKENS` can never produce a
+    // clone that clears the floor. Stopping at the first non-overlapping
+    // partner found nothing at all on a three-thousand-row table: zero groups
+    // where the answer is one.
+    if let Some(first) = rest
+        .iter()
+        .position(|b| a.file != b.file || b.window >= a.window + MIN_CLONE_TOKENS)
+    {
+        chosen.push(rest[first]);
+    }
+
+    // `rest` is sorted by `(file, window)` and begins at `a`'s own file, so the
+    // same-file partners are the prefix up to the first foreign file.
+    let same_file = &rest[..rest.partition_point(|b| b.file == a.file)];
+    if !same_file.is_empty() {
+        let crossing = a.window + tokens_in_file.saturating_sub(a.window) / 2;
+        let at = same_file.partition_point(|b| b.window < crossing);
+        if at > 0 {
+            chosen.push(same_file[at - 1]);
+        }
+        if at < same_file.len() {
+            chosen.push(same_file[at]);
+        }
+    }
+
+    // Sorted and deduplicated so the partner set — and therefore the group
+    // order, and therefore the digests taken over it — does not depend on which
+    // rule proposed a placement first.
+    chosen.sort_unstable();
+    chosen.dedup();
+    chosen
 }
 
 /// Whether the window pair one position earlier also matches — the test that
@@ -591,6 +657,17 @@ mod tests {
         let report = run(&[input("a.ts", &source)]);
         let elapsed = started.elapsed();
         assert_eq!(report.groups.len(), 1, "{:#?}", report.groups);
+        // The group count alone is not enough, and asserting only it is how
+        // this test stayed green through the freeze: one group is exactly what
+        // the broken saturated path produced too, at 108 duplicated tokens of
+        // 18022. The number is the thing the cap was accused of preserving.
+        assert!(
+            report.duplicated_ratio() > 0.99,
+            "3000 rows of literal table are duplicated nearly end to end; \
+             {} of {} tokens is the frozen answer returning",
+            report.duplicated_tokens(),
+            report.total_tokens()
+        );
         // Generous by an order of magnitude against the measured cost, because
         // this runs on shared CI hardware in a debug build; it is a guard
         // against the quadratic shape returning, not a benchmark.

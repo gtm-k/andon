@@ -39,26 +39,49 @@ pub const MIN_CLONE_TOKENS: u32 = 50;
 /// large generated file would blow the fast lane's 1000 ms warm budget on its
 /// own, which is PREMORTEM T6 arriving through an engine instead of through git.
 ///
-/// # What the cap preserves, and what it gives up
+/// # The paragraph that used to be here was false, and it froze a number
 ///
-/// Above the cap, each occurrence is paired only with its nearest *usable*
-/// partner rather than with all of them.
+/// It said that pairing each occurrence with its *nearest usable* partner
+/// preserved the answer for periodic content, "because the greedy disjoint
+/// selection in [`crate::detect`] keeps exactly that one — the longer-lag
+/// matches are the ones it discards anyway".
 ///
-/// Preserved: the reported answer for periodic content, which is the case the
-/// cap exists for. In a repeating region the nearest usable partner is the
-/// shortest reportable lag, and the greedy disjoint selection in
-/// [`crate::detect`] keeps exactly that one — the longer-lag matches are the
-/// ones it discards anyway. Preserved too: a helper copied into a hundred
-/// files, because adjacent pairs share one group key and accumulate into the
-/// same group.
+/// The greedy selection sorts by length **descending**. It keeps the longest
+/// match and discards the shorter ones, which is the opposite of what that
+/// sentence claimed — so the saturated path generated only the candidate the
+/// selection throws away and never the candidate it keeps. On content periodic
+/// enough to saturate a bucket, every occurrence's nearest usable partner sits
+/// at the same short lag and every seed but the first is rejected as the
+/// interior of a match already being extended, leaving exactly one group of
+/// exactly one lag no matter how long the file is. Measured, on N identical
+/// `export const vN = N;` lines: 36 lines reported 216 duplicated tokens and a
+/// ratio of 1.0, and 37 lines through 200,000 lines all reported 108 tokens —
+/// so the reported *ratio fell as the real duplication rose*, to 0.00009.
+///
+/// # What the cap does now
+///
+/// Above the cap, an occurrence is paired with a bounded set of partners
+/// instead of with all of them: the nearest usable one, and the two same-file
+/// occurrences bracketing the position that maximizes the reportable length.
+/// `bounded_partners` in [`crate::detect`] derives that position and states why
+/// it is the right one. Both extremes are generated, so the selection has the
+/// candidate it prefers and the coverage union has the region it covers.
+///
+/// Preserved, and now measured rather than asserted: the answer for periodic
+/// content matches an uncapped run exactly on the shapes
+/// `tests/periodic_saturation.rs` pins. Preserved too: a helper copied into a
+/// hundred files, because adjacent pairs share one group key and accumulate
+/// into the same group.
 ///
 /// Given up, and this is a real loss rather than a rounding one: in a saturated
-/// bucket, a *longer* match between two far-apart occurrences can be missed
-/// when a nearer partner offers a shorter one. Two copies of a large block at
-/// opposite ends of a file full of repeated syntax are the shape. The cap only
-/// engages above 32 occurrences of one window hash, which takes genuinely
-/// repetitive content to reach, and the alternative is quadratic — but "the
-/// answer does not change" would be a false claim and this used to make it.
+/// bucket, a longer match between two occurrences at *neither* extreme can
+/// still be missed. Two copies of a large block a third of the way into a file
+/// full of repeated syntax are the shape. The cap only engages above 32
+/// occurrences of one window hash, which takes genuinely repetitive content to
+/// reach, and the alternative is quadratic — an uncapped run over a 3000-row
+/// literal table took 6.6 s against a 1000 ms fast-lane budget. The residual is
+/// disclosed in `registry/clones.toml`'s `does_not_predict` rather than left
+/// here, because the reader who needs it is reading a number and not this file.
 ///
 /// The cap changes numbers, so it is part of the regime: see [`ALGORITHM`].
 pub const SATURATED_OCCURRENCES: usize = 32;
@@ -69,7 +92,13 @@ pub const SATURATED_OCCURRENCES: usize = 32;
 /// reported value, and a parameter that changes results and is not in the regime
 /// is a digest disagreement the verifier would read as tampering rather than as
 /// skew (PREMORTEM S4).
-pub const ALGORITHM: &str = "rabin-karp+sat32";
+///
+/// The `mid` suffix is the same rule applied to the *strategy* rather than the
+/// constant. The cap is still 32; what changed is which partners a saturated
+/// bucket pairs — and that moves every reported number on periodic content, so
+/// a run before this change and a run after it are not comparable measurements
+/// and must not meet at an equal regime.
+pub const ALGORITHM: &str = "rabin-karp+sat32-mid";
 
 /// Rolling-hash base. An odd constant, so multiplication is invertible modulo
 /// 2^64 and the low bits are not thrown away.
