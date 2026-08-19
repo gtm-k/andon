@@ -186,12 +186,19 @@ pub fn stored_verdict_is_contradicted(record: &MeasurementRecord) -> bool {
 /// A function rather than a constant because it names the count, and a reader
 /// deciding whether to trust a stored verdict needs to know how much of the
 /// change it is silent about.
+///
+/// It says nothing about where the record came from. The obvious sentence —
+/// "a build before that rule existed wrote it" — is the likely history and not
+/// something this can read, and a record doctored by hand a minute ago is a
+/// counterexample to it. The contradiction is the fact; its origin is a guess,
+/// and this phase has blocked three times on messages that stated one as the
+/// other.
 pub fn contradiction_label(record: &MeasurementRecord) -> String {
     format!(
-        "this record stores `pass` beside {} changed path(s) it could not read. A build before \
-         that rule existed wrote it, and the two cannot both be true — so the stored word is \
-         not a verdict about this change. It is served here unaltered because the record is \
-         evidence; re-run `andon measure` on the change to get one that is.",
+        "this record stores `pass` beside {} changed path(s) it could not read. The two cannot \
+         both be true, so the stored word is not a verdict about this change. It is served here \
+         unaltered because the record is evidence; re-run `andon measure` on the change to get \
+         a verdict that is.",
         record.unreadable_paths.len()
     )
 }
