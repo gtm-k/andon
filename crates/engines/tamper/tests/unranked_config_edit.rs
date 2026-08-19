@@ -259,6 +259,90 @@ fn only_the_detector_that_could_not_decide_carries_the_caveat() {
 }
 
 #[test]
+fn a_shape_the_scanner_cannot_read_is_partial_and_names_the_file() {
+    // The second axis, end to end. `unrankable` and `deletion` answer "this is
+    // a change I read and cannot rank"; this answers "this is a change I could
+    // not read at all", which is the one that produced no finding of any kind
+    // and therefore no caveat. A YAML block sequence is the shape: no bracket
+    // to follow, no separator on the line carrying the number.
+    let results = measure(
+        ".eslintrc.yml",
+        "rules:\n  complexity:\n    - error\n    - 10\n",
+        "rules:\n  complexity:\n    - error\n    - 100\n",
+    );
+    assert!(!flag(&results, "tamper.threshold-config-edit"));
+    assert_eq!(
+        magnitude(&results, "tamper.threshold-config-edit.magnitude"),
+        0
+    );
+
+    for metric in [
+        "tamper.threshold-config-edit",
+        "tamper.threshold-config-edit.magnitude",
+    ] {
+        let marked = result(&results, metric);
+        assert_eq!(
+            marked.completeness,
+            Completeness::Partial,
+            "{metric} is a zero over a threshold this detector never saw"
+        );
+        let caveat = marked
+            .evidence
+            .does_not_predict
+            .first()
+            .expect("the caveat leads the honesty field");
+        assert!(caveat.contains(".eslintrc.yml"), "{caveat}");
+    }
+
+    // And only that detector. Which one could not read the shape is a property
+    // of what it looked at, not of the change.
+    let marked: Vec<&str> = results
+        .iter()
+        .filter(|r| r.completeness != Completeness::Complete)
+        .map(|r| r.metric_id.as_str())
+        .collect();
+    assert_eq!(
+        marked,
+        vec![
+            "tamper.threshold-config-edit",
+            "tamper.threshold-config-edit.magnitude"
+        ]
+    );
+}
+
+#[test]
+fn the_representations_that_can_be_read_are_read_and_stay_complete() {
+    // The other half of the axis: a shape the scanner now reaches is answered,
+    // not caveated. A caveat here would be the axis buying its honesty with the
+    // detection, which is the trade this repair exists to avoid.
+    for (path, base, head) in [
+        (
+            ".eslintrc.json",
+            "{\n  \"rules\": {\n    \"complexity\": [\n      \"error\",\n      10\n    ]\n  }\n}\n",
+            "{\n  \"rules\": {\n    \"complexity\": [\n      \"error\",\n      100\n    ]\n  }\n}\n",
+        ),
+        (
+            "eslint.config.js",
+            "const LIMIT = 10;\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+            "const LIMIT = 100;\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+        ),
+        (
+            "codecov.yml",
+            "coverage:\n  status:\n    project:\n      target: 80\n",
+            "coverage:\n  status:\n    project:\n      target: 50\n",
+        ),
+    ] {
+        let results = measure(path, base, head);
+        assert!(flag(&results, "tamper.threshold-config-edit"), "{path}");
+        assert_eq!(
+            result(&results, "tamper.threshold-config-edit").completeness,
+            Completeness::Complete,
+            "{path}: it was read, so the answer is a whole one"
+        );
+    }
+}
+
+#[test]
 fn an_ordinary_config_edit_is_still_a_complete_answer() {
     // The other half of the narrowing, and the one that keeps `partial` worth
     // something. A bumped compiler target, a reordered omit list and a rule

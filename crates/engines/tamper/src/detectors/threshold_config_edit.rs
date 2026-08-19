@@ -34,7 +34,7 @@
 //! `warn` -> `error` does not; a coverage minimum falling fires, one rising does
 //! not; `strict: true` -> `false` fires, the reverse does not.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::change::ChangeView;
 use crate::config::{self, tools};
@@ -86,6 +86,88 @@ const THRESHOLD_TOOLS: &[config::Tool] = &[
 /// Whether a path is threshold configuration.
 pub fn is_threshold_config(path: &str) -> bool {
     config::names_one_of(path, THRESHOLD_TOOLS)
+}
+
+/// Whose vocabulary a file is written in.
+///
+/// # Two settings mean different things depending on who reads the file
+///
+/// Almost every key here means the same thing wherever it appears, which is
+/// what lets one table of fragments serve fifteen tools. Two do not, and both
+/// were confident zeros:
+///
+/// - ESLint writes a rule's severity as `0`, `1` or `2` as readily as `off`,
+///   `warn` and `error`. `"no-explicit-any": 2 -> 0` turns a rule off, and the
+///   severity ladder read words only. Nowhere else does a bare `2` mean
+///   `error`, so ranking one everywhere would reverse the direction of every
+///   honest numeric setting that happens to sit at 2.
+/// - Codecov's `target` is the coverage percentage a project must hold. `80 ->
+///   50` is a floor lowered as plainly as `fail_under`, and `target` is also
+///   TypeScript's language level, where it is a string and nothing to do with
+///   quality.
+///
+/// So the dialect is read off the file name, from the same tool table that
+/// decides whether the file is opened at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dialect {
+    /// ESLint, in either config generation.
+    Eslint,
+    /// Codecov.
+    Codecov,
+    /// Everything else: the shared vocabulary and nothing more.
+    Shared,
+}
+
+fn dialect_of(path: &str) -> Dialect {
+    if config::names_one_of(path, &[tools::ESLINTRC, tools::ESLINT_FLAT]) {
+        Dialect::Eslint
+    } else if config::names_one_of(path, &[tools::CODECOV, tools::CODECOV_DOT]) {
+        Dialect::Codecov
+    } else {
+        Dialect::Shared
+    }
+}
+
+/// A configuration number, however its syntax spells it.
+///
+/// `parse::<f64>` was the whole reader, and three ordinary spellings fell
+/// straight through it: TOML's digit separator (`iteration_cap = 10_000`),
+/// Codecov's percentage (`target: 80%`), and a number written as a quoted
+/// string, which YAML and JSON both allow. Each one arrived as "not a number",
+/// which meant either a threshold that could not be compared or — once the axis
+/// below existed — a caveat on an honest edit.
+fn number(value: &str) -> Option<f64> {
+    let trimmed = value.trim().trim_matches(['"', '\'']).trim();
+    let trimmed = trimmed.strip_suffix('%').unwrap_or(trimmed);
+    if trimmed.is_empty() || trimmed.starts_with('_') || trimmed.ends_with('_') {
+        return None;
+    }
+    trimmed
+        .chars()
+        .filter(|c| *c != '_')
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+/// ESLint's numeric severity, as a position in [`SEVERITY_WORDS`].
+///
+/// Only in an ESLint file, and only for `0`, `1` and `2`: those are the three
+/// values the vocabulary has, and a rule option that happens to be 2 is
+/// therefore indistinguishable from `error` by the text alone. That ambiguity
+/// is decided in ESLint's own favour — see
+/// [`the_bare_number_corner_is_decided_in_eslint_s_favour`].
+fn numeric_rank(dialect: Dialect, value: &str) -> Option<usize> {
+    if dialect != Dialect::Eslint {
+        return None;
+    }
+    let word = match value.trim().trim_matches(['"', '\'']).trim() {
+        "0" => "off",
+        "1" => "warn",
+        "2" => "error",
+        _ => return None,
+    };
+    SEVERITY_WORDS.iter().position(|w| *w == word)
 }
 
 /// Severity words, weakest first. A move down this list is a loosening.
@@ -221,37 +303,56 @@ impl Detector for ThresholdConfigEdit {
             if file.content_unchanged() || !is_threshold_config(&file.path) {
                 continue;
             }
+            let dialect = dialect_of(&file.path);
             let base = settings(file.base_bytes());
             let head = settings(file.head_bytes());
             // A setting that is gone has no value to compare, and the loop below
             // only ever sees keys present on both sides — so removing
             // `noImplicitAny` from a `tsconfig.json` was a change inside this
             // detector's own subject that it reported as nothing at all.
-            for (key, (_, base_value)) in &base {
-                if head.contains_key(key) {
+            for (key, (_, base_value)) in &base.settings {
+                if head.settings.contains_key(key) {
                     continue;
                 }
-                if let Some(reason) = deletion(key, base_value) {
+                if let Some(reason) = deletion(dialect, key, base_value) {
                     unassessed.push(Finding::in_file(
                         &file.path,
                         format!("{key}: {base_value} -> absent ({reason})"),
                     ));
                 }
             }
-            for (key, (line, head_value)) in &head {
-                let Some((_, base_value)) = base.get(key) else {
+            for (key, (line, head_value)) in &head.settings {
+                let Some((_, base_value)) = base.settings.get(key) else {
                     continue;
                 };
+                // A threshold written as a reference does not move when the
+                // threshold does, so it is ruled on whether or not its own text
+                // changed — that is the whole of the indirect case.
+                if let Some(reason) = indirect(dialect, key, base_value, head_value, &base, &head) {
+                    match reason {
+                        Ok(fired) => findings.push(Finding::at(
+                            &file.path,
+                            *line,
+                            format!("{key}: {base_value} -> {head_value} ({fired})"),
+                        )),
+                        Err(unranked) => unassessed.push(Finding::at(
+                            &file.path,
+                            *line,
+                            format!("{key}: {base_value} -> {head_value} ({unranked})"),
+                        )),
+                    }
+                    continue;
+                }
                 if base_value == head_value {
                     continue;
                 }
-                if let Some(reason) = loosening(key, base_value, head_value) {
+                if let Some(reason) = loosening(dialect, key, base_value, head_value) {
                     findings.push(Finding::at(
                         &file.path,
                         *line,
                         format!("{key}: {base_value} -> {head_value} ({reason})"),
                     ));
-                } else if let Some(reason) = unrankable(key, base_value, head_value) {
+                } else if let Some(reason) = unrankable(dialect, key, base_value, head_value) {
                     unassessed.push(Finding::at(
                         &file.path,
                         *line,
@@ -259,6 +360,7 @@ impl Detector for ThresholdConfigEdit {
                     ));
                 }
             }
+            unassessed.extend(unread_changes(&file.path, &base, &head));
         }
         let count = findings.len() as i64;
         if count > 0 {
@@ -269,8 +371,224 @@ impl Detector for ThresholdConfigEdit {
     }
 }
 
+/// Changed lines this scanner read nothing out of, that carry a value of the
+/// kind it ranks.
+///
+/// # The other axis, and the one two rounds of repair never added
+///
+/// Every rule above answers *which tool is this file, and what does this key
+/// mean*. None of them answers *can the scanner read this shape at all* — and a
+/// shape it cannot read produces no setting, so no rule ever runs and the file
+/// comes back `{flag: false, magnitude: 0, completeness: "complete"}`. That is
+/// the confident zero in its purest form: not a threshold the detector declined
+/// to rank, but one it never saw.
+///
+/// [`config::pairs_continued`] closes the bracketed spellings by following a
+/// value onto the lines after it. This is what answers for the seventh shape,
+/// the one nobody has written down — a YAML block sequence, say, where
+///
+/// ```text
+/// rules:
+///   complexity:
+///     - error
+///     - 10
+/// ```
+///
+/// has no brackets to follow and no separator on the line that carries the
+/// number. The line changed, the scanner got nothing from it, and the token on
+/// it is exactly the kind this detector's models are made of. It cannot say
+/// which way that went, and saying so is the honest answer.
+///
+/// # Why the token test is this narrow
+///
+/// A caveat that is always on is a caveat nobody reads, and the standing state
+/// is what makes `partial` mean something. Three narrowings hold it there:
+///
+/// - **trimmed lines**, so reindenting a config is not a change. The corpus has
+///   that case (`config-reindented`) and it must stay `complete`.
+/// - **read lines**, so a line the scanner consumed — including one a continued
+///   value ran through — is never a blind spot even if its own text carries no
+///   separator.
+/// - **standalone tokens**, so a path is not a number. `src/legacy2/*` and
+///   `*/__init__.py` are ordinary exclusion entries in files this detector also
+///   reads, and every one of them carries digits. A token adjacent to a
+///   separator or a glob is part of a path and says nothing about a threshold.
+fn unread_changes(path: &str, base: &Scanned, head: &Scanned) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for (side, other, label) in [(head, base, "now reads"), (base, head, "no longer reads")] {
+        let mut available: BTreeMap<&str, usize> = BTreeMap::new();
+        for line in &other.lines {
+            *available.entry(line.as_str()).or_default() += 1;
+        }
+        for (index, line) in side.lines.iter().enumerate() {
+            match available.get_mut(line.as_str()) {
+                Some(count) if *count > 0 => {
+                    *count -= 1;
+                    continue;
+                }
+                _ => {}
+            }
+            if side.read.contains(&index) || !carries_a_ranked_token(line) {
+                continue;
+            }
+            out.push(Finding::at(
+                path,
+                index as u32 + 1,
+                format!(
+                    "this file {label} `{line}`, and the scanner took no setting from it — \
+                     the value on it is of the kind this detector ranks and it is written in \
+                     a shape the scanner cannot reach, so whether a threshold moved here is \
+                     not decidable from what was read"
+                ),
+            ));
+        }
+    }
+    out
+}
+
+/// Whether a line carries a number, a severity word or a boolean standing on
+/// its own rather than inside a path or an identifier.
+fn carries_a_ranked_token(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut start: Option<usize> = None;
+    for index in 0..=bytes.len() {
+        let inside = index < bytes.len()
+            && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'_' | b'-' | b'.'));
+        match (inside, start) {
+            (true, None) => start = Some(index),
+            (false, Some(from)) => {
+                start = None;
+                // A run touching a separator or a glob is part of a path.
+                let hemmed = |at: usize| matches!(bytes[at], b'/' | b'*' | b'?' | b'\\');
+                if from > 0 && hemmed(from - 1) {
+                    continue;
+                }
+                if index < bytes.len() && hemmed(index) {
+                    continue;
+                }
+                let token = &line[from..index];
+                if number(token).is_some()
+                    || SEVERITY_WORDS.contains(&token.to_ascii_lowercase().as_str())
+                    || boolean(token).is_some()
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A threshold whose value is a name rather than a number, resolved against the
+/// same file — `Ok` when it moved and which way, `Err` when it cannot be read,
+/// `None` when this key is not that shape.
+///
+/// # A limit behind a variable is still a limit
+///
+/// Flat config is JavaScript, and JavaScript configs bind their numbers:
+///
+/// ```text
+/// const LIMIT = 10;
+/// export default [{ rules: { complexity: ["error", LIMIT] } }];
+/// ```
+///
+/// Raising that 10 to 100 loosens the rule and leaves the rule's own line
+/// byte-identical, so every comparison above ran on values that had not
+/// changed and the answer was a complete zero. The binding is in the same file
+/// and this scanner already read it — `const LIMIT = 10` is a `key = value`
+/// like any other — so one level of resolution is all it takes.
+///
+/// It is one level on purpose. A limit imported from another module is not in
+/// this file and nothing here can evaluate it; that case is reported rather
+/// than guessed, and only when the reference itself was written or edited in
+/// this change. A rule that has always read `["error", LIMIT]` and still does
+/// spends no caveat, or every edit to such a file would carry one forever.
+fn indirect(
+    dialect: Dialect,
+    key: &str,
+    before: &str,
+    after: &str,
+    base: &Scanned,
+    head: &Scanned,
+) -> Option<Result<String, &'static str>> {
+    let key = key.to_ascii_lowercase();
+    if !is_ceiling(dialect, &key) {
+        return None;
+    }
+    // Only `[<severity>, ...options]`, on both sides, with the severity holding:
+    // a bare severity has no allowance to be indirect about, and a severity that
+    // moved is `loosening`'s to rule on.
+    if rank(dialect, before)? != rank(dialect, after)? {
+        return None;
+    }
+    if !before.trim_start().starts_with('[') || !after.trim_start().starts_with('[') {
+        return None;
+    }
+    if rule_option_number(before).is_some() && rule_option_number(after).is_some() {
+        return None;
+    }
+    if rule_option_name(before).is_none() && rule_option_name(after).is_none() {
+        return None;
+    }
+    let resolved = |value: &str, side: &Scanned| -> Option<(String, f64)> {
+        if let Some(literal) = rule_option_number(value) {
+            return Some((literal.to_string(), literal));
+        }
+        let name = rule_option_name(value)?;
+        let (_, bound) = side.settings.get(&name)?;
+        number(bound).map(|found| (format!("{name} = {bound}"), found))
+    };
+    match (resolved(before, base), resolved(after, head)) {
+        (Some((was, b)), Some((now, a))) => (a > b).then(|| {
+            Ok(format!(
+                "rule allowance raised behind a reference: {was} -> {now}"
+            ))
+        }),
+        _ if before != after => Some(Err(
+            "this rule's option is a name rather than a number and nothing in this file \
+             binds it, so whether the allowance moved is not decidable from the text",
+        )),
+        _ => None,
+    }
+}
+
+/// The first identifier among a rule's options, lower-cased.
+///
+/// The mirror of [`rule_option_number`] for the case that one cannot read: the
+/// option is spelled as a name, and the name is a key this scanner may already
+/// have a value for.
+/// An identifier followed by `:` or `=` is the option's *name*, not its value —
+/// `{ max: LIMIT }` binds `LIMIT` to `max` — so the scan steps over it. Quotes
+/// are stepped over too, because JSON writes the same thing as `{"max": LIMIT}`.
+fn rule_option_name(value: &str) -> Option<String> {
+    let (_, options) = value.trim().strip_prefix('[')?.split_once(',')?;
+    let bytes = options.as_bytes();
+    let mut start: Option<usize> = None;
+    for index in 0..=bytes.len() {
+        let inside =
+            index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_');
+        match (inside, start) {
+            (true, None) => start = Some(index),
+            (false, Some(from)) => {
+                start = None;
+                let named = bytes[index..]
+                    .iter()
+                    .find(|c| !matches!(c, b' ' | b'\t' | b'"' | b'\''))
+                    .is_some_and(|c| matches!(c, b':' | b'='));
+                let token = &options[from..index];
+                if !named && !token.chars().all(|c| c.is_ascii_digit()) {
+                    return Some(token.to_ascii_lowercase());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Why a value change is a loosening, or `None` when it is not one.
-fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
+fn loosening(dialect: Dialect, key: &str, before: &str, after: &str) -> Option<&'static str> {
     let key = key.to_ascii_lowercase();
     let leaf = key.rsplit('.').next().unwrap_or(&key).to_string();
     // Booleans are spelled `true` in TOML and JSON, `True` in an INI file that
@@ -280,7 +598,7 @@ fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
     let before_bool = boolean(before);
     let after_bool = boolean(after);
 
-    if let (Some(b), Some(a)) = (rank(before), rank(after)) {
+    if let (Some(b), Some(a)) = (rank(dialect, before), rank(dialect, after)) {
         if a < b {
             return Some("severity lowered");
         }
@@ -291,7 +609,7 @@ fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
         // takes it as an option. Only where the rule's own *name* says the
         // number is a ceiling: `indent: ["error", 2] -> ["error", 4]` is a
         // style choice and knowing that requires knowing the rule.
-        if a == b && is_ceiling(&key) {
+        if a == b && is_ceiling(dialect, &key) {
             if let (Some(b), Some(a)) = (rule_option_number(before), rule_option_number(after)) {
                 return (a > b).then_some("rule allowance raised");
             }
@@ -310,11 +628,11 @@ fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
     {
         return Some("checking skipped");
     }
-    if let (Ok(b), Ok(a)) = (before.parse::<f64>(), after.parse::<f64>()) {
-        if is_ceiling(&key) {
+    if let (Some(b), Some(a)) = (number(before), number(after)) {
+        if is_ceiling(dialect, &key) {
             return (a > b).then_some("allowance raised");
         }
-        if FLOOR_KEY_FRAGMENTS.iter().any(|k| key.contains(k)) {
+        if is_floor(dialect, &key) {
             return (a < b).then_some("floor lowered");
         }
     }
@@ -329,7 +647,7 @@ fn loosening(key: &str, before: &str, after: &str) -> Option<&'static str> {
 /// own name says the number is a ceiling" — applied to every rule it is true of
 /// rather than to the six somebody listed. The separator is required, so
 /// `maxAge` is not a threshold and `max-depth` is.
-fn is_ceiling(key: &str) -> bool {
+fn is_ceiling(_dialect: Dialect, key: &str) -> bool {
     if MAX_THAT_IS_A_FLOOR.iter().any(|k| key.contains(k)) {
         return false;
     }
@@ -338,6 +656,21 @@ fn is_ceiling(key: &str) -> bool {
     }
     let leaf = key.rsplit('.').next().unwrap_or(key);
     leaf.starts_with("max-") || leaf.starts_with("max_")
+}
+
+/// Whether a key's number is a floor, so that lowering it loosens.
+///
+/// The shared fragments, and then the one key whose meaning is its tool's:
+/// Codecov's `target` is the coverage percentage a project must hold, so
+/// `80 -> 50` is `fail_under` under another name. It is not in the shared table
+/// because `target` is also TypeScript's language level, where it is a string
+/// and says nothing about quality — see [`Dialect`].
+fn is_floor(dialect: Dialect, key: &str) -> bool {
+    if FLOOR_KEY_FRAGMENTS.iter().any(|k| key.contains(k)) {
+        return true;
+    }
+    let leaf = key.rsplit('.').next().unwrap_or(key);
+    dialect == Dialect::Codecov && leaf == "target"
 }
 
 /// Why a changed value could not be ranked at all, or `None` when the detector
@@ -358,15 +691,15 @@ fn is_ceiling(key: &str) -> bool {
 /// knowing the rule, and no per-linter rule table ships here. `is_ceiling`
 /// covers the names that say so themselves; everything else lands here, loudly,
 /// instead of arriving as a confident zero.
-fn unrankable(key: &str, before: &str, after: &str) -> Option<&'static str> {
-    let (Some(b), Some(a)) = (rank(before), rank(after)) else {
+fn unrankable(dialect: Dialect, key: &str, before: &str, after: &str) -> Option<&'static str> {
+    let (Some(b), Some(a)) = (rank(dialect, before), rank(dialect, after)) else {
         return None;
     };
     if a != b {
         // The severity moved, and `loosening` has already ruled on which way.
         return None;
     }
-    if loosening(key, before, after).is_some() {
+    if loosening(dialect, key, before, after).is_some() {
         return None;
     }
     // The severity held and the option moved, but the rule's own name says the
@@ -374,7 +707,7 @@ fn unrankable(key: &str, before: &str, after: &str) -> Option<&'static str> {
     // decided, and it was a tightening. Understood is understood whichever way
     // it went; only a firing is directional.
     let key = key.to_ascii_lowercase();
-    if is_ceiling(&key)
+    if is_ceiling(dialect, &key)
         && rule_option_number(before).is_some()
         && rule_option_number(after).is_some()
     {
@@ -407,15 +740,14 @@ fn unrankable(key: &str, before: &str, after: &str) -> Option<&'static str> {
 /// renamed path is not a threshold, and marking every deleted config line
 /// unassessed would make `partial` the standing state of every change that
 /// tidies a config file.
-fn deletion(key: &str, before: &str) -> Option<&'static str> {
+fn deletion(dialect: Dialect, key: &str, before: &str) -> Option<&'static str> {
     let key = key.to_ascii_lowercase();
     let leaf = key.rsplit('.').next().unwrap_or(&key).to_string();
-    let modelled = rank(before).is_some()
+    let modelled = rank(dialect, before).is_some()
         || (boolean(before).is_some()
             && (STRICT_WHEN_TRUE.iter().any(|k| leaf == *k)
                 || STRICT_WHEN_FALSE.iter().any(|k| leaf == *k)))
-        || (before.parse::<f64>().is_ok()
-            && (is_ceiling(&key) || FLOOR_KEY_FRAGMENTS.iter().any(|k| key.contains(k))));
+        || (number(before).is_some() && (is_ceiling(dialect, &key) || is_floor(dialect, &key)));
     modelled.then_some(
         "a setting this detector ranks was deleted rather than changed, and whether the \
          tool's default is looser than the value it had is not decidable from the text — \
@@ -453,9 +785,18 @@ fn boolean(value: &str) -> Option<bool> {
 }
 
 /// Position in [`SEVERITY_WORDS`], for values that are severity words.
-fn rank(value: &str) -> Option<usize> {
-    let value = severity_token(value).to_ascii_lowercase();
-    SEVERITY_WORDS.iter().position(|w| *w == value)
+///
+/// ESLint's numbers rank here too, and they rank *first*: `"complexity": 2` is
+/// a rule set to `error`, not a complexity allowance of two, and the ceiling
+/// table would otherwise read `2 -> 0` as an allowance lowered and go quiet on
+/// a rule being switched off. That precedence is the deliberate half of the
+/// ambiguity — see [`numeric_rank`].
+fn rank(dialect: Dialect, value: &str) -> Option<usize> {
+    let token = severity_token(value);
+    numeric_rank(dialect, token).or_else(|| {
+        let token = token.to_ascii_lowercase();
+        SEVERITY_WORDS.iter().position(|w| *w == token)
+    })
 }
 
 /// The severity out of a rule value, whichever of eslint's two forms it is in.
@@ -498,19 +839,27 @@ fn severity_token(value: &str) -> &str {
 /// does not collide with a same-named key elsewhere. JSON and YAML nesting is
 /// deliberately not tracked — see [`crate::config`] for why a leaf key is the
 /// right granularity here.
-fn settings(source: &[u8]) -> BTreeMap<String, (u32, String)> {
+fn settings(source: &[u8]) -> Scanned {
     let text = String::from_utf8_lossy(source);
-    let mut out = BTreeMap::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Scanned {
+        lines: lines.iter().map(|line| line.trim().to_string()).collect(),
+        ..Scanned::default()
+    };
     let mut section = String::new();
-    for (index, raw) in text.lines().enumerate() {
+    for index in 0..lines.len() {
+        let raw = lines[index];
         if config::is_noise(raw) {
+            out.read.insert(index);
             continue;
         }
         if let Some(found) = config::section(raw) {
             section = found;
+            out.read.insert(index);
             continue;
         }
-        for pair in config::pairs(raw) {
+        let (pairs, spanned) = config::pairs_continued(&lines, index);
+        for pair in pairs {
             if pair.value.is_empty() {
                 continue;
             }
@@ -519,10 +868,28 @@ fn settings(source: &[u8]) -> BTreeMap<String, (u32, String)> {
             } else {
                 format!("{section}.{}", pair.key)
             };
-            out.insert(qualified, (index as u32 + 1, pair.value));
+            out.settings
+                .insert(qualified, (index as u32 + 1, pair.value));
+            // Every line the value ran over, not just the one the key is on: a
+            // continuation line is a line this scanner read, and the axis below
+            // asks exactly that question of every changed line.
+            out.read.extend(index..(index + spanned).min(lines.len()));
         }
     }
     out
+}
+
+/// What the scanner got out of one side of one file.
+#[derive(Debug, Default)]
+struct Scanned {
+    /// Every `key = value`, qualified by section, as `(1-based line, value)`.
+    settings: BTreeMap<String, (u32, String)>,
+    /// Every line, trimmed. Trimmed because reindentation is not a change and
+    /// a caveat spent on one would be a caveat on `cargo fmt`.
+    lines: Vec<String>,
+    /// The 0-based lines the scanner read something out of — a comment, a
+    /// section header, a setting, or a line a continued value ran through.
+    read: BTreeSet<usize>,
 }
 
 #[cfg(test)]
@@ -816,10 +1183,10 @@ disallow_untyped_defs = False
             "max-nested-callbacks",
             "rules.max_line_count",
         ] {
-            assert!(is_ceiling(key), "{key}");
+            assert!(is_ceiling(Dialect::Shared, key), "{key}");
         }
         for key in ["maxage", "indent", "quotes", "lines", "branches"] {
-            assert!(!is_ceiling(key), "{key}");
+            assert!(!is_ceiling(Dialect::Shared, key), "{key}");
         }
     }
 
@@ -830,7 +1197,10 @@ disallow_untyped_defs = False
         // other `max`, and the direction table in `andon_core` is authoritative
         // for it. A prefix rule that reversed a policy field would be a wrong
         // answer with a tamper signal attached.
-        assert!(!is_ceiling("severity.max_severity_for_c_tier"));
+        assert!(!is_ceiling(
+            Dialect::Shared,
+            "severity.max_severity_for_c_tier"
+        ));
         let view = ChangeView::new(vec![FileChange::modified(
             ".andon.toml",
             "[severity]\nmax_severity_for_c_tier = 3\n",
@@ -893,5 +1263,287 @@ disallow_untyped_defs = False
             rule_option_number("[\"error\", { \"allow\": [\"arrowFunctions\"] }]"),
             None
         );
+    }
+
+    #[test]
+    fn a_severity_eslint_wrote_as_a_number_is_a_severity() {
+        // `2`, `1`, `0` are `error`, `warn`, `off`, and every real eslint config
+        // in the wild uses them. Turning a rule off this way came back
+        // `{flag: false, magnitude: 0, completeness: "complete"}`.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".eslintrc.json",
+            "{ \"rules\": { \"no-explicit-any\": 2 } }",
+            "{ \"rules\": { \"no-explicit-any\": 0 } }",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(outcome.findings[0].detail.contains("severity lowered"));
+
+        // And the reverse is a tightening, with nothing left unranked.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".eslintrc.json",
+            "{ \"rules\": { \"no-explicit-any\": 0 } }",
+            "{ \"rules\": { \"no-explicit-any\": 2 } }",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn the_bare_number_corner_is_decided_in_eslint_s_favour() {
+        // `"complexity": 2` is genuinely ambiguous in the text: eslint reads it
+        // as the severity `error`, and this detector's own ceiling table would
+        // read it as an allowance of two. The tie goes to eslint, because in an
+        // eslint file that is what the file means — and the other reading makes
+        // `2 -> 0` an allowance *lowered*, which is a confident silence on a
+        // rule being switched off.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".eslintrc.json",
+            "{ \"rules\": { \"complexity\": 2 } }",
+            "{ \"rules\": { \"complexity\": 0 } }",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(
+            outcome.findings[0].detail.contains("severity lowered"),
+            "{:?}",
+            outcome.findings
+        );
+    }
+
+    #[test]
+    fn a_numeric_severity_is_eslint_s_and_nobody_else_s() {
+        // The bound on the rule above. Ranking a bare `2` as `error` everywhere
+        // would turn every honest numeric setting that happens to sit at 2 into
+        // a severity, and `precision: 2 -> 0` in a codecov file is a display
+        // setting.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "codecov.yml",
+            "coverage:\n  precision: 2\n",
+            "coverage:\n  precision: 0\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_threshold_a_formatter_split_over_lines_is_still_a_threshold() {
+        // The same rule as `an_eslint_threshold_raised_inside_a_rule_fires`,
+        // written the way a formatter writes it. The opening line's value came
+        // back empty and was dropped, the `10` line has no separator on it, and
+        // the whole rule was invisible.
+        let base =
+            "{\n  \"rules\": {\n    \"complexity\": [\n      \"error\",\n      10\n    ]\n  }\n}\n";
+        let head =
+            "{\n  \"rules\": {\n    \"complexity\": [\n      \"error\",\n      100\n    ]\n  }\n}\n";
+        let view = ChangeView::new(vec![FileChange::modified(".eslintrc.json", base, head)]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(
+            outcome.findings[0].detail.contains("rule allowance raised"),
+            "{:?}",
+            outcome.findings
+        );
+        // Reported where the rule is, not where the number is: the key names
+        // the setting and the continuation lines do not.
+        assert_eq!(outcome.findings[0].line, Some(3));
+    }
+
+    #[test]
+    fn a_limit_behind_a_name_is_resolved_in_the_file_that_binds_it() {
+        // Flat config is JavaScript and JavaScript configs bind their numbers.
+        // The rule's own line is byte-identical on both sides, so every
+        // comparison ran on values that had not changed.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "eslint.config.js",
+            "const LIMIT = 10;\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+            "const LIMIT = 100;\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(
+            outcome.findings[0].detail.contains("10 -> limit = 100"),
+            "the finding has to say which number moved: {:?}",
+            outcome.findings
+        );
+        // Lowering the same binding is a tightening.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "eslint.config.js",
+            "const LIMIT = 100;\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+            "const LIMIT = 10;\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+        )]);
+        assert!(!ThresholdConfigEdit.run(&view).fired);
+    }
+
+    #[test]
+    fn a_limit_moved_behind_an_import_is_reported_rather_than_guessed() {
+        // One level of resolution, and this is past it: the binding is in
+        // another module and nothing here can evaluate it. Hiding a number
+        // behind an import is the shape an evasion would take once the
+        // resolution above exists, so it must not answer with silence.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "eslint.config.js",
+            "export default [{ rules: { complexity: [\"error\", 10] } }];\n",
+            "import { LIMIT } from './limits';\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.unassessed.len(), 1, "{outcome:?}");
+        assert!(outcome.unassessed[0].detail.contains("complexity"));
+    }
+
+    #[test]
+    fn a_reference_this_change_did_not_touch_spends_no_caveat() {
+        // The standing-state half, and the reason the caveat above is gated on
+        // the reference having moved. A config that has always read
+        // `["error", LIMIT]` and still does would otherwise carry a caveat on
+        // every edit it ever receives, which is what makes `partial` worthless.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "eslint.config.js",
+            "export default [{ rules: { complexity: [\"error\", LIMIT], \"no-explicit-any\": \"warn\" } }];\n",
+            "export default [{ rules: { complexity: [\"error\", LIMIT], \"no-explicit-any\": \"error\" } }];\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_codecov_target_is_the_coverage_floor_it_is() {
+        for (base, head) in [("80", "50"), ("80%", "50%"), ("\"80\"", "\"50\"")] {
+            let view = ChangeView::new(vec![FileChange::modified(
+                "codecov.yml",
+                &format!("coverage:\n  status:\n    project:\n      target: {base}\n"),
+                &format!("coverage:\n  status:\n    project:\n      target: {head}\n"),
+            )]);
+            let outcome = ThresholdConfigEdit.run(&view);
+            assert!(outcome.fired, "{base} -> {head}: {outcome:?}");
+            assert!(outcome.findings[0].detail.contains("floor lowered"));
+        }
+        // Raising it is the opposite of gaming it.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "codecov.yml",
+            "coverage:\n  status:\n    project:\n      target: 50\n",
+            "coverage:\n  status:\n    project:\n      target: 80\n",
+        )]);
+        assert!(!ThresholdConfigEdit.run(&view).fired);
+        // And `target` is TypeScript's language level, which is not a floor and
+        // is not a number.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "tsconfig.json",
+            "{ \"compilerOptions\": { \"target\": \"es2022\" } }",
+            "{ \"compilerOptions\": { \"target\": \"es2020\" } }",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_number_a_syntax_decorated_is_still_a_number() {
+        assert_eq!(number("10_000"), Some(10_000.0));
+        assert_eq!(number("80%"), Some(80.0));
+        assert_eq!(number("\"85\""), Some(85.0));
+        assert_eq!(number("es2022"), None);
+        assert_eq!(number("auto"), None);
+        assert_eq!(number(""), None);
+        assert_eq!(number("_"), None);
+        // The `.andon.toml` case: a cap written with TOML's separator was not a
+        // number, so raising it was a confident zero on this tool's own policy.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".andon.toml",
+            "[loop]\niteration_cap = 10_000\n",
+            "[loop]\niteration_cap = 20_000\n",
+        )]);
+        assert!(ThresholdConfigEdit.run(&view).fired);
+    }
+
+    #[test]
+    fn a_shape_the_scanner_cannot_reach_is_reported_rather_than_answered() {
+        // The seventh shape — the one nobody listed. A YAML block sequence has
+        // no brackets to follow and no separator on the line carrying the
+        // number, so no setting is produced and no rule above ever runs.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".eslintrc.yml",
+            "rules:\n  complexity:\n    - error\n    - 10\n",
+            "rules:\n  complexity:\n    - error\n    - 100\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert!(!outcome.unassessed.is_empty(), "{outcome:?}");
+        assert!(
+            outcome
+                .unassessed
+                .iter()
+                .any(|f| f.detail.contains("- 100")),
+            "the caveat has to name what went unread: {:?}",
+            outcome.unassessed
+        );
+    }
+
+    #[test]
+    fn an_edit_the_scanner_did_read_spends_no_caveat_on_the_lines_around_it() {
+        // The counterweight, over every shape the axis could have swallowed:
+        // reindentation, a reordered exclusion block, an entry with a digit in
+        // its path, a comment. None of these is a threshold and none may
+        // produce one word of caveat.
+        for (path, base, head) in [
+            (
+                "tsconfig.json",
+                "{\n  \"compilerOptions\": {\n    \"strict\": true\n  }\n}\n",
+                "{\n    \"compilerOptions\": {\n        \"strict\": true\n    }\n}\n",
+            ),
+            (
+                ".coveragerc",
+                "[run]\nomit =\n    tests/*\n    src/vendor2/*\n",
+                "[run]\nomit =\n    src/vendor2/*\n    tests/*\n",
+            ),
+            (
+                ".coveragerc",
+                "[run]\nomit =\n    tests/*\n",
+                "[run]\nomit =\n    tests/*\n    src/legacy2/*\n",
+            ),
+            (
+                "codecov.yml",
+                "ignore:\n  - vendor/**\n",
+                "ignore:\n  - vendor/**\n  - src/billing2/**\n",
+            ),
+            (
+                ".coveragerc",
+                "[run]\nomit =\n    tests/*\n",
+                "[run]\nomit =\n    # upstream covers it\n    tests/*\n",
+            ),
+        ] {
+            let view = ChangeView::new(vec![FileChange::modified(path, base, head)]);
+            let outcome = ThresholdConfigEdit.run(&view);
+            assert!(!outcome.fired, "{path}: {outcome:?}");
+            assert!(
+                outcome.unassessed.is_empty(),
+                "{path}: an ordinary edit spent a caveat, which is how `partial` \
+                 stops meaning anything: {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_is_not_a_threshold_however_many_digits_it_has() {
+        // What holds the axis above off every exclusion list in every config
+        // file these detectors also read.
+        for line in [
+            "src/legacy2/*",
+            "*/__init__.py",
+            "- vendor/**",
+            "\"src/generated2/**\",",
+            "}",
+            "],",
+            "- es2022",
+        ] {
+            assert!(!carries_a_ranked_token(line), "{line}");
+        }
+        for line in ["- 100", "10", "\"error\",", "- true", "  0,"] {
+            assert!(carries_a_ranked_token(line), "{line}");
+        }
     }
 }

@@ -264,6 +264,92 @@ fn is_key_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '*')
 }
 
+/// How many lines a value may run over before the scanner stops following it.
+///
+/// A rule's options and an exclusion list are a handful of lines; a bound is
+/// here because the input is somebody else's file and an unclosed bracket is a
+/// legal thing to write. Past the bound the value is left as the opening line
+/// wrote it, which is what the scanner did before it followed anything.
+const CONTINUATION_LINES: usize = 64;
+
+/// The brackets a line opens and does not close.
+///
+/// Counted rather than parsed, for the reason this whole module is a scanner:
+/// a `[` inside a string literal is rare in these files and being wrong about
+/// one costs a value left unjoined, which is where the scanner started.
+pub fn bracket_delta(line: &str) -> i32 {
+    line.chars().fold(0i32, |depth, c| match c {
+        '[' | '{' => depth + 1,
+        ']' | '}' => depth - 1,
+        _ => depth,
+    })
+}
+
+/// Every `key = value` on the line at `index`, with any value the line did not
+/// finish taken from the lines after it, and how many lines that consumed.
+///
+/// # A value split over lines is the same value
+///
+/// [`pairs`] reads `complexity: ["error", 10]` as one value and had nothing to
+/// say about
+///
+/// ```text
+/// "complexity": [
+///   "error",
+///   10
+/// ]
+/// ```
+///
+/// which is the same setting written the way a formatter writes it. The
+/// opening line's value came back empty and was dropped, the `10` line has no
+/// separator on it, and the whole rule was invisible: raising that 10 to 100
+/// returned `{flag: false, magnitude: 0, completeness: "complete"}` on a file
+/// the detector says it reads. The unfinished sibling is the same shape —
+/// `"complexity": ["error",` leaves a truncated value that is byte-identical
+/// before and after the edit.
+///
+/// Only the values already found on the line are completed. Keys that live
+/// inside the continuation are read when the scan reaches their own lines, so
+/// they keep their own line numbers rather than collapsing onto the opening
+/// one.
+pub fn pairs_continued(lines: &[&str], index: usize) -> (Vec<Pair>, usize) {
+    let mut own = pairs(lines[index]);
+    if own.is_empty() || bracket_delta(lines[index]) <= 0 {
+        return (own, 1);
+    }
+    let mut joined = lines[index].trim().to_string();
+    let mut depth = bracket_delta(lines[index]);
+    let mut spanned = 1usize;
+    for line in lines.iter().skip(index + 1).take(CONTINUATION_LINES) {
+        spanned += 1;
+        if is_noise(line) {
+            continue;
+        }
+        joined.push(' ');
+        joined.push_str(line.trim());
+        depth += bracket_delta(line);
+        if depth <= 0 {
+            break;
+        }
+    }
+    if depth > 0 {
+        // Never closed inside the bound. The opening line's own reading stands,
+        // and so does its line count: claiming to have consumed sixty-four
+        // lines this found nothing in would hide them from every other reader.
+        return (own, 1);
+    }
+    // The joined text begins with the opening line, so `pairs` finds that
+    // line's keys first and in the same order. Matching on the key rather than
+    // on position alone is what keeps a mismatch from writing one setting's
+    // value into another's.
+    for (slot, found) in own.iter_mut().zip(pairs(&joined)) {
+        if slot.key == found.key {
+            slot.value = found.value;
+        }
+    }
+    (own, spanned)
+}
+
 /// Every `key = value` on one line.
 ///
 /// Scans right-to-left from each separator, which is what makes single-line
@@ -497,6 +583,43 @@ mod tests {
         );
         assert_eq!(section("[run]").as_deref(), Some("run"));
         assert_eq!(section("omit = [1]"), None);
+    }
+
+    #[test]
+    fn a_value_a_file_split_over_lines_is_read_as_one_value() {
+        let lines = vec![
+            "{",
+            "  \"rules\": {",
+            "    \"complexity\": [",
+            "      \"error\",",
+            "      100",
+            "    ]",
+            "  }",
+            "}",
+        ];
+        let (found, spanned) = pairs_continued(&lines, 2);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key, "complexity");
+        assert_eq!(found[0].value, "[ \"error\", 100 ]");
+        assert_eq!(spanned, 4, "the key's line and the three it ran over");
+
+        // A line that finishes its own value costs nothing and spans one line.
+        let lines = vec!["fail_under = 85"];
+        let (found, spanned) = pairs_continued(&lines, 0);
+        assert_eq!(found[0].value, "85");
+        assert_eq!(spanned, 1);
+    }
+
+    #[test]
+    fn a_bracket_that_never_closes_leaves_the_line_as_it_was() {
+        // The input is somebody else's file and an unclosed bracket is a legal
+        // thing to write. Past the bound the opening line's own reading stands,
+        // and it claims to have consumed one line, not sixty-four.
+        let mut lines = vec!["exclude = ["];
+        lines.extend(std::iter::repeat_n("  \"a\",", 200));
+        let (found, spanned) = pairs_continued(&lines, 0);
+        assert_eq!(found[0].value, "");
+        assert_eq!(spanned, 1);
     }
 
     #[test]

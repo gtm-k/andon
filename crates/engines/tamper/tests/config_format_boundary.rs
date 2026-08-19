@@ -446,6 +446,100 @@ fn the_same_stem_in_its_own_syntax_is_still_configuration() {
     }
 }
 
+/// The same loosening, in six representations the scanner could not read.
+///
+/// Round two answered "which tool is this file", which is a question about the
+/// *name*. None of these is a naming gap: every file below is recognised, every
+/// edit is inside the subject, and each was still a confident zero — because
+/// the scanner could not reach the value, or had no model for what the value
+/// means in that tool. That is the second axis, and the property is the same
+/// one: fired is the best answer, unranked is an honest one, silence is a lie.
+fn representations() -> Vec<Case> {
+    vec![
+        // A severity eslint wrote as a number.
+        (
+            THRESHOLD,
+            ".eslintrc.json",
+            "{ \"rules\": { \"no-explicit-any\": 2 } }",
+            "{ \"rules\": { \"no-explicit-any\": 0 } }",
+        ),
+        // The same threshold a formatter split over lines.
+        (
+            THRESHOLD,
+            ".eslintrc.json",
+            "{\n  \"rules\": {\n    \"complexity\": [\n      \"error\",\n      10\n    ]\n  }\n}\n",
+            "{\n  \"rules\": {\n    \"complexity\": [\n      \"error\",\n      100\n    ]\n  }\n}\n",
+        ),
+        // A limit the config binds to a name, so the rule's own line never moves.
+        (
+            THRESHOLD,
+            "eslint.config.js",
+            "const LIMIT = 10;\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+            "const LIMIT = 100;\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+        ),
+        // An exclusion spelled as a negation inside an inclusion list.
+        (
+            COVERAGE,
+            "jest.config.js",
+            "module.exports = { collectCoverageFrom: [\"src/**/*.ts\", \"!src/generated/**\"] };\n",
+            "module.exports = { collectCoverageFrom: [\"src/**/*.ts\", \"!src/**\"] };\n",
+        ),
+        // A valid JSON array with no indentation for the block rule to follow.
+        (
+            COVERAGE,
+            ".nycrc.json",
+            "{\n\"exclude\": [\n\"src/generated/**\"\n]\n}\n",
+            "{\n\"exclude\": [\n\"src/**\"\n]\n}\n",
+        ),
+        // Codecov's coverage floor, under the name that tool gives it.
+        (
+            THRESHOLD,
+            "codecov.yml",
+            "coverage:\n  status:\n    project:\n      target: 80\n",
+            "coverage:\n  status:\n    project:\n      target: 50\n",
+        ),
+    ]
+}
+
+#[test]
+fn no_representation_answers_a_loosening_with_silence() {
+    for (signal, path, base, head) in representations() {
+        let outcome = run(signal, path, base, head);
+        assert_not_a_confident_zero(signal, path, &outcome);
+        assert!(
+            outcome.fired,
+            "{signal} on {path}: this is a value the detector has a model for, \
+             written in a shape it can now read — it is decidable, not merely \
+             noticeable: {outcome:?}"
+        );
+        assert_eq!(outcome.magnitude, 1, "{signal} on {path}");
+    }
+}
+
+#[test]
+fn a_representation_nobody_listed_is_unranked_rather_than_answered() {
+    // The seventh shape, and the honest half of the axis. A YAML block sequence
+    // has no bracket to follow and no separator on the line that carries the
+    // number, so nothing above produces a setting and no rule ever runs. It
+    // cannot be ranked and it must not pass as a complete answer.
+    let outcome = run(
+        THRESHOLD,
+        ".eslintrc.yml",
+        "rules:\n  complexity:\n    - error\n    - 10\n",
+        "rules:\n  complexity:\n    - error\n    - 100\n",
+    );
+    assert!(!outcome.fired, "{outcome:?}");
+    assert_not_a_confident_zero(THRESHOLD, ".eslintrc.yml", &outcome);
+    assert!(
+        outcome
+            .unassessed
+            .iter()
+            .any(|f| f.detail.contains("- 100")),
+        "the caveat has to name what went unread: {:?}",
+        outcome.unassessed
+    );
+}
+
 #[test]
 fn an_ordinary_config_edit_does_not_become_a_caveat() {
     // The counterweight to the property. A detector could satisfy every
@@ -476,6 +570,41 @@ fn an_ordinary_config_edit_does_not_become_a_caveat() {
             ".coveragerc",
             "[report]\nignore_errors = True\nshow_missing = True\n",
             "[report]\nignore_errors = True\nshow_missing = False\n",
+        ),
+        // The shapes the representation axis reaches past, and must. Every one
+        // of them is a changed line the threshold scanner takes no setting from,
+        // in a file it reads: a reindent, a reordered exclusion block, an
+        // exclusion whose path carries digits, a comment, and a list of
+        // inclusions growing.
+        (
+            THRESHOLD,
+            "tsconfig.json",
+            "{\n  \"compilerOptions\": {\n    \"strict\": true\n  }\n}\n",
+            "{\n    \"compilerOptions\": {\n        \"strict\": true\n    }\n}\n",
+        ),
+        (
+            THRESHOLD,
+            ".coveragerc",
+            "[run]\nomit =\n    tests/*\n    src/vendor2/*\n",
+            "[run]\nomit =\n    src/vendor2/*\n    tests/*\n",
+        ),
+        (
+            THRESHOLD,
+            "codecov.yml",
+            "ignore:\n  - vendor/**\n",
+            "ignore:\n  - vendor/**\n  - src/billing2/**\n",
+        ),
+        (
+            THRESHOLD,
+            ".coveragerc",
+            "[run]\nomit =\n    tests/*\n",
+            "[run]\nomit =\n    # upstream's own tests cover it\n    tests/*\n",
+        ),
+        (
+            COVERAGE,
+            "jest.config.js",
+            "module.exports = { collectCoverageFrom: [\"src/api/**\"] };\n",
+            "module.exports = { collectCoverageFrom: [\"src/api/**\", \"src/web/**\"] };\n",
         ),
     ] {
         let outcome = run(signal, path, base, head);

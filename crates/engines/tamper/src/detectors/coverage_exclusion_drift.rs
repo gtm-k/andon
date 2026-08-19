@@ -83,6 +83,68 @@ pub struct CoverageExclusionDrift;
 /// a file whose name says it is coverage configuration.
 const EXCLUSION_KEY_FRAGMENTS: &[&str] = &["exclude", "exclusion", "omit", "ignore", "skip"];
 
+/// Key-name fragments whose value is a list of the sources coverage is measured
+/// *over*, where a leading `!` is what takes something out of it.
+///
+/// # An exclusion does not have to be spelled in an exclusion list
+///
+/// Jest's `collectCoverageFrom` names what coverage collects, and the way to
+/// remove a directory from it is to add `"!src/payments/**"`. That is the same
+/// move as adding the same path to `coveragePathIgnorePatterns` — the number on
+/// the dashboard rises and nothing was tested — and it happened in a key this
+/// detector had no name for, so it came back
+/// `{flag: false, magnitude: 0, completeness: "complete"}`.
+///
+/// Reading the key as an ordinary exclusion list would have been worse than not
+/// reading it: its entries are *inclusions*, so a project adding `src/api/**` to
+/// what it measures would have fired as an exclusion added — a tamper signal on
+/// a tightening. Only the negated entries are exclusions, and they are recorded
+/// with the `!` taken off so [`covers`] can rank one against another.
+///
+/// The same rule runs the other way in an exclusion list, where `!` re-includes:
+/// `!src/api/**` inside `exclude` is not an exclusion and is dropped.
+const INCLUSION_KEY_FRAGMENTS: &[&str] = &["include", "inclusion", "collectcoveragefrom", "source"];
+
+/// What a key's entries are: patterns taken out of coverage, or patterns
+/// coverage is taken over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sense {
+    /// The entries are exclusions; a `!` entry is a re-inclusion.
+    Exclusion,
+    /// The entries are inclusions; only a `!` entry is an exclusion.
+    Inclusion,
+}
+
+const EXCLUSION: Sense = Sense::Exclusion;
+
+/// Which sense a key's list is in, or `None` when its name says neither.
+///
+/// Exclusion first: a key that reads both ways is an exclusion list, which is
+/// this detector's own subject and the stricter reading of the two.
+fn sense_of(key: &str) -> Option<Sense> {
+    if EXCLUSION_KEY_FRAGMENTS.iter().any(|f| key.contains(f)) {
+        return Some(Sense::Exclusion);
+    }
+    INCLUSION_KEY_FRAGMENTS
+        .iter()
+        .any(|f| key.contains(f))
+        .then_some(Sense::Inclusion)
+}
+
+/// The exclusion patterns in a value, given which sense its key is in.
+fn entries_under(sense: Sense, value: &str) -> impl Iterator<Item = String> + use<> {
+    config::entries(value).into_iter().filter_map(move |entry| {
+        match (sense, entry.strip_prefix('!')) {
+            // `!` in an exclusion list puts something back; it excludes nothing.
+            (Sense::Exclusion, Some(_)) => None,
+            (Sense::Exclusion, None) => Some(entry),
+            // `!` in an inclusion list is the only thing that excludes.
+            (Sense::Inclusion, Some(negated)) => Some(negated.to_string()),
+            (Sense::Inclusion, None) => None,
+        }
+    })
+}
+
 /// The tools whose configuration carries coverage exclusions.
 ///
 /// Which tools, not which file names: [`config::tools`] holds the names, and
@@ -264,15 +326,41 @@ fn all_wildcard(pattern: &str) -> bool {
 
 /// `(1-based line, entry text)` for every exclusion pattern in a config file.
 ///
-/// Three shapes, one reader: an inline list (`exclude = ["a", "b"]`, including
+/// Four shapes, one reader: an inline list (`exclude = ["a", "b"]`, including
 /// the single-line JSON these files are often written as), a continued block
-/// (`omit =` followed by indented lines), and a YAML sequence (`ignore:`
-/// followed by `- a`). See [`crate::config`] for why this is a scanner and not
-/// five parsers.
+/// (`omit =` followed by indented lines), a YAML sequence (`ignore:` followed
+/// by `- a`), and a bracketed list the file breaks over several lines. See
+/// [`crate::config`] for why this is a scanner and not five parsers.
+///
+/// # The block rule was an indentation rule, and JSON has no indentation rule
+///
+/// A list continued a block while the following lines were indented deeper
+/// than the key's, which is how INI and YAML write one and is not a rule JSON
+/// has to obey. So
+///
+/// ```text
+/// {
+/// "exclude": [
+/// "src/generated/**"
+/// ]
+/// }
+/// ```
+///
+/// — valid JSON, and what a machine-written `.nycrc` looks like — read as a key
+/// that opened a block and no entries at all, and widening that exclusion to
+/// `src/**` came back `{flag: false, magnitude: 0, completeness: "complete"}`.
+/// The unfinished sibling did the same for a different reason: `"exclude": ["a",`
+/// leaves a *non-empty* truncated value, so no block opened either.
+///
+/// A bracket is its own continuation rule, and a stronger one than indentation:
+/// the list ends where it closes. Both are read — the bracket where there is
+/// one, the indentation where there is not — because `omit =` in a `.coveragerc`
+/// has no brackets to close and never will.
 fn exclusions(source: &[u8]) -> Vec<(u32, String)> {
     let text = String::from_utf8_lossy(source);
     let mut out = Vec::new();
-    let mut block: Option<usize> = None;
+    // `(the key's indentation, brackets it left open)`.
+    let mut block: Option<(usize, i32)> = None;
 
     for (index, raw) in text.lines().enumerate() {
         let line_no = index as u32 + 1;
@@ -281,44 +369,49 @@ fn exclusions(source: &[u8]) -> Vec<(u32, String)> {
             continue;
         }
 
-        // A block continues while the indentation stays deeper than the key's.
-        if let Some(key_indent) = block {
+        // A block continues while its brackets are open, or — where it opened
+        // none — while the indentation stays deeper than the key's.
+        if let Some((key_indent, depth)) = block {
+            if depth > 0 {
+                let still_open = depth + config::bracket_delta(raw);
+                block = (still_open > 0).then_some((key_indent, still_open));
+                // The closing line is read too. A pattern can share it —
+                // `"src/**"]` — and `config::entries` drops the bracket.
+                out.extend(entries_under(EXCLUSION, raw.trim()).map(|e| (line_no, e)));
+                continue;
+            }
             if indent > key_indent {
-                out.extend(
-                    config::entries(raw.trim())
-                        .into_iter()
-                        .map(|e| (line_no, e)),
-                );
+                out.extend(entries_under(EXCLUSION, raw.trim()).map(|e| (line_no, e)));
                 continue;
             }
             block = None;
         }
 
-        let mut opened_block = false;
+        let mut opened_block: Option<i32> = None;
         for pair in config::pairs(raw) {
-            if !EXCLUSION_KEY_FRAGMENTS
-                .iter()
-                .any(|fragment| pair.key.contains(fragment))
-            {
+            let Some(sense) = sense_of(&pair.key) else {
                 continue;
+            };
+            // A key opens a block when it has nothing after it, and also when
+            // what it has does not close. The first is keyed on the value being
+            // empty rather than on it yielding no entries: `ignore_errors =
+            // True` yields none — `config::entries` drops booleans — and
+            // reading that as an opened block swallowed every indented line
+            // after it as an exclusion pattern.
+            let unfinished = config::bracket_delta(&pair.value) > 0;
+            if pair.value.is_empty() || unfinished {
+                opened_block = Some(if unfinished {
+                    config::bracket_delta(&pair.value)
+                } else {
+                    config::bracket_delta(raw).max(0)
+                });
             }
-            if pair.value.is_empty() {
-                // A key with nothing after it opens a block. Keyed on the value
-                // being empty and not on it yielding no entries: `ignore_errors
-                // = True` yields none — `config::entries` drops booleans — and
-                // reading that as an opened block swallowed every indented line
-                // after it as an exclusion pattern.
-                opened_block = true;
-            } else {
-                out.extend(
-                    config::entries(&pair.value)
-                        .into_iter()
-                        .map(|e| (line_no, e)),
-                );
+            if !pair.value.is_empty() {
+                out.extend(entries_under(sense, &pair.value).map(|e| (line_no, e)));
             }
         }
-        if opened_block {
-            block = Some(indent);
+        if let Some(depth) = opened_block {
+            block = Some((indent, depth));
         }
     }
     out
@@ -576,5 +669,104 @@ mod tests {
         // Anchored above, but the tail does not reach downward in every glob
         // dialect these files are read by, so it is not ranked either way.
         assert!(!covers("src/*.ts", "src/generated/*.ts"));
+    }
+
+    #[test]
+    fn a_list_json_wrote_without_indentation_is_still_a_list() {
+        // The block rule was an indentation rule, and JSON has no indentation
+        // rule. This is valid JSON and what a machine writes; it read as a key
+        // that opened a block and no entries at all.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".nycrc.json",
+            "{\n\"exclude\": [\n\"src/generated/**\"\n]\n}\n",
+            "{\n\"exclude\": [\n\"src/**\"\n]\n}\n",
+        )]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(outcome.findings[0].detail.contains("broadened"));
+    }
+
+    #[test]
+    fn a_list_that_does_not_finish_on_its_own_line_is_still_a_list() {
+        // The unfinished sibling: the value is non-empty and truncated, so no
+        // block opened either, and the entry after the break was never read.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".nycrc.json",
+            "{\n  \"exclude\": [\"vendor/**\",\n    \"src/generated/**\"]\n}\n",
+            "{\n  \"exclude\": [\"vendor/**\",\n    \"src/**\"]\n}\n",
+        )]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(outcome.findings[0].detail.contains("broadened"));
+    }
+
+    #[test]
+    fn an_indented_list_still_reports_its_entry_where_the_entry_is() {
+        // The bracket rule runs beside the indentation rule and must not move
+        // the location: a reader opens the file at the pattern, not at the key.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".coveragerc",
+            "[run]\nomit =\n    tests/*\n",
+            "[run]\nomit =\n    tests/*\n    src/payments/*\n",
+        )]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.findings[0].line, Some(4));
+    }
+
+    #[test]
+    fn an_inclusion_list_narrowed_by_a_negation_fires() {
+        // Jest's `collectCoverageFrom` names what coverage collects, and `!` is
+        // how a directory leaves it. Same move as widening an ignore list, in a
+        // key this detector had no name for.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "jest.config.js",
+            "module.exports = { collectCoverageFrom: [\"src/**/*.ts\", \"!src/generated/**\"] };\n",
+            "module.exports = { collectCoverageFrom: [\"src/**/*.ts\", \"!src/**\"] };\n",
+        )]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(outcome.findings[0].detail.contains("broadened"));
+
+        // And a negation that was not there before is an exclusion added.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "jest.config.js",
+            "module.exports = { collectCoverageFrom: [\"src/**/*.ts\"] };\n",
+            "module.exports = { collectCoverageFrom: [\"src/**/*.ts\", \"!src/payments/**\"] };\n",
+        )]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 1);
+    }
+
+    #[test]
+    fn an_inclusion_list_that_grows_is_measuring_more_and_not_less() {
+        // The half that reading `collectCoverageFrom` as an ordinary exclusion
+        // list would have failed: its entries are inclusions, so a project
+        // adding a directory to what it measures would have fired as an
+        // exclusion added — a tamper signal on a tightening.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "jest.config.js",
+            "module.exports = { collectCoverageFrom: [\"src/api/**\"] };\n",
+            "module.exports = { collectCoverageFrom: [\"src/api/**\", \"src/web/**\"] };\n",
+        )]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 0);
+    }
+
+    #[test]
+    fn a_negation_inside_an_exclusion_list_excludes_nothing() {
+        // The same rule the other way round. In `exclude` a `!` puts something
+        // back, so adding one is a tightening and counting it as an exclusion
+        // would fire on it.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".nycrc.json",
+            "{ \"exclude\": [\"src/generated/**\"] }",
+            "{ \"exclude\": [\"src/generated/**\", \"!src/generated/keep.ts\"] }",
+        )]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 0);
     }
 }
