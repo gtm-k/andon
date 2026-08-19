@@ -84,9 +84,27 @@ pub enum Match {
     /// syntax" cannot reach ordinary source: `.nycrc`, `.golangci`, `.eslintrc`.
     /// [`Tool::any`] enforces it.
     AnySyntax,
-    /// This stem, or one that extends it with a further `.` segment, in these
-    /// syntaxes — for the families that spell a variant into the name itself:
-    /// `tsconfig.base.json`, `jest.config.ci.js`.
+    /// This stem, or — in a syntax a runtime does not execute — one that
+    /// extends it with a further `.` segment, for the families that spell a
+    /// variant into the name itself: `tsconfig.base.json`,
+    /// `jest.config.ci.json`, `sonar-project.ci.properties`.
+    ///
+    /// # The variant segment stops at the syntaxes that are also source
+    ///
+    /// A further segment is an arbitrary word, and in `.ts` an arbitrary word
+    /// is what an ordinary module is called. `eslint.config.spec.ts` is a test
+    /// module that holds a config's expected values as literals, and it was
+    /// read as ESLint configuration and accused of loosening the very rule it
+    /// asserts — the [`Tool`] `pyproject.py` failure one level up, and the same
+    /// answer: a tool that accuses honest work gets uninstalled (PREMORTEM A4),
+    /// which is worse than the detection the breadth was there to buy.
+    ///
+    /// `.json`, `.jsonc` and `.properties` are not modules, so a variant
+    /// segment there cannot be somebody's source file and the open form stays.
+    /// What is given up is the executable spelling of a **non-default** config
+    /// — `jest.config.ci.js`, which a tool only loads when a script or a CLI
+    /// flag names it. That file is out of subject; the data spelling of the
+    /// same variant, `jest.config.ci.json`, is not.
     Family(&'static [&'static str]),
     /// This exact stem, and only in these syntaxes. For every stem an ordinary
     /// file could carry: `setup.cfg` is configuration and `setup.ts` is code,
@@ -159,10 +177,17 @@ pub mod tools {
     /// JSON, with comments allowed — TypeScript's and Biome's own spelling.
     const JSONC: &[&str] = &["json", "jsonc"];
 
+    /// The syntaxes a language runtime executes, so a file carrying one is
+    /// something somebody could have written as a module. Read by
+    /// [`super::Match::Family`], which is where that distinction decides
+    /// whether an arbitrary name segment is a config variant or a source file.
+    pub(super) const EXECUTABLE: &[&str] = &["js", "cjs", "mjs", "ts", "mts", "cts"];
+
     /// This tool's own policy file.
     pub const ANDON: Tool = Tool::any(".andon");
     /// TypeScript. `tsconfig.base.json` is the same file with a variant spelled
-    /// into the name; `src/tsconfig.ts` is a module that reads one.
+    /// into the name, and `.json` is not a syntax anything executes, so the
+    /// variant form is safe here; `src/tsconfig.ts` is a module that reads one.
     pub const TSCONFIG: Tool = Tool::family("tsconfig", JSONC);
     /// ESLint's legacy rc file, in all six spellings and the next one.
     pub const ESLINTRC: Tool = Tool::any(".eslintrc");
@@ -221,16 +246,18 @@ pub fn names_one_of(path: &str, tools: &[Tool]) -> bool {
     let (stem, syntax) = stem_and_syntax(name);
     tools.iter().any(|tool| match tool.how {
         Match::AnySyntax => stem == tool.stem,
-        // The remainder has to start at a dot, or `tsconfig` claims
-        // `tsconfig-loader.ts` and a source file becomes threshold
-        // configuration. A family spells its variant as a further name segment
-        // — `tsconfig.base`, `jest.config.ci` — and never as a suffix.
+        // A family spells its variant as a further name segment —
+        // `tsconfig.base`, `jest.config.ci` — and never as a suffix, or
+        // `tsconfig` claims `tsconfig-loader.ts` and a source file becomes
+        // threshold configuration. And the segment is only read in a syntax
+        // nothing executes, because there an arbitrary word cannot be a
+        // module's name: see [`Match::Family`].
         Match::Family(syntaxes) => {
-            let named = stem == tool.stem
-                || stem
+            let variant = !tools::EXECUTABLE.contains(&syntax)
+                && stem
                     .strip_prefix(tool.stem)
                     .is_some_and(|rest| rest.starts_with('.'));
-            named && syntaxes.contains(&syntax)
+            (stem == tool.stem || variant) && syntaxes.contains(&syntax)
         }
         Match::Syntaxes(syntaxes) => stem == tool.stem && syntaxes.contains(&syntax),
     })
@@ -677,11 +704,12 @@ mod tests {
     fn a_family_matches_the_variants_spelled_into_the_name() {
         const TOOLS: &[Tool] = &[
             Tool::family("tsconfig", &["json"]),
-            Tool::family("jest.config", &["mjs"]),
+            Tool::family("jest.config", &["mjs", "json"]),
         ];
         assert!(names_one_of("tsconfig.json", TOOLS));
         assert!(names_one_of("tsconfig.base.json", TOOLS));
-        assert!(names_one_of("jest.config.ci.mjs", TOOLS));
+        assert!(names_one_of("jest.config.mjs", TOOLS));
+        assert!(names_one_of("jest.config.ci.json", TOOLS));
         assert!(!names_one_of("src/config.ts", TOOLS));
         // A family names its variants as further segments, so a stem that
         // merely begins with the same letters is not one of them.
@@ -690,6 +718,67 @@ mod tests {
         // And a family is a stem an ordinary file can carry too, so it answers
         // only for the syntaxes its own loader reads.
         assert!(!names_one_of("src/tsconfig.ts", TOOLS));
+    }
+
+    #[test]
+    fn a_variant_segment_is_not_read_in_a_syntax_something_executes() {
+        // The reported false positive one level up from `pyproject.py`: in
+        // `.ts` a further name segment is what an ordinary module is called,
+        // and `eslint.config.spec.ts` — a test module holding a config's
+        // expected values as literals — was read as the configuration it
+        // asserts about and accused of loosening it.
+        for segment in [
+            "test",
+            "spec",
+            "fixture",
+            "fixtures",
+            "generated",
+            "types",
+            "d",
+            "mock",
+            "stories",
+            "bench",
+        ] {
+            for (stem, syntax) in [
+                ("eslint.config", "ts"),
+                ("eslint.config", "js"),
+                ("eslint.config", "mts"),
+                ("eslint.config", "cjs"),
+                ("jest.config", "ts"),
+                ("vitest.config", "ts"),
+                ("tsconfig", "ts"),
+            ] {
+                let name = format!("src/{stem}.{segment}.{syntax}");
+                assert!(
+                    !names_one_of(&name, ALL_TOOLS),
+                    "{name} is a module somebody wrote, not a config file"
+                );
+            }
+        }
+        // The default stem itself is untouched in every executable syntax it
+        // is written in — that is the file the tool actually loads.
+        for name in [
+            "eslint.config.js",
+            "eslint.config.cjs",
+            "eslint.config.mjs",
+            "eslint.config.ts",
+            "eslint.config.mts",
+            "eslint.config.cts",
+            "jest.config.js",
+            "vitest.config.ts",
+        ] {
+            assert!(names_one_of(name, ALL_TOOLS), "{name}");
+        }
+        // And the variant form is kept wherever the syntax is data rather than
+        // source, which is where it was bought in the first place.
+        for name in [
+            "tsconfig.base.json",
+            "tsconfig.spec.json",
+            "jest.config.ci.json",
+            "sonar-project.ci.properties",
+        ] {
+            assert!(names_one_of(name, ALL_TOOLS), "{name}");
+        }
     }
 
     #[test]
