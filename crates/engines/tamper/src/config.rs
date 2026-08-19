@@ -29,6 +29,114 @@
 //! whose names say they are configuration, so a `:` in a source file never
 //! reaches here.
 
+/// A tool whose configuration a detector reads, named by its stem rather than
+/// by a spelling of its file name.
+///
+/// # The list was the bug, so the list stopped being the answer
+///
+/// Both detectors used to hold an array of exact file names. `.nycrc` and
+/// `.nycrc.json` were in it and `.nycrc.yml` was not, so the identical edit
+/// fired in two spellings of one file and came back
+/// `{flag: false, magnitude: 0, completeness: "complete"}` in a third — nyc
+/// reads all of them. The same hole held `.eslintrc.cjs` beside `.eslintrc.js`,
+/// `.eslintrc.yaml` beside `.eslintrc.yml`, `eslint.config.cjs` beside three
+/// other flat-config spellings, `.golangci.toml` beside `.golangci.yml`, and
+/// `.c8rc` beside `.c8rc.json`. Every one of them was a confident zero on a
+/// format the detector would say it recognises.
+///
+/// A name can always be added, and there will always be another one. So what is
+/// matched is the *stem* — the file name with its syntax extension taken off —
+/// and a tool whose stem is its own gets every extension, including the one
+/// nobody has written yet. That is what closes the class rather than the cases.
+///
+/// The looseness has to stop somewhere, and it stops at stems an ordinary
+/// source file could carry. `setup`, `package` and `tox` name their tool only
+/// in one syntax each; matching `setup.ts` as coverage configuration would
+/// undo the bound that keeps a `:` in a source file from reaching this scanner
+/// at all.
+#[derive(Debug, Clone, Copy)]
+pub struct Tool {
+    /// The stem, lower-cased and without its syntax extension.
+    pub stem: &'static str,
+    /// How the stem is matched.
+    pub how: Match,
+}
+
+/// How a [`Tool`]'s stem is matched against a file name.
+#[derive(Debug, Clone, Copy)]
+pub enum Match {
+    /// This exact stem, in any syntax. For stems that are the tool's name and
+    /// nobody else's: `.nycrc`, `.golangci`, `tarpaulin`.
+    AnySyntax,
+    /// Any stem beginning with this one, in any syntax — for the families that
+    /// spell a variant into the name itself: `tsconfig.base.json`,
+    /// `jest.config.ci.js`.
+    Family,
+    /// This exact stem, and only in these syntaxes. For stems an ordinary file
+    /// could carry: `setup.cfg` is configuration and `setup.ts` is code.
+    Syntaxes(&'static [&'static str]),
+}
+
+impl Tool {
+    /// A stem that is its tool's own name, in any syntax.
+    pub const fn any(stem: &'static str) -> Tool {
+        Tool {
+            stem,
+            how: Match::AnySyntax,
+        }
+    }
+
+    /// A family of stems, matched by prefix, in any syntax.
+    pub const fn family(stem: &'static str) -> Tool {
+        Tool {
+            stem,
+            how: Match::Family,
+        }
+    }
+
+    /// A stem an ordinary file could carry, in these syntaxes only.
+    pub const fn only(stem: &'static str, syntaxes: &'static [&'static str]) -> Tool {
+        Tool {
+            stem,
+            how: Match::Syntaxes(syntaxes),
+        }
+    }
+}
+
+/// Whether `path` names one of `tools`.
+pub fn names_one_of(path: &str, tools: &[Tool]) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    let (stem, syntax) = stem_and_syntax(name);
+    tools.iter().any(|tool| match tool.how {
+        Match::AnySyntax => stem == tool.stem,
+        // The remainder has to start at a dot, or `tsconfig` claims
+        // `tsconfig-loader.ts` and a source file becomes threshold
+        // configuration. A family spells its variant as a further name segment
+        // — `tsconfig.base`, `jest.config.ci` — and never as a suffix.
+        Match::Family => {
+            stem == tool.stem
+                || stem
+                    .strip_prefix(tool.stem)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        }
+        Match::Syntaxes(syntaxes) => stem == tool.stem && syntaxes.contains(&syntax),
+    })
+}
+
+/// A file name split into its stem and its syntax extension.
+///
+/// The extension is what follows the *last* dot, so `eslint.config.cjs` is the
+/// flat-config stem in the CommonJS syntax rather than an `eslint` file with two
+/// extensions. A leading dot is part of the stem and never a separator:
+/// `.coveragerc` has no extension, and `.nycrc.yml` has one.
+pub fn stem_and_syntax(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(0) | None => (name, ""),
+        Some(at) => (&name[..at], &name[at + 1..]),
+    }
+}
+
 /// One `key = value` found on a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pair {
@@ -282,5 +390,56 @@ mod tests {
     #[test]
     fn yaml_sequences_read_as_entries() {
         assert_eq!(entries("- vendor/**"), vec!["vendor/**"]);
+    }
+
+    #[test]
+    fn a_name_splits_into_the_tool_and_the_syntax() {
+        assert_eq!(stem_and_syntax(".coveragerc"), (".coveragerc", ""));
+        assert_eq!(stem_and_syntax(".nycrc.yml"), (".nycrc", "yml"));
+        assert_eq!(stem_and_syntax("tox.ini"), ("tox", "ini"));
+        assert_eq!(
+            stem_and_syntax("eslint.config.cjs"),
+            ("eslint.config", "cjs")
+        );
+        assert_eq!(stem_and_syntax("Makefile"), ("Makefile", ""));
+    }
+
+    #[test]
+    fn a_tool_whose_stem_is_its_own_name_answers_for_every_syntax() {
+        // Including one nobody has written yet, which is the whole point: the
+        // list of names was the defect, so the list is not the answer.
+        const TOOLS: &[Tool] = &[Tool::any(".nycrc")];
+        for name in [
+            ".nycrc",
+            ".nycrc.json",
+            ".nycrc.yml",
+            ".nycrc.yaml",
+            ".nycrc.json5",
+            "packages/app/.nycrc.toml",
+        ] {
+            assert!(names_one_of(name, TOOLS), "{name}");
+        }
+        assert!(!names_one_of("src/nycrc.ts", TOOLS));
+    }
+
+    #[test]
+    fn a_stem_an_ordinary_file_could_carry_answers_only_for_its_own_syntax() {
+        const TOOLS: &[Tool] = &[Tool::only("setup", &["cfg"])];
+        assert!(names_one_of("setup.cfg", TOOLS));
+        assert!(!names_one_of("src/setup.ts", TOOLS));
+        assert!(!names_one_of("setup.py", TOOLS));
+    }
+
+    #[test]
+    fn a_family_matches_the_variants_spelled_into_the_name() {
+        const TOOLS: &[Tool] = &[Tool::family("tsconfig"), Tool::family("jest.config")];
+        assert!(names_one_of("tsconfig.json", TOOLS));
+        assert!(names_one_of("tsconfig.base.json", TOOLS));
+        assert!(names_one_of("jest.config.ci.mjs", TOOLS));
+        assert!(!names_one_of("src/config.ts", TOOLS));
+        // A family names its variants as further segments, so a stem that
+        // merely begins with the same letters is not one of them.
+        assert!(!names_one_of("src/tsconfig-loader.ts", TOOLS));
+        assert!(!names_one_of("tsconfiguration.json", TOOLS));
     }
 }

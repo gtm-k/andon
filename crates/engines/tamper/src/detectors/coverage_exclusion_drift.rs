@@ -7,14 +7,29 @@
 //! # Scanned, not parsed
 //!
 //! Coverage exclusions live in `.coveragerc` (INI), `pyproject.toml`,
-//! `package.json`, `jest.config.js` (JavaScript), `codecov.yml`, `.nycrc`, and
-//! `vitest.config.ts` — six syntaxes for one idea. What the detector needs from
-//! all six is the same: *which patterns are excluded*, which is the list of
-//! entries under a known key. [`crate::config`] does the reading and explains
-//! why it is a scanner rather than six parsers.
+//! `package.json`, `jest.config.js` (JavaScript), `codecov.yml`, `.nycrc`,
+//! `tox.ini`, `tarpaulin.toml` and `vitest.config.ts` — a syntax per tool for
+//! one idea. What the detector needs from all of them is the same: *which
+//! patterns are excluded*, which is the list of entries under a key whose name
+//! says it excludes. [`crate::config`] does the reading and explains why it is a
+//! scanner rather than eight parsers.
 //!
 //! The bluntness is bounded by the file list: only files that are coverage
 //! configuration are examined at all, so a `src/exclude.ts` cannot fire this.
+//!
+//! # Neither list is a list of names any more
+//!
+//! Both the files and the keys were arrays of exact spellings, and both had the
+//! same hole in them. `.nycrc` and `.nycrc.json` were in the file list and
+//! `.nycrc.yml` was not, though nyc reads all three; `exclude` was in the key
+//! list and tarpaulin's own `exclude_files` was not, though this detector reads
+//! `tarpaulin.toml`. Each gap returned `{flag: false, magnitude: 0,
+//! completeness: "complete"}` on a format the detector says it recognises,
+//! which is the confident missed detection the completeness vocabulary exists
+//! to prevent. Files are now matched by the tool's stem in any syntax
+//! ([`config::Tool`]) and keys by what their name says
+//! ([`EXCLUSION_KEY_FRAGMENTS`]), so the eighth spelling of each is covered
+//! before it is written.
 //!
 //! # Only widening fires
 //!
@@ -46,48 +61,57 @@ use andon_core::schema::enums::TamperSignal;
 /// The detector.
 pub struct CoverageExclusionDrift;
 
-/// Keys whose values are exclusion patterns.
-const EXCLUSION_KEYS: &[&str] = &[
-    "omit",
-    "exclude",
-    "excludes",
-    "exclude_lines",
-    "exclude_also",
-    "ignore",
-    "ignores",
-    "skip_covered",
-    "coveragepathignorepatterns",
-    "coveragereporters",
-    "testpathignorepatterns",
-    "exclude_dirs",
-];
+/// Key-name fragments whose value is a list of exclusion patterns.
+///
+/// # Fragments, because the exact list had the same hole the file list did
+///
+/// `tarpaulin.toml` is coverage configuration this detector reads, and
+/// tarpaulin's own file-exclusion key is `exclude_files`. That was not in the
+/// exact list, so an edit widening it came back
+/// `{flag: false, magnitude: 0, completeness: "complete"}` — a confident zero
+/// inside a format the detector declares it recognises, which is worse than not
+/// reading the file at all. `sonar.coverage.exclusions` was the same shape.
+///
+/// Matching is `contains`, so a key whose *own name* says it excludes is read
+/// however the tool spells it: `exclude`, `excludes`, `exclude_files`,
+/// `exclude-files`, `exclude_lines`, `exclude_also`, `exclude_dirs`,
+/// `exclusions`, `coverage_exclusions`, `omit`, `ignore`, `ignores`,
+/// `coveragePathIgnorePatterns`, `testPathIgnorePatterns`, `skip_covered` — and
+/// the eighth spelling, which exists and has not been written down yet.
+///
+/// The bound is still the file list: a key called `ignore` reaches here only in
+/// a file whose name says it is coverage configuration.
+const EXCLUSION_KEY_FRAGMENTS: &[&str] = &["exclude", "exclusion", "omit", "ignore", "skip"];
 
-/// Filenames that are coverage configuration.
-const COVERAGE_CONFIG_NAMES: &[&str] = &[
-    ".coveragerc",
-    "codecov.yml",
-    ".codecov.yml",
-    "codecov.yaml",
-    ".nycrc",
-    ".nycrc.json",
-    "tarpaulin.toml",
-    "setup.cfg",
-    "pyproject.toml",
-    "package.json",
-    ".c8rc.json",
+/// The tools whose configuration carries coverage exclusions.
+///
+/// See [`config::Tool`] for why these are stems and not file names.
+const COVERAGE_TOOLS: &[config::Tool] = &[
+    config::Tool::any(".coveragerc"),
+    config::Tool::any("codecov"),
+    config::Tool::any(".codecov"),
+    config::Tool::any(".nycrc"),
+    config::Tool::any(".c8rc"),
+    config::Tool::any("tarpaulin"),
+    config::Tool::any("pyproject"),
+    // Sonar's `sonar.coverage.exclusions` takes whole directories out of the
+    // number the dashboard shows, which is the same move in a file this
+    // detector was not reading at all.
+    config::Tool::family("sonar-project"),
+    config::Tool::family("jest.config"),
+    config::Tool::family("vitest.config"),
+    config::Tool::family("nyc.config"),
+    config::Tool::only("setup", &["cfg"]),
+    config::Tool::only("package", &["json"]),
+    // coverage.py reads `[coverage:run]` out of `tox.ini` exactly as it reads
+    // `[run]` out of `.coveragerc`; the identical block in `setup.cfg` fired
+    // and this one was silent.
+    config::Tool::only("tox", &["ini"]),
 ];
-
-/// Filename fragments that are coverage configuration.
-const COVERAGE_CONFIG_FRAGMENTS: &[&str] = &["jest.config", "vitest.config", "nyc.config"];
 
 /// Whether a path is a coverage configuration file.
 pub fn is_coverage_config(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    let name = lower.rsplit('/').next().unwrap_or(&lower);
-    COVERAGE_CONFIG_NAMES.contains(&name)
-        || COVERAGE_CONFIG_FRAGMENTS
-            .iter()
-            .any(|fragment| name.starts_with(fragment))
+    config::names_one_of(path, COVERAGE_TOOLS)
 }
 
 impl Detector for CoverageExclusionDrift {
@@ -271,15 +295,25 @@ fn exclusions(source: &[u8]) -> Vec<(u32, String)> {
 
         let mut opened_block = false;
         for pair in config::pairs(raw) {
-            if !EXCLUSION_KEYS.contains(&pair.key.as_str()) {
+            if !EXCLUSION_KEY_FRAGMENTS
+                .iter()
+                .any(|fragment| pair.key.contains(fragment))
+            {
                 continue;
             }
-            let entries = config::entries(&pair.value);
-            if entries.is_empty() {
-                // A key with nothing after it opens a block.
+            if pair.value.is_empty() {
+                // A key with nothing after it opens a block. Keyed on the value
+                // being empty and not on it yielding no entries: `ignore_errors
+                // = True` yields none — `config::entries` drops booleans — and
+                // reading that as an opened block swallowed every indented line
+                // after it as an exclusion pattern.
                 opened_block = true;
             } else {
-                out.extend(entries.into_iter().map(|e| (line_no, e)));
+                out.extend(
+                    config::entries(&pair.value)
+                        .into_iter()
+                        .map(|e| (line_no, e)),
+                );
             }
         }
         if opened_block {
@@ -457,6 +491,71 @@ mod tests {
         )]));
         assert!(!outcome.fired);
         assert_eq!(outcome.magnitude, -1);
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_tools_own_exclusion_key_is_read_however_it_spells_it() {
+        // `tarpaulin.toml` was in the file list and read; `exclude_files` is
+        // tarpaulin's actual file-exclusion setting and was not in the key list,
+        // so widening it came back `{flag: false, magnitude: 0, completeness:
+        // "complete"}` — a confident zero inside a format this detector says it
+        // recognises, which is worse than not opening the file.
+        for key in ["exclude_files", "exclude-files"] {
+            let base = format!("[report]\n{key} = [\"src/generated/*\"]\n");
+            let head = format!("[report]\n{key} = [\"src/*\"]\n");
+            let view = ChangeView::new(vec![FileChange::modified("tarpaulin.toml", &base, &head)]);
+            let outcome = CoverageExclusionDrift.run(&view);
+            assert!(outcome.fired, "{key}: {outcome:?}");
+            assert_eq!(outcome.magnitude, 1, "{key}");
+        }
+        // And the key nobody has written down yet, which is the point of
+        // matching what the name says rather than a list of names.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".nycrc.json",
+            "{ \"coverageExcludePatterns\": [\"src/generated/**\"] }",
+            "{ \"coverageExcludePatterns\": [\"src/**\"] }",
+        )]);
+        assert!(CoverageExclusionDrift.run(&view).fired);
+    }
+
+    #[test]
+    fn every_spelling_of_one_tools_configuration_is_that_tool_s_configuration() {
+        // nyc reads its rc file in four syntaxes and c8 in three; the list held
+        // some of each. The stem is the tool, and the extension is how the
+        // repository chose to write it.
+        for path in [
+            ".nycrc",
+            ".nycrc.json",
+            ".nycrc.yml",
+            ".nycrc.yaml",
+            ".c8rc",
+            ".c8rc.json",
+            "packages/api/.nycrc.json5",
+        ] {
+            assert!(is_coverage_config(path), "{path}");
+        }
+        assert!(is_coverage_config("tox.ini"), "coverage.py reads it");
+        assert!(is_coverage_config("sonar-project.properties"));
+        // The bound that keeps the scanner off source files.
+        for path in ["src/exclude.ts", "src/setup.ts", "src/nycrc.ts"] {
+            assert!(!is_coverage_config(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_boolean_under_an_exclusion_shaped_key_does_not_swallow_what_follows() {
+        // `config::entries` drops booleans, so `ignore_errors = True` yielded no
+        // entries — and a key with no entries was read as one that opens an
+        // indented block, which then ate every following line as an exclusion
+        // pattern. Latent while the key list was exact; live the moment keys are
+        // matched by what their name says.
+        let base = "[report]\nignore_errors = True\nprecision = 2\nshow_missing = True\n";
+        let head = "[report]\nignore_errors = True\nprecision = 2\nshow_missing = False\n";
+        let view = ChangeView::new(vec![FileChange::modified(".coveragerc", base, head)]);
+        let outcome = CoverageExclusionDrift.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert_eq!(outcome.magnitude, 0);
         assert!(outcome.unassessed.is_empty(), "{outcome:?}");
     }
 

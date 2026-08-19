@@ -172,6 +172,13 @@ expiry = "2027-07-19"
 # No incomplete-parse caveat here either: both detectors read configuration
 # files as text, and a tree-sitter ERROR node in a source file is not something
 # a coverage config or a threshold setting can hide behind.
+#
+# What these two owe instead is the other honesty line. They decide for
+# themselves which files are their subject, and a subject test that is a list of
+# exact file names is a silent gap wearing a complete answer: `.nycrc.yml` and
+# `.nycrc.json` are one tool's configuration and only one of them was in the
+# list. Recognition is by the tool's stem in any syntax, and a recognised file
+# whose change they cannot rank comes back `partial`.
 
 [[metric]]
 metric_id = "tamper.coverage-exclusion-drift"
@@ -211,7 +218,7 @@ does_not_predict = [
     "that the loosening was unjustified — most are deliberate, which is why this outcome is reported advisory rather than blocking (round-1 B6)",
     "the effect of either edit on any downstream number",
     "defect density",
-    "settings, formats, or keys these detectors do not recognise — including a rule deleted rather than downgraded, a known gap kept visible in the corpus recall column",
+    "settings, formats, or keys these detectors do not recognise. What they recognise is the tool rather than the spelling — every syntax of a known tool's configuration file, and every key whose own name says it excludes — so the gap left is an unknown tool, not an unlisted extension of a known one. A file they do recognise and cannot rank is reported `completeness: partial` naming what went undecided, and never as a silence: a rule deleted rather than downgraded is one of those, and it stays a miss in the corpus recall column because unranked is not a firing",
 ]
 owner = "gtm-k"
 expiry = "2027-08-16"
