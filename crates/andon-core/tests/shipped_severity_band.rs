@@ -365,6 +365,7 @@ fn assemble(measured: &Measured) -> andon_core::schema::payload::MeasurementReco
     })
     .expect("real engine output assembles");
     prepared.finish(Advance {
+        contended: false,
         state: andon_core::schema::payload::IterationState {
             count: 0,
             cap: 3,

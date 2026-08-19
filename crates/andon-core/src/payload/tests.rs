@@ -354,6 +354,7 @@ fn bare_request<'a>(
 
 fn advance(count: u32, cap: u32) -> Advance {
     Advance {
+        contended: false,
         state: crate::schema::payload::IterationState {
             count,
             cap,
@@ -568,15 +569,23 @@ fn an_inconclusive_run_holds_the_count_rather_than_advancing_or_clearing_it() {
     let store = crate::verdict::iteration::IterationStore::open(dir.path()).expect("opens");
     use crate::verdict::iteration::LoopOutcome;
 
-    for _ in 0..3 {
+    // A distinct change per pass, because that is what a pass is: the counter
+    // counts attempts at a change, and three readings of one change are one
+    // attempt by construction.
+    for pass in 0..3 {
         store
-            .advance("feat/a", 3, LoopOutcome::Countable)
+            .advance(
+                "feat/a",
+                3,
+                LoopOutcome::Countable,
+                &format!("base..head{pass}"),
+            )
             .expect("advances");
     }
     assert_eq!(store.peek("feat/a", 3).count, 3);
 
     store
-        .advance("feat/a", 3, LoopOutcome::Inconclusive)
+        .advance("feat/a", 3, LoopOutcome::Inconclusive, "base..head3")
         .expect("advances");
     assert_eq!(
         store.peek("feat/a", 3).count,
@@ -585,7 +594,7 @@ fn an_inconclusive_run_holds_the_count_rather_than_advancing_or_clearing_it() {
     );
 
     store
-        .advance("feat/a", 3, LoopOutcome::Finished)
+        .advance("feat/a", 3, LoopOutcome::Finished, "base..head4")
         .expect("advances");
     assert_eq!(store.peek("feat/a", 3).count, 0);
 }
@@ -1721,7 +1730,12 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     for pass in 1..=cap {
         let prepared = prepare(request(&policy, &registry, firing())).expect("assembles");
         let advance = store
-            .advance("feat/a", cap, prepared.loop_outcome())
+            .advance(
+                "feat/a",
+                cap,
+                prepared.loop_outcome(),
+                &format!("base..pass{pass}"),
+            )
             .expect("advances");
         let record = prepared.finish(advance);
         assert_eq!(record.verdict.iteration.count, pass);
@@ -1731,7 +1745,7 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     // One more, and the tool stops asking the agent.
     let prepared = prepare(request(&policy, &registry, firing())).expect("assembles");
     let advance = store
-        .advance("feat/a", cap, prepared.loop_outcome())
+        .advance("feat/a", cap, prepared.loop_outcome(), "base..one-too-many")
         .expect("advances");
     let record = prepared.finish(advance);
     assert_eq!(record.verdict.verdict, Verdict::EscalateToHuman);
@@ -1742,7 +1756,7 @@ fn the_loop_runs_to_escalation_and_a_fix_ends_it() {
     let prepared =
         prepare(request(&policy, &registry, five_engines(&registry))).expect("assembles");
     let advance = store
-        .advance("feat/a", cap, prepared.loop_outcome())
+        .advance("feat/a", cap, prepared.loop_outcome(), "base..fixed")
         .expect("advances");
     let record = prepared.finish(advance);
     assert_eq!(record.verdict.verdict, Verdict::Pass);
@@ -1871,6 +1885,7 @@ fn the_countable_answer_survives_the_round_trip() {
 
         for recovered in [false, true] {
             let record = prepared.clone().finish(Advance {
+                contended: false,
                 state: crate::schema::payload::IterationState {
                     count: 9,
                     cap: 3,

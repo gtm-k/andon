@@ -568,11 +568,14 @@ fn loop_state(repo: &Path) -> std::collections::BTreeMap<String, u32> {
         return Default::default();
     };
     let value: serde_json::Value = serde_json::from_str(&text).expect("valid state");
+    // A branch carries its count and the change that count is about, since the
+    // pair is what lets two concurrent measurements agree on whether a change
+    // has already been counted. Only the count is this helper's business.
     value["branches"]
         .as_object()
         .map(|map| {
             map.iter()
-                .map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32))
+                .map(|(k, v)| (k.clone(), v["count"].as_u64().unwrap_or(0) as u32))
                 .collect()
         })
         .unwrap_or_default()

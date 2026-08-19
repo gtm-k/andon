@@ -415,23 +415,38 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
     // safety mechanism, which is the wrong direction. The range cannot be
     // forgotten, and for an uncommitted head it is a content hash, so any real
     // edit produces a new one and counts.
-    let previous = store::read_last(&git).ok();
-    let same_change = previous.is_some_and(|last| {
-        last.compare_context.base_oid == resolution.compare_context.base_oid
-            && last.compare_context.head_oid == resolution.compare_context.head_oid
-    });
+    //
+    // The comparison itself belongs to the store, not here. This function used
+    // to make it by reading the last record it had written, which is
+    // unanswerable when two measurements run at once: neither has written one
+    // yet, so both believe they are first, and twenty-four readings of one
+    // unchanged snapshot escalated a human twenty-one times. The store decides
+    // it under the same lock as the write.
+    let change = format!(
+        "{}..{}",
+        resolution.compare_context.base_oid, resolution.compare_context.head_oid
+    );
     let advance = match request.record_kind {
-        RecordKind::SelfReport if !same_change => store
-            .advance(&branch, cap, prepared.loop_outcome())
+        RecordKind::SelfReport => store
+            .advance(&branch, cap, prepared.loop_outcome(), &change)
             .map_err(|e| MeasureError::Iteration(e.to_string()))?,
         // `peek` cannot report a restart because it does not perform one. A
         // caller that claimed to have recovered state would be claiming
         // something about a counter it did not write.
-        RecordKind::SelfReport | RecordKind::Attestation => Advance {
+        RecordKind::Attestation => Advance {
             state: store.peek(&branch, cap),
             recovered: false,
+            contended: false,
         },
     };
+    if advance.contended {
+        engine_notes.push(
+            "another measurement held this repository's loop counter for longer than the wait, \
+             so this pass was not counted against the iteration cap. The measurement itself is \
+             unaffected — the counter is a loop heuristic, not an input to any number here."
+                .to_string(),
+        );
+    }
 
     let record = prepared.finish(advance);
 
