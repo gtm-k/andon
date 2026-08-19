@@ -2607,3 +2607,83 @@ fn an_ordinary_record_still_gets_the_verdict_word_it_earned() {
         "a record whose verdict matches its own fields was labelled invalid:\n{reported}"
     );
 }
+
+#[test]
+fn the_machine_surface_stays_machine_readable_beside_every_other_flag() {
+    // `--profile agent-mode` was clean JSON only when used alone. Combined with
+    // `--record` or `--html` it appended " report written to ..." or the ledger
+    // note to stdout, so the agent-facing surface stopped parsing at a measured
+    // byte offset — on the one surface PREMORTEM A2 exists for. And `report
+    // --profile agent-mode --html <file>` returned before the write, exiting 0
+    // with no file and nothing said.
+    //
+    // The lines are moved to stderr rather than dropped: "was the note written?"
+    // is a question the operator can only answer from what the tool says.
+    let repo = dirty_repo();
+    let root = repo.path().to_str().expect("utf-8").to_string();
+    let html = repo.path().join("agent.html");
+    let html_arg = html.to_str().expect("utf-8").to_string();
+
+    let output = run(&[
+        "measure",
+        "--repo",
+        &root,
+        "--profile",
+        "agent-mode",
+        "--html",
+        &html_arg,
+        "--record",
+        "--no-color",
+    ]);
+    let out = stdout(&output);
+    serde_json::from_str::<serde_json::Value>(&out).unwrap_or_else(|e| {
+        panic!("agent-mode stdout is not parseable JSON: {e}\n{out}");
+    });
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        said.contains("report written to"),
+        "the HTML write was not reported anywhere, so the operator cannot tell it happened:\n\
+         {said}"
+    );
+    assert!(
+        said.contains("refs/notes/andon-measure"),
+        "the ledger note was not reported anywhere:\n{said}"
+    );
+    assert!(html.is_file(), "the HTML report was not written");
+
+    // `report`, where the profile used to return before the write.
+    let second = repo.path().join("agent-report.html");
+    let second_arg = second.to_str().expect("utf-8").to_string();
+    let output = run(&[
+        "report",
+        "--repo",
+        &root,
+        "--profile",
+        "agent-mode",
+        "--html",
+        &second_arg,
+    ]);
+    let out = stdout(&output);
+    serde_json::from_str::<serde_json::Value>(&out)
+        .unwrap_or_else(|e| panic!("report --profile stdout is not parseable JSON: {e}\n{out}"));
+    assert!(
+        second.is_file(),
+        "`report --profile agent-mode --html` returned without writing the file"
+    );
+
+    // The human path is unchanged: the line still lands where a person is
+    // looking.
+    let third = repo.path().join("human.html");
+    let printed = stdout(&run(&[
+        "measure",
+        "--repo",
+        &root,
+        "--html",
+        third.to_str().expect("utf-8"),
+        "--no-color",
+    ]));
+    assert!(
+        printed.contains("report written to"),
+        "the operational line was moved off the human surface too:\n{printed}"
+    );
+}

@@ -231,16 +231,12 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
     if let Some(path) = flags.get("html") {
         let html = render::html::render(&measurement);
         std::fs::write(path, html).map_err(|e| format!("{path}: {e}"))?;
-        if !flags.on("json") {
-            println!(" report written to {path}\n");
-        }
+        say(flags, &format!(" report written to {path}\n"));
     }
 
     if flags.on("record") {
         let note = ledger::record(&git, &measurement.record, &measurement.ledger_anchor)?;
-        if !flags.on("json") {
-            println!(" {note}\n");
-        }
+        say(flags, &format!(" {note}\n"));
     }
 
     if let Err(e) = saved {
@@ -270,6 +266,33 @@ fn code_for_record(record: &MeasurementRecord, exit_zero: bool) -> ExitCode {
         return ExitCode::from(1);
     }
     code_for(record.verdict.verdict, false)
+}
+
+/// Whether stdout is a machine surface on this run.
+///
+/// `--json` and `--profile` both make stdout a document a parser reads to the
+/// end. Anything else the run has to say goes to stderr.
+fn stdout_is_machine_readable(flags: &Flags) -> bool {
+    flags.on("json") || flags.get("profile").is_some()
+}
+
+/// An operational line for whoever is running this — never into a parser.
+///
+/// `--profile agent-mode` was clean JSON only when used alone. Combined with
+/// `--record` or `--html` it appended " report written to ..." or the ledger
+/// note to stdout, and the agent-facing surface stopped parsing at a measured
+/// byte offset — on the one surface PREMORTEM A2 exists for.
+///
+/// The line is moved rather than dropped. "Was the note written?" is a question
+/// the operator can only answer from what the tool says, and a machine surface
+/// that silently stopped reporting its own side effects would be trading one
+/// actor's problem for another's.
+fn say(flags: &Flags, line: &str) {
+    if stdout_is_machine_readable(flags) {
+        eprintln!("{}", line.trim_end());
+    } else {
+        println!("{line}");
+    }
 }
 
 /// Say on stderr what the JSON surface cannot say in its own bytes.
@@ -331,9 +354,7 @@ fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
             "{}",
             render::profile(&record, name, &flags.path("repo", "."))?
         );
-        return Ok(code_for_record(&record, flags.on("exit-zero")));
-    }
-    if flags.on("json") {
+    } else if flags.on("json") {
         println!(
             "{}",
             andon_core::canonical::to_canonical_string(&record).map_err(|e| e.to_string())?
@@ -346,12 +367,13 @@ fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
         );
     }
 
+    // Below the rendering rather than inside it, so `--profile` no longer
+    // returns before it: `report --profile agent-mode --html <file>` exited 0,
+    // wrote no file, and said nothing about either.
     if let Some(path) = flags.get("html") {
         std::fs::write(path, render::html::render_record(&record))
             .map_err(|e| format!("{path}: {e}"))?;
-        if !flags.on("json") {
-            println!(" report written to {path}\n");
-        }
+        say(flags, &format!(" report written to {path}\n"));
     }
 
     Ok(code_for_record(&record, flags.on("exit-zero")))
