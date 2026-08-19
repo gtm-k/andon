@@ -2753,3 +2753,75 @@ fn a_root_commit_in_a_repository_full_of_them_is_not_called_the_only_one() {
         .output()
         .expect("reattach");
 }
+
+#[test]
+fn the_provenance_panel_says_what_its_head_value_is() {
+    // The schema's defence for carrying a content hash in `head_oid` is that
+    // "nothing downstream will mistake it for one, because this field says not
+    // to" — a claim about readers, true only where a reader reads the field. The
+    // HTML provenance panel, which is the artefact somebody opens three weeks
+    // later to find out what was measured, printed the bare value in a row
+    // labelled `Head`. A sixty-four-character hex string under that label reads
+    // as a commit to anyone who has ever seen one.
+    let repo = dirty_repo();
+    let root = repo.path().to_str().expect("utf-8").to_string();
+    // Outside the repository: an HTML report written into the working tree is
+    // itself an uncommitted path, and the next measurement of the same tree
+    // would key a different snapshot.
+    let out = tempfile::tempdir().expect("a temporary directory");
+    let dirty_html = out.path().join("dirty.html");
+    let _ = run(&[
+        "measure",
+        "--repo",
+        &root,
+        "--html",
+        dirty_html.to_str().expect("utf-8"),
+        "--no-color",
+    ]);
+    let html = std::fs::read_to_string(&dirty_html).expect("the report reads back");
+    let (record, _) = measure_json(repo.path(), &[]);
+    assert_eq!(
+        record.compare_context.head_kind,
+        andon_core::schema::payload::HeadKind::UncommittedWorktree,
+        "this fixture is not the dirty measurement the test is about"
+    );
+    let row = html
+        .split("<dt>Head</dt>")
+        .nth(1)
+        .and_then(|rest| rest.split("</dd>").next())
+        .expect("the provenance panel has a Head row");
+    assert!(
+        row.contains(&record.compare_context.head_oid),
+        "the panel no longer carries the value at all: {row}"
+    );
+    assert!(
+        row.contains("not a commit"),
+        "the panel prints a content hash in a row labelled Head and does not say so: {row}"
+    );
+
+    // A commit head still says it is one, so the label is read rather than
+    // pinned to the dirty case.
+    let committed = out.path().join("committed.html");
+    let _ = run(&[
+        "measure",
+        "--repo",
+        &root,
+        "--base",
+        "HEAD~1",
+        "--head",
+        "HEAD",
+        "--html",
+        committed.to_str().expect("utf-8"),
+        "--no-color",
+    ]);
+    let html = std::fs::read_to_string(&committed).expect("the report reads back");
+    let row = html
+        .split("<dt>Head</dt>")
+        .nth(1)
+        .and_then(|rest| rest.split("</dd>").next())
+        .expect("the provenance panel has a Head row");
+    assert!(
+        row.contains("a commit") && !row.contains("not a commit"),
+        "a commit head is not described as one: {row}"
+    );
+}

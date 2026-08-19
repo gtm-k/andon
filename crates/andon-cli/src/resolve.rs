@@ -706,6 +706,34 @@ pub fn change_line(ctx: &CompareContext) -> String {
     }
 }
 
+/// What `head_oid` identifies, in the words a reader needs beside the value.
+///
+/// A second function to [`change_line`] because it answers a second question.
+/// `change_line` renders a *range* for a header — two abbreviated ends and an
+/// arrow. This renders one *field*: the full forty- or sixty-four-character
+/// value on its own, in a provenance table, where a reader has nothing to
+/// compare it against.
+///
+/// It exists because that field printed a bare hash. The schema's defence for
+/// carrying a content hash in `head_oid` is that "nothing downstream will
+/// mistake it for one, because this field says not to" — and the HTML
+/// provenance panel, which is the artefact somebody opens three weeks later to
+/// find out what was measured, printed the value and not the field that says
+/// not to. A sixty-four-character hex string in a row labelled `Head` reads as
+/// a commit to every reader who has ever seen one.
+pub fn head_identity(kind: HeadKind) -> &'static str {
+    match kind {
+        HeadKind::Commit => "a commit",
+        HeadKind::UncommittedWorktree => {
+            "the content hash of your uncommitted working tree — not a commit, and nothing can \
+             check it out"
+        }
+        HeadKind::UncommittedIndex => {
+            "the content hash of your staged changes — not a commit, and nothing can check it out"
+        }
+    }
+}
+
 /// `HEAD~1..HEAD`, labelled as the substitution it is.
 fn last_merged_change(
     git: &Git,

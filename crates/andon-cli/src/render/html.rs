@@ -475,7 +475,7 @@ fn trust(out: &mut String, record: &MeasurementRecord, notices: &[String]) {
              <dt>Record</dt><dd>{kind}, completeness <span class=\"mono\">{completeness}</span></dd>\n\
              <dt>Measured by</dt><dd class=\"mono small\">{tool} {version} (build {build}){attested}</dd>\n\
              <dt>Base</dt><dd class=\"mono small\">{base} · resolved as {resolution}</dd>\n\
-             <dt>Head</dt><dd class=\"mono small\">{head}</dd>\n\
+             <dt>Head</dt><dd class=\"mono small\">{head} · {head_is}</dd>\n\
              <dt>git</dt><dd class=\"mono small\">{git}</dd>\n\
              <dt>Policy digest</dt><dd class=\"mono small\">{policy}</dd>\n\
            </dl>\n",
@@ -493,6 +493,9 @@ fn trust(out: &mut String, record: &MeasurementRecord, notices: &[String]) {
         base = escape(&record.compare_context.base_oid),
         resolution = escape(&record.compare_context.base_resolution),
         head = escape(&record.compare_context.head_oid),
+        head_is = escape(crate::resolve::head_identity(
+            record.compare_context.head_kind
+        )),
         git = escape(&record.compare_context.git_version),
         policy = escape(&short(&record.policy_hash)),
     );
