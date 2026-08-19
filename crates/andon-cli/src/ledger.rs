@@ -33,15 +33,68 @@ use andon_ledger_min::notes::{Notes, MEASURE_REF};
 
 use crate::store;
 
-/// Append a record to `refs/notes/andon-measure` on the commit it measured.
+/// Append a record to `refs/notes/andon-measure`, anchored to a commit.
+///
+/// # Why the anchor is not always `head_oid`
+///
+/// A git note is attached to an object, and `head_oid` is only an object when
+/// `head_kind` says `commit`. For an uncommitted head it is the content hash of
+/// a working-tree snapshot, which git has never heard of — so `notes append`
+/// failed with `failed to resolve ... as a valid ref` and the process exited 1
+/// **after printing a full report**. Exit 1 means "the tool could not do its
+/// job", so a BLOCK verdict was masked by the failure to file it, and
+/// `refs/notes/andon-measure` stayed empty on every dirty measurement.
+///
+/// The same guard the rest of this crate already uses answers it:
+/// `head_kind.is_witnessable()` is read at two places in `measure` for exactly
+/// this distinction. Where the head is a commit, that commit is the anchor.
+/// Where it is not, the anchor is **HEAD** — the commit the uncommitted work
+/// sits on top of, which is where a reader would look for it.
+///
+/// # Why this cannot launder the measurement onto a later commit
+///
+/// The anchor is an attachment point and never an identity. The record still
+/// carries the snapshot hash in `head_oid` and `head_kind:
+/// uncommitted-worktree` beside it, so every reader is told what the numbers
+/// describe. And the anchor is the commit that existed *underneath* the work:
+/// committing that work produces a new OID, which carries no note, so the
+/// measurement never becomes a statement about the commit that eventually
+/// contained it.
 pub fn record(git: &Git, record: &MeasurementRecord) -> Result<String, String> {
+    let ctx = &record.compare_context;
     let notes = Notes::new(git, MEASURE_REF);
-    notes
-        .append(&record.compare_context.head_oid, record)
-        .map_err(|e| e.to_string())?;
+
+    if ctx.head_kind.is_witnessable() {
+        notes
+            .append(&ctx.head_oid, record)
+            .map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "recorded against {} in {MEASURE_REF}",
+            crate::resolve::short(&ctx.head_oid)
+        ));
+    }
+
+    let anchor = git
+        .cmd(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .succeeds_with_output()
+        .map_err(|e| e.to_string())?
+        .map(|text| text.trim().to_string())
+        .ok_or_else(|| {
+            "this measurement is of uncommitted work, and a note has to hang on a commit — \
+             but HEAD does not name one yet, so there is nothing under this work to anchor it \
+             to. Commit once, then `andon measure --record`."
+                .to_string()
+        })?;
+
+    notes.append(&anchor, record).map_err(|e| e.to_string())?;
     Ok(format!(
-        "recorded against {} in {MEASURE_REF}",
-        crate::resolve::short(&record.compare_context.head_oid)
+        "recorded against {} in {MEASURE_REF} — the commit this uncommitted work sits on, \
+         because a working tree is not an object a note can hang on.\n  \
+         The record is keyed to the snapshot ({}) and carries head_kind \
+         `uncommitted-worktree`, so it does not read as a measurement of {}.",
+        crate::resolve::short(&anchor),
+        crate::resolve::short(&ctx.head_oid),
+        crate::resolve::short(&anchor)
     ))
 }
 

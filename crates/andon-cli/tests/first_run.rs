@@ -1421,3 +1421,135 @@ fn a_half_finished_operation_says_so_on_the_default_path() {
     );
     assert!(!said.contains("--last-merged"), "{said}");
 }
+
+/// The complex function these tests write when they need one that measures.
+const NESTED_TS: &str = r#"
+export function classify(a: number, b: number, c: number): string {
+  if (a > 0) {
+    if (b > 0) {
+      if (c > 0) { return "all"; }
+      for (let i = 0; i < a; i++) { if (i % 2 === 0) { return "even"; } }
+      return "ab";
+    }
+    while (a > b) { a -= 1; if (a === c) { break; } }
+    return "a";
+  }
+  switch (b) {
+    case 1: return "one";
+    case 2: return c > 0 ? "two" : "neither";
+    default: return b > c ? "big" : "small";
+  }
+}
+"#;
+
+#[test]
+fn a_dirty_measurement_can_be_recorded_and_does_not_launder_onto_the_commit() {
+    // `--record` on a dirty tree passed `compare_context.head_oid` to `git notes
+    // append`. For `head_kind: uncommitted-worktree` that is a 64-hex content
+    // hash and not an object, so git answered `failed to resolve ... as a valid
+    // ref` and the process exited 1 AFTER printing a full report — exit 1 means
+    // "the tool could not do its job", so the verdict was masked by the failure
+    // to file it, and `refs/notes/andon-measure` was empty after every dirty
+    // measurement. E22 requires a dirty record to have a working ledger.
+    let repo = stranger_repo();
+    let root = repo.path();
+    let git = Git::open(root).expect("a repository");
+    std::fs::write(root.join("src").join("classify.ts"), NESTED_TS).expect("write");
+
+    let anchor = git
+        .cmd(["rev-parse", "HEAD"])
+        .text()
+        .expect("rev-parse")
+        .trim()
+        .to_string();
+
+    let recorded = run(&[
+        "measure",
+        "--repo",
+        root.to_str().expect("utf-8"),
+        "--record",
+        "--no-color",
+        "--exit-zero",
+    ]);
+    assert!(
+        recorded.status.success(),
+        "recording a dirty measurement failed: {}",
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+
+    // The note exists, and it hangs on the commit the work sits on.
+    let shown = stdout(&run(&[
+        "ledger",
+        "show",
+        &anchor,
+        "--repo",
+        root.to_str().expect("utf-8"),
+        "--no-color",
+    ]));
+    assert!(
+        !shown.contains("No record is recorded"),
+        "nothing was filed against the anchor commit:\n{shown}"
+    );
+
+    // The anchor is an attachment point and not an identity: the record still
+    // says the head was a working tree.
+    let records = andon_cli::ledger::show(&git, &anchor).expect("the note reads back");
+    assert_eq!(records.len(), 1, "{records:?}");
+    use andon_core::schema::payload::HeadKind;
+    assert_eq!(
+        records[0].compare_context.head_kind,
+        HeadKind::UncommittedWorktree,
+        "the record anchored to a commit forgot that it was about a working tree"
+    );
+    assert_ne!(
+        records[0].compare_context.head_oid, anchor,
+        "the snapshot identity was replaced by the anchor, which is the laundering path R2-4 \
+         exists to close"
+    );
+
+    // THE LAUNDERING QUESTION, which nobody could reach before because the write
+    // failed first: commit the work, and ask whether the measurement has become
+    // a statement about the new commit.
+    git.cmd(["add", "--all", "."]).output().expect("add");
+    git.cmd(["commit", "--quiet", "-m", "committed"])
+        .output()
+        .expect("commit");
+    let after = git
+        .cmd(["rev-parse", "HEAD"])
+        .text()
+        .expect("rev-parse")
+        .trim()
+        .to_string();
+    assert_ne!(after, anchor, "the commit did not happen");
+    assert!(
+        andon_cli::ledger::show(&git, &after)
+            .expect("the ledger reads")
+            .is_empty(),
+        "the dirty measurement became a record about the commit that eventually contained the \
+         work — an unwitnessable measurement wearing a witnessable commit's name"
+    );
+    assert_eq!(
+        andon_cli::ledger::show(&git, &anchor)
+            .expect("the ledger reads")
+            .len(),
+        1,
+        "the record moved rather than staying where it was filed"
+    );
+
+    // And the verifier's own entry point reads it rather than falling over.
+    let attested = run(&[
+        "attest-stub",
+        "--repo",
+        root.to_str().expect("utf-8"),
+        "--head",
+        &anchor,
+        "--trusted-branch",
+        &repo.base_oid,
+        "--no-color",
+    ]);
+    assert!(
+        attested.status.success(),
+        "attest-stub could not read a ledger holding a dirty record: {}",
+        String::from_utf8_lossy(&attested.stderr)
+    );
+}
