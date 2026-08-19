@@ -120,6 +120,8 @@ pub fn sample_result() -> MeasurementResult {
 /// A complete self-reported record, unwitnessed as every fresh record is.
 pub fn sample_record() -> MeasurementRecord {
     MeasurementRecord {
+        substitution: None,
+        unreadable_paths: Vec::new(),
         schema_version: SCHEMA_VERSION,
         record_kind: RecordKind::SelfReport,
         tool: ToolIdentity {

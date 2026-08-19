@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::enums::{Attestation, Completeness, EvidenceTier, Severity, Verdict};
-use super::payload::{IterationState, MeasurementRecord, MetricValue, SCHEMA_VERSION};
+use super::payload::{HeadKind, IterationState, MeasurementRecord, MetricValue, SCHEMA_VERSION};
 use crate::canonical;
 
 /// The name of this schema view, emitted in the payload so a consumer can tell
@@ -78,10 +78,34 @@ pub struct AgentProfile {
     pub counts_downstream: bool,
     /// How complete the measurement behind it was.
     pub completeness: Completeness,
-    /// Base commit measured against.
+    /// Base commit measured against. Always a commit.
     pub base_oid: String,
-    /// Head commit measured.
+    /// The head's identity, of the kind [`Self::head_kind`] names: a commit OID
+    /// for `commit`, and otherwise the content hash of an uncommitted snapshot.
+    ///
+    /// **Read `head_kind` before interpreting this.** Its description here used
+    /// to say "head commit measured", which is false for two of the three kinds
+    /// this profile can carry — on the one surface written for a reader that
+    /// does not read prose.
     pub head_oid: String,
+    /// What `head_oid` identifies.
+    ///
+    /// Present for the same reason it is present on the record: an uncommitted
+    /// head cannot be recomputed by anything, and a consumer that took
+    /// `head_oid` for a commit would ask CI to check out a working tree.
+    pub head_kind: HeadKind,
+    /// Present when something other than what was asked for was measured.
+    ///
+    /// Bounded like everything else here, and included because an agent acting
+    /// on a fallback verdict without knowing it is a fallback is PREMORTEM A1
+    /// reached through the one surface built for agents.
+    pub measured_instead: Option<String>,
+    /// How many changed paths nothing could read, so no finding describes them.
+    ///
+    /// A count rather than the paths: this view has a byte budget, and what an
+    /// agent needs from it is "this verdict covers less than you asked about",
+    /// which a number carries. `andon report` names them.
+    pub unread_paths: u32,
     /// Where the agent is against its iteration cap.
     pub iteration: IterationState,
     /// Findings, worst first, cut to fit the budget.
@@ -130,6 +154,12 @@ pub fn build_agent_profile(
         completeness: record.completeness,
         base_oid: truncate_bytes(&record.compare_context.base_oid, bounds.max_string_bytes),
         head_oid: truncate_bytes(&record.compare_context.head_oid, bounds.max_string_bytes),
+        head_kind: record.compare_context.head_kind,
+        measured_instead: record
+            .substitution
+            .as_ref()
+            .map(|s| truncate_bytes(&s.measured, bounds.max_hint_bytes)),
+        unread_paths: record.unreadable_paths.len() as u32,
         iteration: record.verdict.iteration,
         findings: Vec::new(),
         truncated: false,

@@ -1556,3 +1556,193 @@ fn a_dirty_measurement_can_be_recorded_and_does_not_launder_onto_the_commit() {
         String::from_utf8_lossy(&attested.stderr)
     );
 }
+
+#[test]
+fn a_dirty_record_reads_as_uncommitted_on_every_surface() {
+    // `andon report` and `andon wait` rendered a dirty record as
+    // `base → e35229f4072e (merge-base)` — the working tree's content hash cut
+    // to twelve characters, which is exactly the shape of a commit OID — with
+    // no trust line and no uncommitted labelling. The record's own `head_kind`
+    // said `uncommitted-worktree` the whole time; these renderers did not read
+    // it, so two shipped renderings of one record disagreed.
+    //
+    // The schema's defence for carrying a content hash in `head_oid` is that
+    // "nothing downstream will mistake it for one, because this field says not
+    // to". That is a claim about readers, and this is the test that the readers
+    // hold up their end.
+    let repo = stranger_repo();
+    let root = repo.path();
+    let path = root.to_str().expect("utf-8").to_string();
+    std::fs::write(root.join("src").join("classify.ts"), NESTED_TS).expect("write");
+
+    let (record, _) = measure_json(root, &["--exit-zero"]);
+    use andon_core::schema::payload::HeadKind;
+    assert_eq!(
+        record.compare_context.head_kind,
+        HeadKind::UncommittedWorktree,
+        "the fixture did not produce a dirty head, so this test asserts nothing"
+    );
+    let head_short: String = record.compare_context.head_oid.chars().take(12).collect();
+
+    for surface in [
+        vec!["report", "--repo", &path, "--no-color"],
+        vec!["wait", "--repo", &path, "--no-color"],
+    ] {
+        let name = surface[0].to_string();
+        let rendered = stdout(&run(&surface));
+        assert!(
+            rendered.contains("uncommitted working tree"),
+            "`andon {name}` did not say the head was a working tree:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(&head_short),
+            "`andon {name}` printed the snapshot hash abbreviated like a commit OID \
+             ({head_short}):\n{rendered}"
+        );
+    }
+
+    // And the trust line, which is the sentence that says a recompute is not
+    // merely absent but impossible.
+    let reported = stdout(&run(&["report", "--repo", &path, "--no-color"]));
+    assert!(
+        reported.contains("no CI recompute is possible"),
+        "the read-back render carried no trust line:\n{reported}"
+    );
+}
+
+#[test]
+fn the_substitution_survives_being_written_and_read_back() {
+    // `cli::resolve`'s own documentation says the substitution "must appear in
+    // every rendering of the record — the reason it is a value rather than a
+    // log line". It was not a field on the record, so it could not: it lived on
+    // the CLI's in-process `Measurement`, which does not survive being written
+    // to disk. `andon report` on a substituted measurement printed a page of
+    // numbers with nothing saying they were about a different change from the
+    // one asked for — on a committed record too, so it was systematic.
+    let repo = stranger_repo();
+    let path = repo.path().to_str().expect("utf-8").to_string();
+
+    let (record, _) = measure_json(repo.path(), &[]);
+    let substitution = record
+        .substitution
+        .as_ref()
+        .expect("the clean fixture takes the fallback, so the record carries a substitution");
+    assert!(!substitution.measured.is_empty());
+
+    let reported = stdout(&run(&["report", "--repo", &path, "--no-color"]));
+    assert!(
+        reported.contains("asked for") && reported.contains("measured"),
+        "the read-back render did not announce the substitution:\n{reported}"
+    );
+
+    // The artefact that outlives the terminal, on the read-back path — which
+    // passed `None` for the substitution and so never rendered the panel.
+    let out = repo.path().join("read-back.html");
+    let _ = run(&[
+        "report",
+        "--repo",
+        &path,
+        "--html",
+        out.to_str().expect("utf-8"),
+    ]);
+    let html = std::fs::read_to_string(&out).expect("the report reads back");
+    assert!(
+        html.contains("This is not your working change"),
+        "the read-back HTML report lost the substitution"
+    );
+
+    // The agent surface too. An agent acting on a fallback verdict without
+    // knowing it is a fallback is PREMORTEM A1 through the one view built for
+    // agents.
+    let profile = stdout(&run(&[
+        "report",
+        "--repo",
+        &path,
+        "--profile",
+        "agent-mode",
+    ]));
+    let parsed: serde_json::Value = serde_json::from_str(&profile).expect("valid profile");
+    assert!(
+        parsed["measured_instead"].is_string(),
+        "the agent profile did not carry the substitution: {profile}"
+    );
+}
+
+#[test]
+fn an_unreadable_path_survives_into_every_later_reading_of_the_record() {
+    // `measure` printed PASS, named the unreadable path, and exited 1 — and then
+    // saved a normal PASS record. `report`, `--json`, the HTML report and the
+    // agent profile all read it back, exited 0, and lost the fact. A verdict
+    // about less than the caller asked about had a clean exit everywhere except
+    // the terminal that produced it, and `main`'s own contract says a pass
+    // requires that the change was actually read.
+    //
+    // Driven through `--input` rather than by breaking a repository's object
+    // database: what is under test is that the record carries the fact and every
+    // surface honours it, and a record is the input to all four of them.
+    let repo = stranger_repo();
+    let (mut record, _) = measure_json(repo.path(), &[]);
+    assert!(
+        record.unreadable_paths.is_empty(),
+        "an ordinary measurement reported unreadable paths"
+    );
+    record.unreadable_paths = vec!["src/unreachable.ts".to_string()];
+
+    let saved = repo.path().join("with-unreadable.json");
+    std::fs::write(
+        &saved,
+        andon_core::canonical::to_canonical_string(&record).expect("serializes"),
+    )
+    .expect("writes");
+    let input = saved.to_str().expect("utf-8").to_string();
+
+    for surface in [
+        vec!["report", "--input", &input, "--no-color"],
+        vec!["wait", "--input", &input, "--no-color"],
+    ] {
+        let name = surface[0].to_string();
+        let output = run(&surface);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`andon {name}` gave a clean exit over a record whose change was not fully read"
+        );
+    }
+
+    let reported = stdout(&run(&["report", "--input", &input, "--no-color"]));
+    assert!(
+        reported.contains("src/unreachable.ts"),
+        "the read-back render did not name the path nothing described:\n{reported}"
+    );
+
+    let out = repo.path().join("unreadable.html");
+    let _ = run(&[
+        "report",
+        "--input",
+        &input,
+        "--html",
+        out.to_str().expect("utf-8"),
+    ]);
+    let html = std::fs::read_to_string(&out).expect("the report reads back");
+    assert!(
+        html.contains("src/unreachable.ts"),
+        "the HTML report lost it"
+    );
+
+    // The agent sees a count rather than the paths: this view has a byte budget,
+    // and what an agent needs is "this verdict covers less than you asked
+    // about".
+    let profile = stdout(&run(&[
+        "report",
+        "--input",
+        &input,
+        "--profile",
+        "agent-mode",
+    ]));
+    let parsed: serde_json::Value = serde_json::from_str(&profile).expect("valid profile");
+    assert_eq!(parsed["unread_paths"], 1, "{profile}");
+    assert_eq!(
+        parsed["head_kind"], "commit",
+        "the agent profile does not say what its head_oid is: {profile}"
+    );
+}

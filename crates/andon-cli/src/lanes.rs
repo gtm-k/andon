@@ -34,9 +34,8 @@ pub fn wait(record: &MeasurementRecord) -> String {
 
     let _ = writeln!(
         out,
-        "\n  change   {} → {}",
-        crate::resolve::short(&record.compare_context.base_oid),
-        crate::resolve::short(&record.compare_context.head_oid)
+        "\n  change   {}",
+        crate::resolve::change_line(&record.compare_context)
     );
 
     if async_results.is_empty() {
@@ -90,6 +89,8 @@ mod tests {
 
     fn record(results: Vec<andon_core::schema::payload::MeasurementResult>) -> MeasurementRecord {
         MeasurementRecord {
+            substitution: None,
+            unreadable_paths: Vec::new(),
             schema_version: andon_core::schema::payload::SCHEMA_VERSION,
             record_kind: andon_core::schema::enums::RecordKind::SelfReport,
             tool: andon_core::schema::payload::ToolIdentity {

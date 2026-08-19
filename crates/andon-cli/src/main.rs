@@ -41,6 +41,7 @@ use std::process::ExitCode;
 use andon_core::git::Git;
 use andon_core::policy::Policy;
 use andon_core::schema::enums::{InvocationSource, Verdict};
+use andon_core::schema::payload::MeasurementRecord;
 
 use andon_cli::args::Flags;
 use andon_cli::render::terminal::{Colour, Detail};
@@ -241,16 +242,26 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
         );
     }
 
-    // A verdict about less than the caller asked about does not get a clean
-    // exit. The note above names the paths; this is what an agent can see.
-    if !measurement.unreadable.is_empty() && !flags.on("exit-zero") {
-        return Ok(ExitCode::from(1));
-    }
+    Ok(code_for_record(&measurement.record, flags.on("exit-zero")))
+}
 
-    Ok(code_for(
-        measurement.record.verdict.verdict,
-        flags.on("exit-zero"),
-    ))
+/// The exit code a record earns, verdict and coverage together.
+///
+/// A verdict about less than the caller asked about does not get a clean exit —
+/// see the module docs. It is a function of the *record* rather than of the run
+/// because it has to be the same answer everywhere: `measure` exited 1 over
+/// unreadable paths and then `report`, `--json`, the HTML report and the agent
+/// profile read the saved record and all exited 0, so the one thing an agent
+/// can act on survived for exactly one process. The fact is durable now, and so
+/// is the code it produces.
+fn code_for_record(record: &MeasurementRecord, exit_zero: bool) -> ExitCode {
+    if exit_zero {
+        return ExitCode::SUCCESS;
+    }
+    if !record.unreadable_paths.is_empty() {
+        return ExitCode::from(1);
+    }
+    code_for(record.verdict.verdict, false)
 }
 
 fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
@@ -277,7 +288,7 @@ fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
             "{}",
             render::profile(&record, name, &flags.path("repo", "."))?
         );
-        return Ok(code_for(record.verdict.verdict, flags.on("exit-zero")));
+        return Ok(code_for_record(&record, flags.on("exit-zero")));
     }
     if flags.on("json") {
         println!(
@@ -299,7 +310,7 @@ fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
         }
     }
 
-    Ok(code_for(record.verdict.verdict, flags.on("exit-zero")))
+    Ok(code_for_record(&record, flags.on("exit-zero")))
 }
 
 fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
@@ -376,7 +387,7 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
         }
     };
     print!("{}", lanes::wait(&record));
-    Ok(ExitCode::SUCCESS)
+    Ok(code_for_record(&record, flags.on("exit-zero")))
 }
 
 fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {

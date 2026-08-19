@@ -467,9 +467,8 @@ fn observed(out: &mut String, metric_id: &str, record: &MeasurementRecord) {
     }
     let _ = writeln!(
         out,
-        "\n  In the last measurement of this checkout ({} → {})",
-        crate::resolve::short(&record.compare_context.base_oid),
-        crate::resolve::short(&record.compare_context.head_oid)
+        "\n  In the last measurement of this checkout ({})",
+        crate::resolve::change_line(&record.compare_context)
     );
     for result in observed {
         let _ = writeln!(

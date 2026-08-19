@@ -49,6 +49,53 @@ pub struct MeasurementRecord {
     pub verdict: VerdictSummary,
     /// The trust half: attestation value, tamper signals, compare detail.
     pub attestation: AttestationBlock,
+    /// Present exactly when something other than the caller's request was
+    /// measured. Absent on every ordinary run.
+    ///
+    /// A record-level field, and deliberately **not** part of any per-result
+    /// digest — the same placement and the same reason as `policy_hash`. It
+    /// describes how the measurement was arrived at, not what was measured, so
+    /// putting it inside `ResultDigestInput` would make an announcement change
+    /// every number's identity.
+    ///
+    /// It is a field rather than a log line because the caveat has to survive
+    /// the terminal. `cli::resolve`'s own documentation says the substitution
+    /// "must appear in every rendering of the record — the reason it is a value
+    /// rather than a log line", and it could not: `andon report` on a record
+    /// produced by the fallback printed the numbers with no sign that they were
+    /// about a different change from the one asked for. A caveat that lives only
+    /// in the process that produced it does not exist for the reader who has
+    /// only the record, which is most readers.
+    #[serde(default)]
+    pub substitution: Option<Substitution>,
+    /// Changed paths no engine could read, so nothing in `results` describes
+    /// them. Empty on every ordinary run.
+    ///
+    /// Durable for the reason the exit code is not enough on its own: `measure`
+    /// exits 1 when this is non-empty, and then `report`, `--json`, the HTML
+    /// report and the agent profile all read the saved record and exited 0
+    /// having lost the fact. A `pass` over bytes nobody read has the shape of a
+    /// clean measurement and is not one — the project's rule about absences,
+    /// applied to the record rather than only to the run.
+    #[serde(default)]
+    pub unreadable_paths: Vec<String>,
+}
+
+/// What was measured, when it was not what was asked for.
+///
+/// PREMORTEM A1 is a first command that returns nothing. The no-diff fallback
+/// answers it by measuring the last merged change — and the *saying so* is the
+/// load-bearing half, because a tool that quietly measures something other than
+/// what was asked for has told the reader a falsehood about what the numbers
+/// are about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Substitution {
+    /// What the caller's arguments resolved to, in the caller's own terms.
+    pub asked_for: String,
+    /// What was measured instead.
+    pub measured: String,
+    /// Why, in one sentence, for a reader who has only the report.
+    pub because: String,
 }
 
 /// Which binary produced the record, and whether it was one we trust to measure

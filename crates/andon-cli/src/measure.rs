@@ -47,7 +47,7 @@ use andon_core::verdict::iteration::{Advance, IterationStore};
 use andon_core::verdict::policy_change::{self, PolicyChange};
 use andon_core::verdict::EngineFailure;
 
-use crate::resolve::{self, Resolution, Substitution};
+use crate::resolve::{self, Resolution};
 use crate::store;
 
 /// Tool name on every record this binary writes.
@@ -125,9 +125,15 @@ impl Default for Request {
 #[derive(Debug)]
 pub struct Measurement {
     /// The record.
+    ///
+    /// Two of this struct's fields used to sit beside it — the substitution and
+    /// the unreadable paths — and both are now on the record itself. They were
+    /// facts about the measurement that a renderer had to be handed separately,
+    /// which meant every renderer reading a record off disk was handed neither,
+    /// and said neither. What is left here is what genuinely belongs to *this
+    /// invocation* rather than to the measurement: how the range was described,
+    /// what the policy withheld, and operational notices.
     pub record: MeasurementRecord,
-    /// Present when the no-diff fallback fired. Every renderer shows it.
-    pub substitution: Option<Substitution>,
     /// One line naming the range measured.
     pub how: String,
     /// Paths withheld by `policy.self_measure.excluded_paths`, when
@@ -146,15 +152,6 @@ pub struct Measurement {
     /// or a change consisting only of paths the self-measure policy withholds —
     /// and a reader seeing change-scope zeros deserves to know which it was.
     pub changed_files: usize,
-    /// Changed paths no engine could read, after every attempt to make them
-    /// readable.
-    ///
-    /// Non-empty means the measurement is about *less* than the caller asked
-    /// about, and the caller needs that in the exit code rather than in prose: a
-    /// `pass` over bytes nobody read has the shape of a clean measurement and is
-    /// not one. Empty on every ordinary run, including an unstaged working tree,
-    /// because [`read_without_staging`] makes those readable.
-    pub unreadable: Vec<String>,
 }
 
 /// What making the working tree readable cost, and what it could not reach.
@@ -383,6 +380,12 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
         engines,
         engine_failures,
         policy_change,
+        // The resolver's and the reader's facts, carried into the one place a
+        // record is built. Both used to live only on `Measurement`, which is
+        // this process's view and does not survive being written to disk — so
+        // `andon report` on the same record announced neither.
+        substitution: resolution.substitution.clone(),
+        unreadable_paths: stage_free.unreadable.clone(),
     })?;
 
     let branch = current_branch(&git, &resolution);
@@ -452,11 +455,9 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
 
     Ok(Measurement {
         record,
-        substitution: resolution.substitution,
         how: resolution.how,
         excluded,
         changed_files: changed.len(),
-        unreadable: stage_free.unreadable.clone(),
         notices: engine_notes
             .into_iter()
             .chain(

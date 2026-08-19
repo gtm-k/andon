@@ -109,6 +109,11 @@ pub fn measure(
 
     let record = MeasurementRecord {
         schema_version: SCHEMA_VERSION,
+        // Neither applies to a single-engine record built from a commit range:
+        // nothing was substituted, and every changed path this engine was given
+        // was read or it would not be here.
+        substitution: None,
+        unreadable_paths: Vec::new(),
         record_kind: kind,
         tool: ToolIdentity {
             name: TOOL_NAME.to_string(),

@@ -328,6 +328,8 @@ fn bare_request<'a>(
     engines: Vec<EngineOutput>,
 ) -> AssembleRequest<'a> {
     AssembleRequest {
+        substitution: None,
+        unreadable_paths: Vec::new(),
         tool: ToolIdentity {
             name: "andon".to_string(),
             version: "0.1.0".to_string(),

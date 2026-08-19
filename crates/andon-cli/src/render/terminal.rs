@@ -105,6 +105,20 @@ pub fn render(measurement: &Measurement, colour: Colour, detail: Detail) -> Stri
 }
 
 /// Render a record read back from disk, with no measurement context around it.
+///
+/// # What this used to leave out
+///
+/// The three lines below are not decoration. `andon report` and `andon wait`
+/// rendered a dirty record as `base → e35229f4072e (merge-base)` — the working
+/// tree's content hash cut to twelve characters, which is the shape of a commit
+/// OID — with no trust line and no substitution note. Two shipped renderings of
+/// one record disagreed about what it described, and the one a reader is most
+/// likely to see was the one that said less.
+///
+/// So this shares the header's parts rather than approximating them:
+/// [`crate::resolve::change_line`] reads `head_kind`, `attestation_line` states
+/// what trust the record earned, and the substitution — now a field on the
+/// record — is announced here exactly as it is at measurement time.
 pub fn render_record(record: &MeasurementRecord, colour: Colour, detail: Detail) -> String {
     let mut out = String::new();
     let _ = writeln!(
@@ -117,14 +131,83 @@ pub fn render_record(record: &MeasurementRecord, colour: Colour, detail: Detail)
         out,
         " {}",
         colour.dim(&format!(
-            "change   {} → {} ({})",
-            crate::resolve::short(&record.compare_context.base_oid),
-            crate::resolve::short(&record.compare_context.head_oid),
+            "change   {} ({})",
+            crate::resolve::change_line(&record.compare_context),
             record.compare_context.base_resolution
         ))
     );
+    trust_line(&mut out, record, colour);
+    substitution_note(&mut out, record.substitution.as_ref(), colour);
+    unreadable_note(&mut out, record, colour);
     body(&mut out, record, colour, detail, None);
     out
+}
+
+/// What trust this measurement earned, in the words the record's own
+/// attestation value carries.
+fn trust_line(out: &mut String, record: &MeasurementRecord, colour: Colour) {
+    let _ = writeln!(
+        out,
+        " {}",
+        colour.dim(&format!(
+            "trust    {}",
+            attestation_line(record.attestation.value)
+        ))
+    );
+}
+
+/// The substitution, said before anything that could be mistaken for a
+/// measurement of the working change.
+///
+/// PREMORTEM A1: a fallback that is not announced is a report about something
+/// other than what was asked for. One function, used by the measurement header
+/// and by the read-back render, because "every rendering of the record" is the
+/// requirement and two copies of a disclosure is how one of them goes missing.
+fn substitution_note(
+    out: &mut String,
+    substitution: Option<&andon_core::schema::payload::Substitution>,
+    colour: Colour,
+) {
+    let Some(substitution) = substitution else {
+        return;
+    };
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        " {} {}",
+        colour.bold("NOTE"),
+        // The headline states the consequence, which is true whether the tree
+        // was clean or dirty; the reason underneath states which it was. An
+        // earlier version asserted "nothing was in flight" here and was false
+        // over a dirty tree.
+        colour.bold("these numbers are not about your working change")
+    );
+    let _ = writeln!(out, "   asked for  {}", substitution.asked_for);
+    let _ = writeln!(out, "   measured   {}", substitution.measured);
+    let _ = writeln!(out, "   {}", colour.dim(&substitution.because));
+}
+
+/// Changed paths nothing could read, on every surface that renders the record.
+///
+/// A `pass` over bytes nobody read has the shape of a clean measurement and is
+/// not one. `measure` said so and exited 1; every later reading of the same
+/// record exited 0 and said nothing, which left the fact alive for exactly one
+/// process.
+fn unreadable_note(out: &mut String, record: &MeasurementRecord, colour: Colour) {
+    if record.unreadable_paths.is_empty() {
+        return;
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        " {} {}",
+        colour.bold("NOT READ"),
+        colour.bold(&format!(
+            "{} changed path(s) could not be read, so nothing below describes them",
+            record.unreadable_paths.len()
+        ))
+    );
+    let _ = writeln!(out, "   {}", record.unreadable_paths.join(", "));
 }
 
 fn header(out: &mut String, measurement: &Measurement, colour: Colour) {
@@ -172,34 +255,12 @@ fn header(out: &mut String, measurement: &Measurement, colour: Colour) {
             )
         );
     }
-    let _ = writeln!(
-        out,
-        " {}",
-        colour.dim(&format!(
-            "trust    {}",
-            attestation_line(record.attestation.value)
-        ))
-    );
+    trust_line(out, record, colour);
 
-    // The substitution, said before anything else that could be mistaken for a
-    // measurement of the working change. PREMORTEM A1: a fallback that is not
-    // announced is a report about something other than what was asked for.
-    if let Some(substitution) = &measurement.substitution {
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            " {} {}",
-            colour.bold("NOTE"),
-            // The headline states the consequence, which is true whether the tree
-            // was clean or dirty; the reason underneath states which it was. An
-            // earlier version asserted "nothing was in flight" here and was
-            // false over a dirty tree.
-            colour.bold("these numbers are not about your working change")
-        );
-        let _ = writeln!(out, "   asked for  {}", substitution.asked_for);
-        let _ = writeln!(out, "   measured   {}", substitution.measured);
-        let _ = writeln!(out, "   {}", colour.dim(&substitution.because));
-    }
+    // Read from the record rather than from `measurement.substitution`, so the
+    // header and the read-back render cannot disagree about whether there was
+    // one. They did: the field was the CLI's and never reached disk.
+    substitution_note(out, record.substitution.as_ref(), colour);
 
     if !measurement.excluded.is_empty() {
         let _ = writeln!(out);

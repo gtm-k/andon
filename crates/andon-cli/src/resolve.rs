@@ -189,15 +189,14 @@ pub enum ResolveFailure {
 /// Absent on every ordinary run. Present exactly when the no-diff fallback
 /// fired, and then it must appear in every rendering of the record — the reason
 /// it is a value rather than a log line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Substitution {
-    /// What the caller's arguments resolved to, in the caller's own terms.
-    pub asked_for: String,
-    /// What was measured instead.
-    pub measured: String,
-    /// Why, in one sentence, for a reader who has only the report.
-    pub because: String,
-}
+///
+/// Re-exported from `andon_core` rather than declared here. It used to be a CLI
+/// type, which is why it could not be a field on the record and why the
+/// sentence above was not true of anything read back from disk: two renderings
+/// of one record disagreed about whether it was a substitution at all. A CLI
+/// twin of a record's own field is the unconnected-duplicate shape this phase
+/// keeps finding.
+pub use andon_core::schema::payload::Substitution;
 
 /// A range, the change it covers, and how it was arrived at.
 #[derive(Debug)]
@@ -423,20 +422,29 @@ fn uncommitted_paths(git: &Git) -> Result<Vec<String>, ResolveFailure> {
 /// which it is — an uncommitted head is the single most important fact about
 /// what these numbers describe, and it must not be inferable only from the JSON.
 fn describe(ctx: &CompareContext, how_base: &str) -> String {
+    format!("{} ({how_base})", change_line(ctx))
+}
+
+/// The two ends of a measured range, with the head's kind said out loud.
+///
+/// **Every renderer of a range uses this.** Each one that formatted its own
+/// `short(base) → short(head)` printed a dirty head's content hash abbreviated
+/// to twelve characters — which is exactly the shape of a commit OID, in a
+/// field whose whole job is to say what the numbers are about. `andon report`
+/// and `andon wait` did that on a record whose own `head_kind` said
+/// `uncommitted-worktree`, so two shipped renderings of one record disagreed.
+///
+/// The schema's defence for carrying a content hash in `head_oid` is that
+/// "nothing downstream will mistake it for one, because this field says not
+/// to". That is a claim about readers, and it is only true where a reader reads
+/// the field. This is the one place that does it.
+pub fn change_line(ctx: &CompareContext) -> String {
     match ctx.head_kind {
-        HeadKind::Commit => format!(
-            "{} → {} ({how_base})",
-            short(&ctx.base_oid),
-            short(&ctx.head_oid)
-        ),
-        HeadKind::UncommittedWorktree => format!(
-            "{} → your uncommitted working tree ({how_base})",
-            short(&ctx.base_oid)
-        ),
-        HeadKind::UncommittedIndex => format!(
-            "{} → your staged changes ({how_base})",
-            short(&ctx.base_oid)
-        ),
+        HeadKind::Commit => format!("{} → {}", short(&ctx.base_oid), short(&ctx.head_oid)),
+        HeadKind::UncommittedWorktree => {
+            format!("{} → your uncommitted working tree", short(&ctx.base_oid))
+        }
+        HeadKind::UncommittedIndex => format!("{} → your staged changes", short(&ctx.base_oid)),
     }
 }
 

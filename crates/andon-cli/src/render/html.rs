@@ -58,31 +58,34 @@ pub fn render(measurement: &Measurement) -> String {
     document(
         &measurement.record,
         Some(&measurement.how),
-        measurement.substitution.as_ref(),
         &measurement.excluded,
         &measurement.notices,
     )
 }
 
 /// Render a record read back from disk.
+///
+/// The substitution is no longer a parameter, and that is the fix rather than a
+/// tidy-up: this path passed `None` for it, so the read-back report of a
+/// substituted measurement was a page of numbers with nothing saying they were
+/// about a different change from the one asked for. It comes off the record
+/// now, which both callers have.
 pub fn render_record(record: &MeasurementRecord) -> String {
-    document(record, None, None, &[], &[])
+    document(record, None, &[], &[])
 }
 
 fn document(
     record: &MeasurementRecord,
     how: Option<&str>,
-    substitution: Option<&Substitution>,
     excluded: &[String],
     notices: &[String],
 ) -> String {
     let mut out = String::new();
     let verdict = record.verdict.verdict;
-    let range = format!(
-        "{} → {}",
-        short(&record.compare_context.base_oid),
-        short(&record.compare_context.head_oid)
-    );
+    // The head's kind said out loud, from the one function every renderer uses.
+    // A dirty head's content hash cut to twelve characters is the shape of a
+    // commit OID, and this string is the page title as well as the masthead.
+    let range = crate::resolve::change_line(&record.compare_context);
 
     let _ = write!(
         out,
@@ -96,9 +99,10 @@ fn document(
 
     masthead(&mut out, record, how, &range);
     lamp(&mut out, record);
-    if let Some(substitution) = substitution {
+    if let Some(substitution) = &record.substitution {
         substitution_panel(&mut out, substitution);
     }
+    unreadable_panel(&mut out, record);
     station_board(&mut out, record);
     why(&mut out, record);
     flags(&mut out, record);
@@ -169,6 +173,29 @@ fn substitution_panel(out: &mut String, substitution: &Substitution) {
         asked = escape(&substitution.asked_for),
         measured = escape(&substitution.measured),
         because = escape(&substitution.because),
+    );
+}
+
+/// Changed paths nothing could read, on the artefact that outlives the terminal.
+///
+/// `measure` names them and exits 1. The saved record was then read by
+/// `report`, `--json`, this page and the agent profile, all of which exited 0
+/// and lost the fact — so a verdict about less than the caller asked about
+/// looked, everywhere but the original terminal, like a clean one.
+fn unreadable_panel(out: &mut String, record: &MeasurementRecord) {
+    if record.unreadable_paths.is_empty() {
+        return;
+    }
+    let _ = write!(
+        out,
+        "<section class=\"panel notice\">\n\
+           <h2 class=\"eyebrow\">Not read</h2>\n\
+           <p>{count} changed path(s) could not be read, so nothing on this page describes \
+             them.</p>\n\
+           <p class=\"mono small\">{paths}</p>\n\
+         </section>\n",
+        count = record.unreadable_paths.len(),
+        paths = escape(&record.unreadable_paths.join(", ")),
     );
 }
 

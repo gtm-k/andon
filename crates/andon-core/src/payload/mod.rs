@@ -63,7 +63,7 @@ use crate::policy::Policy;
 use crate::schema::enums::{Completeness, RecordKind};
 use crate::schema::payload::{
     AttestationBlock, CompareContext, Invocation, MeasurementRecord, MeasurementResult, Reserved,
-    ResultScope, ToolIdentity, SCHEMA_VERSION,
+    ResultScope, Substitution, ToolIdentity, SCHEMA_VERSION,
 };
 use crate::verdict::iteration::{Advance, LoopOutcome};
 use crate::verdict::policy_change::PolicyChange;
@@ -288,6 +288,14 @@ pub struct AssembleRequest<'a> {
     pub engine_failures: Vec<EngineFailure>,
     /// The `.andon.toml` edit inside this change, if any.
     pub policy_change: Option<PolicyChange>,
+    /// Set when something other than the caller's request was measured.
+    ///
+    /// Carried through assembly rather than stamped on the finished record so
+    /// that there is one construction site for a record and no way to build one
+    /// that forgot to say it was about a different change.
+    pub substitution: Option<Substitution>,
+    /// Changed paths nothing could read, so nothing in `engines` describes them.
+    pub unreadable_paths: Vec<String>,
 }
 
 /// A validated payload, waiting only on the iteration counter.
@@ -313,6 +321,8 @@ pub struct Prepared {
     registry_skew: Vec<String>,
     completeness: Completeness,
     countable: bool,
+    substitution: Option<Substitution>,
+    unreadable_paths: Vec<String>,
 }
 
 impl Prepared {
@@ -494,6 +504,8 @@ impl Prepared {
                 ..AttestationBlock::default()
             },
             results: self.results,
+            substitution: self.substitution,
+            unreadable_paths: self.unreadable_paths,
         }
     }
 }
@@ -511,6 +523,8 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
         engines,
         engine_failures,
         policy_change,
+        substitution,
+        unreadable_paths,
     } = request;
 
     // Engine order is the grouping key, and it is sorted so that the record does
@@ -616,6 +630,8 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
         registry_skew,
         completeness,
         countable,
+        substitution,
+        unreadable_paths,
     })
 }
 
