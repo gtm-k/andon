@@ -86,6 +86,37 @@ fn disclosures() -> Vec<String> {
         .clone()
 }
 
+/// The honesty line a `partial` result carries, which is the one the claim
+/// makes promises about.
+///
+/// First, because that is where `demote_to_partial` inserts it — a reader who
+/// stops after one line reads the one that changes how to read the number.
+fn caveat<'a>(results: &'a [MeasurementResult], metric_id: &str) -> &'a str {
+    assert_eq!(
+        result(results, metric_id).completeness,
+        Completeness::Partial,
+        "{metric_id} carries no undecided-change caveat to read"
+    );
+    &result(results, metric_id).evidence.does_not_predict[0]
+}
+
+/// Asserts the caveat says each of `words`.
+///
+/// The reason this file has a helper for it: round 4 shipped a sentence
+/// promising that a `partial` result names the key, and twelve probes that
+/// asserted only that the status was `Partial` — so the sentence was wrong and
+/// the suite meant to hold it was green. Status is not content, and a claim
+/// about what a caveat *says* has to be read out of the caveat.
+fn caveat_says(results: &[MeasurementResult], metric_id: &str, words: &[&str]) {
+    let line = caveat(results, metric_id);
+    for word in words {
+        assert!(
+            line.contains(word),
+            "the caveat does not say {word:?}, which the claim promises it does:\n{line}"
+        );
+    }
+}
+
 /// Asserts the shipped prose carries `phrase`, so a guarantee cannot be
 /// asserted here after it has been dropped from the claim.
 fn disclosed(phrase: &str) {
@@ -113,8 +144,9 @@ fn the_claim_no_longer_promises_that_a_recognised_file_is_never_silent() {
 }
 
 #[test]
-fn a_rule_option_that_moved_behind_a_held_severity_is_partial_and_names_the_key() {
+fn a_rule_option_that_moved_behind_a_held_severity_is_quoted_with_both_values() {
     disclosed("a rule option that moved while its severity held");
+    disclosed("the key and both values for a moved option");
     let results = one(
         ".eslintrc.json",
         "{ \"rules\": { \"indent\": [\"error\", 2] } }",
@@ -124,8 +156,19 @@ fn a_rule_option_that_moved_behind_a_held_severity_is_partial_and_names_the_key(
     assert!(!flag);
     assert_eq!(magnitude, 0);
     assert_eq!(completeness, Completeness::Partial);
-    let caveat = &result(&results, THRESHOLD).evidence.does_not_predict[0];
-    assert!(caveat.contains("indent"), "{caveat}");
+    // The key and *both* values: a caveat naming only the key would leave a
+    // reader unable to see which way the option went, which is the whole
+    // question the result declined to answer.
+    caveat_says(
+        &results,
+        THRESHOLD,
+        &[
+            ".eslintrc.json:1",
+            "indent",
+            "[\"error\", 2]",
+            "[\"error\", 4]",
+        ],
+    );
 }
 
 #[test]
@@ -143,13 +186,23 @@ fn a_modelled_setting_deleted_rather_than_changed_is_partial_and_names_the_key()
     assert!(!flag, "unranked is not a firing");
     assert_eq!(magnitude, 0);
     assert_eq!(completeness, Completeness::Partial);
-    let caveat = &result(&results, THRESHOLD).evidence.does_not_predict[0];
-    assert!(caveat.contains("no-explicit-any"), "{caveat}");
+    disclosed("the key and the value it had for a deletion");
+    caveat_says(
+        &results,
+        THRESHOLD,
+        &[".eslintrc.json", "no-explicit-any", "error -> absent"],
+    );
 }
 
 #[test]
-fn a_changed_line_the_scanner_took_no_setting_from_is_partial() {
+fn a_changed_line_the_scanner_took_no_setting_from_is_quoted_as_the_line_it_is() {
+    // The probe that was missing, and the reason this file grew a caveat
+    // reader. Round 4's sentence said a `partial` result names *the key*; this
+    // shape has no key on it — that is precisely what leaves it undecidable —
+    // so the sentence was false of the third of the three shapes it covered,
+    // and a probe asserting only `Partial` could not tell.
     disclosed("a changed line the scanner took no setting from");
+    disclosed("the line's own text for an unread line, which carries no key to name");
     // A YAML block sequence: no brackets to follow, no separator on the line
     // carrying the number, and the token on it is exactly the kind this
     // detector ranks.
@@ -160,6 +213,56 @@ fn a_changed_line_the_scanner_took_no_setting_from_is_partial() {
     );
     let (_, _, completeness) = triple(&results, THRESHOLD);
     assert_eq!(completeness, Completeness::Partial);
+    caveat_says(
+        &results,
+        THRESHOLD,
+        &[
+            ".eslintrc.yml:4",
+            "`- 10`",
+            "the scanner took no setting from it",
+        ],
+    );
+    assert!(
+        !caveat(&results, THRESHOLD).contains("complexity"),
+        "there is no key on the line, and a caveat that named one would be \
+         describing a setting the scanner never read"
+    );
+}
+
+#[test]
+fn where_several_changes_go_undecided_only_the_first_is_quoted() {
+    // The general form of the same defect. `unassessed_caveat` quotes
+    // `unassessed[0].detail` and locates the rest, so "the caveat names the
+    // key" was never true of a change with two undecided settings in it — and
+    // no probe looked at a change with two.
+    disclosed("says how many changes went undecided");
+    disclosed("Only the first undecided change is quoted; the rest are located and not described");
+    let results = one(
+        ".eslintrc.json",
+        "{ \"rules\": { \"indent\": [\"error\", 2], \"no-explicit-any\": \"error\" } }",
+        "{ \"rules\": { \"indent\": [\"error\", 4] } }",
+    );
+    assert_eq!(
+        triple(&results, THRESHOLD),
+        (false, 0, Completeness::Partial)
+    );
+    // How many, and where each one is.
+    caveat_says(
+        &results,
+        THRESHOLD,
+        &["2 change(s)", ".eslintrc.json", ".eslintrc.json:1"],
+    );
+    // The first in the detector's own words.
+    caveat_says(&results, THRESHOLD, &["no-explicit-any", "error -> absent"]);
+    // And the second located and not described: `indent` is undecided here too
+    // and its key does not appear. Disclosed rather than fixed — a reader who
+    // needs it has the line number.
+    assert!(
+        !caveat(&results, THRESHOLD).contains("indent"),
+        "the second undecided change is described after all, and the claim says \
+         it is only located:\n{}",
+        caveat(&results, THRESHOLD)
+    );
 }
 
 #[test]
