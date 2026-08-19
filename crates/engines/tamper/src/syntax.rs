@@ -23,11 +23,28 @@ use tree_sitter::{Node, Parser, Tree};
 /// changed rule changes what fires.
 ///
 /// `3` adds exclusion-breadth ranking to `coverage-exclusion-drift` and
-/// rule-option ranking to `threshold-config-edit`. `DETECTOR_SET_REVISION` is
-/// deliberately not bumped alongside it: there are still exactly seven
-/// detectors, and that constant answers which ones exist rather than what they
-/// match on.
-pub const RULE_PACK_VERSION: &str = "3";
+/// rule-option ranking to `threshold-config-edit`.
+///
+/// `4` changes what two rules mean and which files one of them opens:
+/// `threshold-config-edit` reads golangci-lint's and Clippy's key semantics
+/// through a per-tool table (`detectors::threshold_config_edit::Bound`), so
+/// golangci's zero sentinel and Clippy's `-threshold` suffix now rank in the
+/// direction their own tools give them; and `config::Match::Family` no longer
+/// reads a variant name segment in a syntax a runtime executes, so
+/// `eslint.config.spec.ts` is a module again rather than configuration.
+///
+/// That is the whole reason this constant exists, and the reason it is not
+/// optional. Regime equality is step 2 of the trust decision
+/// (`andon_core::compare`): equal regimes with disagreeing digests classify
+/// `divergent` and carry a tamper signal. An agent measuring on this build
+/// against CI attesting on the last one would be accused of tampering for a
+/// version skew — PREMORTEM S4, the same failure the grammar pins below ride
+/// here to prevent.
+///
+/// `DETECTOR_SET_REVISION` is deliberately not bumped alongside either: there
+/// are still exactly seven detectors, and that constant answers which ones
+/// exist rather than what they match on.
+pub const RULE_PACK_VERSION: &str = "4";
 
 /// Revision of the detector *set* — which detectors exist at all.
 pub const DETECTOR_SET_REVISION: &str = "1";
