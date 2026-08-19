@@ -1166,3 +1166,108 @@ fn a_renamed_path_is_named_as_the_file_it_became() {
     );
     assert!(rendered.contains("src/hello.ts"), "{rendered}");
 }
+
+/// Raw git, deliberately outside `Git::cmd`'s hygiene.
+///
+/// Every other git call in this file goes through the pinned wrapper, which is
+/// the point of the wrapper. This one must not: it is the positive control that
+/// proves the canary below can fire at all, and it can only prove that by being
+/// the unpinned git an ordinary tool would have run.
+fn unpinned_git(repo: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .expect("git runs")
+}
+
+#[test]
+fn a_repository_defined_filter_is_never_executed() {
+    // A `filter` attribute plus a `filter.<name>.clean` command is a program the
+    // repository defines, and git runs it whenever it reads that file's
+    // working-tree content — `status` does it for an in-place edit that leaves
+    // the size alone, `hash-object -w` does it always. Both are on the path of
+    // an ordinary `andon measure`, and both were running it: a planted filter
+    // created a working-tree file, updated a ref, and staged its own side effect
+    // while `andon` exited 0 and printed `pass`.
+    //
+    // PRE-DECISIONS separates the code-executing checks from the safe static
+    // lane. This is the assertion that the line holds.
+    let repo = stranger_repo();
+    let root = repo.path();
+    let canary_ref = "refs/heads/andon-filter-canary";
+    // Everything the filter would touch, expressed as git operations so the
+    // command needs nothing but git on the PATH.
+    let clean = format!("git update-ref {canary_ref} HEAD && git add --all .");
+
+    unpinned_git(root, &["config", "filter.evil.clean", &clean]);
+    unpinned_git(root, &["config", "filter.evil.smudge", "cat"]);
+    std::fs::write(root.join(".gitattributes"), "*.ts filter=evil\n").expect("write attributes");
+    unpinned_git(root, &["add", ".gitattributes"]);
+    unpinned_git(root, &["commit", "-m", "attributes"]);
+
+    let fired = |what: &str| {
+        let out = unpinned_git(root, &["rev-parse", "--verify", "--quiet", what]);
+        out.status.success()
+    };
+    let clear = || {
+        unpinned_git(root, &["update-ref", "-d", canary_ref]);
+    };
+
+    // An in-place edit that keeps the size and moves the mtime: the shape that
+    // makes git read content through the filter rather than deciding from stat
+    // data alone.
+    let edited = root.join("src").join("greet.ts");
+    let before = std::fs::read_to_string(&edited).expect("read");
+    let after = before.replace("hello, stranger", "HELLO, STRANGER");
+    assert_ne!(
+        before, after,
+        "the fixture changed shape; nothing was edited"
+    );
+    std::fs::write(&edited, after).expect("write");
+
+    // THE POSITIVE CONTROL. Without it this test passes on a machine where the
+    // filter could never have run — a missing shell, a git that ignores the
+    // driver — and asserts nothing at all.
+    clear();
+    unpinned_git(root, &["status", "--porcelain"]);
+    assert!(
+        fired(canary_ref),
+        "the canary never fired under an unpinned git, so this test cannot tell a filter that \
+         was stopped from one that was never reachable"
+    );
+
+    // Now the tool. Same repository, same edit, same filter. The unstage comes
+    // first and the canary is cleared last: `git reset` reads content too, and
+    // clearing before it would leave the control's own firing in place to be
+    // read as the tool's.
+    unpinned_git(root, &["reset", "--quiet"]);
+    let entries_before = unpinned_git(root, &["ls-files", "--stage"]).stdout;
+    clear();
+    let output = run(&[
+        "measure",
+        "--repo",
+        root.to_str().expect("utf-8"),
+        "--no-color",
+        "--exit-zero",
+    ]);
+    let entries_after = unpinned_git(root, &["ls-files", "--stage"]).stdout;
+
+    assert!(
+        !fired(canary_ref),
+        "a repository-defined filter executed inside `andon measure`:\n{}",
+        stdout(&output)
+    );
+    assert_eq!(
+        entries_before, entries_after,
+        "the measurement staged something; the filter's `git add` reached the index"
+    );
+
+    // And the disclosure, because a filter that silently did not run leaves the
+    // reader believing they are looking at the bytes git would store.
+    let rendered = stdout(&output);
+    assert!(
+        rendered.contains("filter"),
+        "the filter was neutralized and nothing said so:\n{rendered}"
+    );
+}

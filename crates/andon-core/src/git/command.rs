@@ -97,6 +97,48 @@
 //! fix was looking. The rule is now scope-blind: everything defining this
 //! checkout's conversion speaks, wherever it lives.
 //!
+//! # Filters are repository-defined programs, and this lane does not run them
+//!
+//! `.gitattributes` may say `*.ts filter=x`, and a `filter.x.clean` command in
+//! any config file is then **executed by git** whenever it reads that file's
+//! working-tree content. `git status` does it — for any tracked file whose stat
+//! data moved but whose size did not, which is what an in-place edit looks like
+//! — and `git hash-object -w` does it unconditionally. Both are on the path of
+//! an ordinary `andon measure`.
+//!
+//! That is arbitrary repository code executing inside the lane PRE-DECISIONS
+//! separates *from* the code-executing checks, and it was executing: a planted
+//! `filter.evil.clean` created a working-tree file, updated a ref, and staged
+//! its own side effect while `andon measure` exited 0 and printed `pass`. The
+//! hooks pin above closes one mechanism; filters are a second one, and it was
+//! open.
+//!
+//! Neutralized rather than detected, because detection would have to run
+//! *after* the enumeration that already ran the program. A filter can only
+//! execute if some config file gives its driver a command, and `-c` outranks
+//! every config file — so [`Git::open`] reads the driver names once (a `git
+//! config` read executes nothing) and every spawn afterwards carries
+//! [`FILTER_NEUTRALIZATION`] for each of them: the three commands emptied and
+//! `required` pinned false. An emptied command makes git treat the driver as
+//! absent and pass the bytes through; `required=true` left alone would instead
+//! make it a hard failure, which is how git-lfs — configured globally on most
+//! developer machines — would otherwise break every measurement.
+//!
+//! The enumeration is read through [`Git::cmd_in_checkout_conversion`]'s
+//! environment on purpose: that spawn is the one that lets the *system* config
+//! speak, so reading driver names under it yields the union of what any spawn
+//! in this module could load. A name that cannot be expressed as a `-c` key —
+//! one containing `=` or a newline — cannot be neutralized, and that is a
+//! typed refusal ([`GitError::UnneutralizableFilter`]) rather than a spawn that
+//! proceeds hoping the attribute never matches.
+//!
+//! What this costs on an honest repository is that content a clean filter would
+//! have rewritten is read as the raw working-tree bytes instead. That is the
+//! more truthful reading for this tool — the bytes an agent wrote are the bytes
+//! it wrote — and it is disclosed rather than assumed: [`Git::filtered_paths`]
+//! names the changed paths whose declared filter did not run, and the caller
+//! puts them in the report.
+//!
 //! **System files.** `GIT_CONFIG_NOSYSTEM=1` drops `/etc/gitconfig` and
 //! `GIT_ATTR_NOSYSTEM=1` drops the system attributes file. The *global*
 //! gitconfig is deliberately left loadable: `actions/checkout` writes
@@ -167,6 +209,20 @@ pub const PINNED_CONFIG: &[(&str, &str)] = &[
     ("gc.auto", "0"),
     ("gc.autoDetach", "false"),
     ("maintenance.auto", "false"),
+];
+
+/// What every configured filter driver is pinned to, on every invocation.
+///
+/// One entry per key git consults before deciding to start a program. The three
+/// commands are emptied, which is how a driver is spelled "absent"; `required`
+/// is pinned false because an emptied command under `required=true` is a fatal
+/// error rather than a pass-through, and git-lfs ships `required=true` in the
+/// global config of every machine that has run `git lfs install`.
+pub const FILTER_NEUTRALIZATION: &[(&str, &str)] = &[
+    ("clean", ""),
+    ("smudge", ""),
+    ("process", ""),
+    ("required", "false"),
 ];
 
 /// The pinned keys that decide check-in conversion.
@@ -250,6 +306,28 @@ pub enum GitError {
         argv: String,
         /// What was expected and what arrived.
         detail: String,
+    },
+    /// A configured filter driver cannot be neutralized, so it cannot be
+    /// guaranteed not to run.
+    ///
+    /// Filters are repository-defined programs (see the module docs), and this
+    /// module keeps them from executing by pinning every configured driver's
+    /// commands empty with `-c`. A driver whose *name* contains `=` or a
+    /// newline cannot be written as a `-c` key at all — git would parse the
+    /// key at the first `=` and set something else — so the pin would silently
+    /// miss and the program would run on the next `status`.
+    ///
+    /// A refusal rather than a warning, because the alternative is measuring a
+    /// repository while executing its code and reporting the result as static
+    /// analysis.
+    #[error(
+        "the filter driver `{driver}` is configured with a name this tool cannot neutralize, \
+         and a filter is a program this repository defines. Rename it, or unset \
+         `filter.{driver}.clean`, `.smudge` and `.process`, and re-run"
+    )]
+    UnneutralizableFilter {
+        /// The driver name, as `git config` reported it.
+        driver: String,
     },
     /// The path given is not inside a git repository.
     #[error("{path} is not inside a git repository")]
@@ -339,6 +417,12 @@ pub struct Git {
     workdir: PathBuf,
     facts: RepoFacts,
     spawns: Arc<AtomicU64>,
+    /// `-c` arguments that pin every configured filter driver to inert, built
+    /// once at [`Git::open`]. Empty on the overwhelming majority of
+    /// repositories, which configure no filter at all.
+    filter_pins: Arc<Vec<String>>,
+    /// The driver names behind [`Self::filter_pins`], for the disclosure.
+    filter_drivers: Arc<Vec<String>>,
 }
 
 /// What the repository is, established once when it is opened.
@@ -364,9 +448,16 @@ pub struct RepoFacts {
 impl Git {
     /// Open the repository containing `path`.
     ///
-    /// Costs two spawns: one `git --version`, one batched `rev-parse` that
-    /// answers every remaining question at once. Both are counted, because a
-    /// caller's spawn budget has to cover what opening the repository costs.
+    /// Costs three spawns: one `git --version`, one batched `rev-parse` that
+    /// answers every remaining question at once, and one `git config` that
+    /// reads the filter drivers this repository's config defines. All are
+    /// counted, because a caller's spawn budget has to cover what opening the
+    /// repository costs.
+    ///
+    /// The first two run without the filter pins, which is safe rather than
+    /// lucky: neither `--version` nor `rev-parse` reads working-tree content,
+    /// so neither can reach a filter. The `config` read cannot either — and it
+    /// is what makes the pins available to everything that can.
     pub fn open(path: &Path) -> Result<Self, GitError> {
         let git = Git {
             workdir: path.to_path_buf(),
@@ -378,6 +469,8 @@ impl Git {
                 bare: false,
             },
             spawns: Arc::new(AtomicU64::new(0)),
+            filter_pins: Arc::new(Vec::new()),
+            filter_drivers: Arc::new(Vec::new()),
         };
 
         let version = git.cmd(["--version"]).text()?.trim().to_string();
@@ -414,6 +507,16 @@ impl Git {
             });
         };
 
+        let drivers = git.configured_filter_drivers()?;
+        let pins = drivers
+            .iter()
+            .flat_map(|driver| {
+                FILTER_NEUTRALIZATION
+                    .iter()
+                    .map(move |(key, value)| format!("filter.{driver}.{key}={value}"))
+            })
+            .collect();
+
         Ok(Git {
             workdir: PathBuf::from(toplevel),
             facts: RepoFacts {
@@ -424,7 +527,95 @@ impl Git {
                 bare: *bare == "true",
             },
             spawns: git.spawns,
+            filter_pins: Arc::new(pins),
+            filter_drivers: Arc::new(drivers),
         })
+    }
+
+    /// Every filter driver any config file gives a command or a `required` flag.
+    ///
+    /// Read through the checkout-conversion environment, which is the widest
+    /// scope any spawn in this module loads: it is the only one that lets the
+    /// system config speak, so the names found here cover the pinned spawns too.
+    /// Neutralizing a driver the pinned spawns would never have loaded costs a
+    /// `-c` argument and nothing else; missing one costs the guarantee.
+    ///
+    /// `-z` because a driver's command is arbitrary text — `git-lfs clean -- %f`
+    /// today, something with a newline in it tomorrow — and the newline-
+    /// separated form would then be parsed as another key.
+    fn configured_filter_drivers(&self) -> Result<Vec<String>, GitError> {
+        // Exit 1 with no output is `--get-regexp`'s "nothing matched", which is
+        // the ordinary answer and not a failure.
+        let Some(text) = self
+            .cmd_in_checkout_conversion(["config", "-z", "--get-regexp", r"^filter\."])
+            .succeeds_with_output()?
+        else {
+            return Ok(Vec::new());
+        };
+
+        let mut drivers: Vec<String> = Vec::new();
+        for record in text.split('\0').filter(|r| !r.is_empty()) {
+            // `key\nvalue`, and a value may itself contain newlines.
+            let key = record.split('\n').next().unwrap_or_default();
+            // `filter.<name>.<setting>`, where `<name>` may contain dots: git
+            // takes the subsection as everything between the first and last one.
+            let Some(rest) = key.strip_prefix("filter.") else {
+                continue;
+            };
+            let Some((driver, _setting)) = rest.rsplit_once('.') else {
+                continue;
+            };
+            if driver.is_empty() || drivers.iter().any(|known| known == driver) {
+                continue;
+            }
+            if driver.contains('=') || driver.contains('\n') || driver.contains('\r') {
+                return Err(GitError::UnneutralizableFilter {
+                    driver: driver.to_string(),
+                });
+            }
+            drivers.push(driver.to_string());
+        }
+        // Sorted for the same reason every other enumeration here is: the
+        // argument list a spawn carries should not depend on config file order.
+        drivers.sort();
+        Ok(drivers)
+    }
+
+    /// The filter drivers this repository's config defines, all of them pinned
+    /// inert on every spawn. Empty on a repository that configures none.
+    pub fn filter_drivers(&self) -> &[String] {
+        &self.filter_drivers
+    }
+
+    /// Which of `paths` `.gitattributes` assigns to a driver that is actually
+    /// configured — the paths whose declared filter did not run.
+    ///
+    /// The disclosure half of the neutralization. An attribute naming a driver
+    /// nothing configures is not reported, because git would not have run
+    /// anything for it either: the content is unaffected and saying otherwise
+    /// would be a warning about nothing.
+    ///
+    /// `check-attr` reads attribute files and starts no program, so this is
+    /// safe to ask after the fact — which is the whole reason the neutralization
+    /// cannot be replaced by a check.
+    pub fn filtered_paths(&self, paths: &[String]) -> Result<Vec<(String, String)>, GitError> {
+        if self.filter_drivers.is_empty() || paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let text = self
+            .cmd(["check-attr", "-z", "filter", "--"])
+            .args(paths)
+            .text()?;
+
+        // `path\0filter\0value\0`, one triple per path.
+        let fields: Vec<&str> = text.split('\0').collect();
+        let mut filtered: Vec<(String, String)> = fields
+            .chunks_exact(3)
+            .filter(|triple| self.filter_drivers.iter().any(|d| d == triple[2]))
+            .map(|triple| (triple[0].to_string(), triple[2].to_string()))
+            .collect();
+        filtered.sort();
+        Ok(filtered)
     }
 
     /// What was established when the repository was opened.
@@ -510,15 +701,16 @@ impl Git {
     ///
     /// # What it costs
     ///
-    /// Attributes select filters, and `hash-object` runs a clean filter. So a
-    /// system or global attributes file naming a `filter` can put a program in
-    /// this spawn's path that the pinned spawn would not have run. The pinned
-    /// spawn already runs filters the *repository's* `.gitattributes` selects —
-    /// filters are a documented part of what "the OID `git add` would give it"
-    /// means — so this widens an existing surface from one config scope to
-    /// three rather than opening a new one. Weighed against a tool that calls
-    /// every file in a default Windows checkout modified, it is the better
-    /// trade, and it is the whole of the residual.
+    /// Line-ending translation, and nothing else. An earlier version of this
+    /// paragraph also conceded a filter surface here — a system or global
+    /// attributes file naming a `filter` putting a program in this spawn's path
+    /// — and argued it was acceptable because the pinned spawn ran the
+    /// repository's filters anyway. Both halves were wrong: running a program
+    /// the repository defines is not something a static-analysis lane may do at
+    /// any scope, and the pinned spawn no longer does it either. The filter pins
+    /// are applied here as well, so what this spawn relaxes is the conversion
+    /// keys and the config scopes they resolve from, which is the whole of the
+    /// residual.
     pub(crate) fn cmd_in_checkout_conversion<I, S>(&self, args: I) -> GitCommand
     where
         I: IntoIterator<Item = S>,
@@ -540,6 +732,12 @@ impl Git {
                 continue;
             }
             command.arg("-c").arg(format!("{key}={value}"));
+        }
+        // Applied on the checkout-conversion spawn too. Conversion is what that
+        // spawn relaxes; running the repository's programs is not, and a clean
+        // filter reached through a system attributes file would be exactly that.
+        for pin in self.filter_pins.iter() {
+            command.arg("-c").arg(pin);
         }
         // Belt to the `GIT_NO_REPLACE_OBJECTS` brace: the flag works on git
         // builds that predate honouring the variable everywhere.

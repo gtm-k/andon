@@ -305,9 +305,12 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
             // is the side effect, and anything the read could not reach.
             if stage_free.hashed > 0 {
                 engine_notes.push(format!(
-                    "{} unstaged path(s) were read by writing their content to this \
-                     repository's object database as unreferenced blobs — the same objects \
-                     `git add` would create, without touching your index. `git gc` removes them.",
+                    "{} unstaged path(s) were read by writing their working-tree content to \
+                     this repository's object database as unreferenced blobs, without touching \
+                     your index. `git gc` removes them. Where a path declares a `filter` \
+                     attribute these are NOT the objects `git add` would create, because the \
+                     filter is a program this repository defines and it was not run — the note \
+                     below names those paths.",
                     stage_free.hashed
                 ));
             }
@@ -324,6 +327,39 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
                 ));
             }
         }
+    }
+
+    // A filter this repository configured is a program this repository wrote,
+    // and it did not run — `andon_core::git::command` pins every driver inert on
+    // every spawn. Where that changed what was read, say so: an actor can only
+    // act on what they can observe, and "these bytes are the raw working-tree
+    // bytes, not what your clean filter would have produced" is the kind of
+    // thing that changes how a number is read.
+    let filtered = git
+        .filtered_paths(
+            &changed
+                .entries
+                .iter()
+                .map(|e| e.path.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(MeasureError::Git)?;
+    if !filtered.is_empty() {
+        let drivers: std::collections::BTreeSet<&str> =
+            filtered.iter().map(|(_, driver)| driver.as_str()).collect();
+        engine_notes.push(format!(
+            "{} changed path(s) declare a `filter` attribute ({}), and that filter was NOT run: \
+             a filter driver is a program this repository defines, and this is the static lane. \
+             Their content was read as the raw working-tree bytes, which is what was written \
+             rather than what would be stored: {}.",
+            filtered.len(),
+            drivers.into_iter().collect::<Vec<_>>().join(", "),
+            filtered
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
 
     let policy_change = detect_policy_change(&git, &changed).map_err(MeasureError::Policy)?;

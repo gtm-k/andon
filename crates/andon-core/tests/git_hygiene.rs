@@ -940,9 +940,11 @@ fn opening_a_repository_and_reading_a_change_stays_inside_the_spawn_budget() {
 
     assert!(blobs.len() >= 3, "the fixture reads several blobs");
     let spawns = git.spawn_count();
-    // 2 to open, 2 to resolve, 1 to enumerate, 1 for the whole batch of blobs.
+    // 3 to open — version, the batched rev-parse, and the filter-driver read
+    // that makes the neutralization pins available to every spawn after it —
+    // 2 to resolve, 1 to enumerate, 1 for the whole batch of blobs.
     assert_eq!(
-        spawns, 6,
+        spawns, 7,
         "a committed-range pass costs a fixed number of spawns regardless of file count"
     );
 }
