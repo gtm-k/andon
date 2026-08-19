@@ -21,6 +21,8 @@
 //! blindness, which is a smaller failure than the one this file exists for but
 //! is still the evidence disagreeing with the code.
 
+use std::path::Path;
+
 use andon_core::engine::{run_engine, MeasureContext};
 use andon_core::policy::Policy;
 use andon_core::schema::enums::Completeness;
@@ -146,7 +148,7 @@ fn the_claim_no_longer_promises_that_a_recognised_file_is_never_silent() {
 #[test]
 fn a_rule_option_that_moved_behind_a_held_severity_is_quoted_with_both_values() {
     disclosed("a rule option that moved while its severity held");
-    disclosed("the key and both values for a moved option");
+    disclosed("the key and both values for an option that moved or that went behind a name");
     let results = one(
         ".eslintrc.json",
         "{ \"rules\": { \"indent\": [\"error\", 2] } }",
@@ -202,7 +204,7 @@ fn a_changed_line_the_scanner_took_no_setting_from_is_quoted_as_the_line_it_is()
     // so the sentence was false of the third of the three shapes it covered,
     // and a probe asserting only `Partial` could not tell.
     disclosed("a changed line the scanner took no setting from");
-    disclosed("the line's own text for an unread line, which carries no key to name");
+    disclosed("the line's own text for an unread line");
     // A YAML block sequence: no brackets to follow, no separator on the line
     // carrying the number, and the token on it is exactly the kind this
     // detector ranks.
@@ -235,8 +237,8 @@ fn where_several_changes_go_undecided_only_the_first_is_quoted() {
     // `unassessed[0].detail` and locates the rest, so "the caveat names the
     // key" was never true of a change with two undecided settings in it — and
     // no probe looked at a change with two.
-    disclosed("says how many changes went undecided");
-    disclosed("Only the first undecided change is quoted; the rest are located and not described");
+    disclosed("says how many went undecided");
+    disclosed("The rest are located and not described");
     let results = one(
         ".eslintrc.json",
         "{ \"rules\": { \"indent\": [\"error\", 2], \"no-explicit-any\": \"error\" } }",
@@ -262,6 +264,142 @@ fn where_several_changes_go_undecided_only_the_first_is_quoted() {
         "the second undecided change is described after all, and the claim says \
          it is only located:\n{}",
         caveat(&results, THRESHOLD)
+    );
+}
+
+#[test]
+fn a_rule_option_hidden_behind_an_unbound_name_is_quoted_with_both_values() {
+    // The fourth of the five, and one of two the hand-written enumeration
+    // missed for three rounds although the mechanism and a lib test both had
+    // it: `indirect` resolves a limit the same file binds, and reports rather
+    // than guesses when the binding left the file.
+    disclosed("a rule option written as a name that nothing in the file binds");
+    let results = one(
+        "eslint.config.js",
+        "export default [{ rules: { complexity: [\"error\", 10] } }];\n",
+        "import { LIMIT } from './limits';\nexport default [{ rules: { complexity: [\"error\", LIMIT] } }];\n",
+    );
+    assert_eq!(
+        triple(&results, THRESHOLD),
+        (false, 0, Completeness::Partial)
+    );
+    caveat_says(
+        &results,
+        THRESHOLD,
+        &[
+            "eslint.config.js:2",
+            "complexity",
+            "[\"error\", 10]",
+            "[\"error\", LIMIT]",
+        ],
+    );
+}
+
+#[test]
+fn an_exclusion_replacement_nobody_can_rank_quotes_the_replacing_pattern() {
+    // The fifth, and the one the reviewer found. It is the other detector's,
+    // which is why an enumeration written while working in the first one missed
+    // it — and it has been documented at fixtures/adversarial/README.md:116 the
+    // whole time.
+    disclosed("a coverage exclusion replaced by a pattern neither anchored above the other");
+    disclosed(
+        "the replacing pattern alone for an exclusion replacement, never the pattern it replaced",
+    );
+    let results = one(
+        ".coveragerc",
+        "[run]\nomit =\n    tests/*\n    */__init__.py\n",
+        "[run]\nomit =\n    tests/*\n    */conftest.py\n",
+    );
+    assert_eq!(
+        triple(&results, COVERAGE),
+        (false, 0, Completeness::Partial)
+    );
+    caveat_says(
+        &results,
+        COVERAGE,
+        &[
+            ".coveragerc:4",
+            "*/conftest.py",
+            "neither pattern is anchored above the other",
+        ],
+    );
+    // Derived rather than assumed: the quote names what replaced the pattern
+    // and not the pattern it replaced, so a claim saying "both patterns" would
+    // have been the same defect again.
+    assert!(
+        !caveat(&results, COVERAGE).contains("__init__"),
+        "the caveat names the pattern that was replaced after all:\n{}",
+        caveat(&results, COVERAGE)
+    );
+}
+
+#[test]
+fn the_claims_five_shapes_are_every_shape_the_code_can_produce() {
+    // The guard the last three rounds did not have, and the reason each of them
+    // shipped an enumeration missing a member: a conformance suite can only
+    // test the shapes its author thought of, so it checks the list against the
+    // mechanism and never asks whether the list is complete.
+    //
+    // What makes the question answerable here is that the mechanism has exactly
+    // one gate. `Completeness::Partial` is written to a tamper result in one
+    // place — `demote_to_partial`, engine.rs — reached from one condition,
+    // `if !outcome.unassessed.is_empty()`. So the shapes that can produce a
+    // `partial` result are exactly the places a detector puts a finding into
+    // `unassessed`, and those are countable from the source.
+    //
+    // This test counts them. It does not know what a new one would mean, and
+    // that is the point: it fails, and whoever added it has to say.
+    let detectors = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("detectors");
+    let mut sites: Vec<String> = Vec::new();
+    let mut entries: Vec<_> = std::fs::read_dir(&detectors)
+        .expect("the detector directory is where it has always been")
+        .map(|e| e.expect("readable").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    entries.sort();
+    for path in &entries {
+        let text = std::fs::read_to_string(path).expect("a detector source reads");
+        let name = path
+            .file_name()
+            .expect("named")
+            .to_string_lossy()
+            .to_string();
+        for (index, line) in text.lines().enumerate() {
+            // Anywhere on the line, not at the start of it: one of the five is
+            // a match arm (`Err(unranked) => unassessed.push(`), and a scan
+            // anchored at the first token found four of five — this guard
+            // undercounting is the same defect it exists to catch, so it is
+            // written to over-report and let a comment be excluded by hand.
+            let trimmed = line.trim();
+            let counted = !trimmed.starts_with("//")
+                && (line.contains("unassessed.push(") || line.contains("unassessed.extend("));
+            if counted {
+                sites.push(format!("{name}:{}", index + 1));
+            }
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        5,
+        "the number of ways a tamper result can come back `partial` has changed, and the \
+         gate-loosening claim in registry/tamper.toml enumerates five. Found: {sites:?}. \
+         Add the new shape to that enumeration and give it a probe here, or take the \
+         removed one out of both."
+    );
+    // And they live in the two detectors the claim is about. The other five
+    // never mark anything unassessed, which is why the claim can speak for the
+    // whole of its own subject.
+    let files: std::collections::BTreeSet<&str> = sites
+        .iter()
+        .map(|s| s.split(':').next().expect("named"))
+        .collect();
+    assert_eq!(
+        files.into_iter().collect::<Vec<_>>(),
+        vec!["coverage_exclusion_drift.rs", "threshold_config_edit.rs"],
+        "a detector outside this claim's subject can now return `partial`, so the claim \
+         no longer covers every shape a reader of these two metrics will meet"
     );
 }
 
