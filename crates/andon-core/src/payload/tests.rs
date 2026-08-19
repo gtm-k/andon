@@ -492,6 +492,36 @@ fn a_measurement_that_could_not_see_does_not_clear_the_budget() {
 }
 
 #[test]
+fn a_path_nothing_could_read_does_not_clear_the_budget_either() {
+    // The same reset, through a field that did not exist when `LoopOutcome` was
+    // made three-valued. `every_question_was_answered` asked about engine
+    // failures and about half-finished results, and not about a changed path
+    // nothing could open — so a measurement that found nothing because it never
+    // saw the file answered `Finished` and cleared the agent's count.
+    //
+    // "Break the engine" and "make the file unreadable" are the same move, and
+    // the verdict already knows it: the record carries `change-not-read` and
+    // exits 1. The counter was the last consumer still blind to it.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+
+    let mut req = request(&policy, &registry, five_engines(&registry));
+    req.unreadable_paths = vec!["src/work.ts".to_string()];
+    let blinded = prepare(req).expect("assembles");
+
+    assert!(
+        !blinded.has_countable_finding(),
+        "an unreadable path is not something the agent's next edit answers, and counting it \
+         would grind the loop to escalation over a permission bit"
+    );
+    assert_eq!(
+        blinded.loop_outcome(),
+        crate::verdict::iteration::LoopOutcome::Inconclusive,
+        "a run over a path nothing could read is not evidence that the loop ended"
+    );
+}
+
+#[test]
 fn an_honest_absence_still_ends_the_loop() {
     // The other half, and the half that was dead in production. Engines emit
     // `unwitnessed` results by design for absences that are facts about the

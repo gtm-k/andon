@@ -421,8 +421,25 @@ impl Prepared {
     /// Deliberately not `completeness == Complete`: see [`Self::loop_outcome`].
     /// An `unwitnessed` result is an answer; a failed engine, a half-read file,
     /// and unfinished work are not.
+    ///
+    /// # A path nothing could open is the same question left unanswered
+    ///
+    /// This read `engine_failures` and the two incomplete result states and
+    /// stopped there, which meant a changed path no engine could read did not
+    /// count. So a measurement over a file nobody opened found nothing to act
+    /// on, answered `Finished`, and **cleared the agent's count** — the exact
+    /// shape [`LoopOutcome`] was made three-valued to prevent, arriving through
+    /// a field that did not exist when it was.
+    ///
+    /// It is the same argument one step over: break the engine and the run is
+    /// clean, or make the file unreadable and the run is clean. Both are
+    /// "nothing to act on because nothing was seen", and neither is evidence
+    /// that the loop ended. `unreadable_paths` is already on `Prepared` and
+    /// already drives the verdict's `change-not-read` reason; this is that same
+    /// fact reaching the one consumer that was still blind to it.
     fn every_question_was_answered(&self) -> bool {
         self.engine_failures.is_empty()
+            && self.unreadable_paths.is_empty()
             && !self.results.iter().any(|result| {
                 matches!(
                     result.completeness,
