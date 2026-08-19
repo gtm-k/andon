@@ -36,10 +36,13 @@ use tree_sitter::{Node, Parser, Tree};
 /// That is the whole reason this constant exists, and the reason it is not
 /// optional. Regime equality is step 2 of the trust decision
 /// (`andon_core::compare`): equal regimes with disagreeing digests classify
-/// `divergent` and carry a tamper signal. An agent measuring on this build
-/// against CI attesting on the last one would be accused of tampering for a
-/// version skew — PREMORTEM S4, the same failure the grammar pins below ride
-/// here to prevent.
+/// `divergent`, which is the first-class tamper **attestation**. It raises no
+/// tamper *signal* — `Classification::tamper_signals` is only ever
+/// `base-fabrication`, and a digest disagreement adds nothing to it — and that
+/// makes the outcome no gentler, because on this axis the attestation is the
+/// accusation. An agent measuring on this build against CI attesting on the
+/// last one would earn it for a version skew, which is PREMORTEM S4 and the
+/// same failure the grammar pins below ride here to prevent.
 ///
 /// `DETECTOR_SET_REVISION` is deliberately not bumped alongside either: there
 /// are still exactly seven detectors, and that constant answers which ones
