@@ -26,8 +26,8 @@
 //! `tarpaulin.toml`. Each gap returned `{flag: false, magnitude: 0,
 //! completeness: "complete"}` on a format the detector says it recognises,
 //! which is the confident missed detection the completeness vocabulary exists
-//! to prevent. Files are now matched by the tool's stem in any syntax
-//! ([`config::Tool`]) and keys by what their name says
+//! to prevent. Files are now matched by the tool's stem, read against the
+//! syntaxes that tool reads ([`config::Tool`]), and keys by what their name says
 //! ([`EXCLUSION_KEY_FRAGMENTS`]), so the eighth spelling of each is covered
 //! before it is written.
 //!
