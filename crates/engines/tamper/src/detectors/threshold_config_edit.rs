@@ -90,11 +90,11 @@ pub fn is_threshold_config(path: &str) -> bool {
 
 /// Whose vocabulary a file is written in.
 ///
-/// # Two settings mean different things depending on who reads the file
+/// # Some settings mean different things depending on who reads the file
 ///
 /// Almost every key here means the same thing wherever it appears, which is
-/// what lets one table of fragments serve fifteen tools. Two do not, and both
-/// were confident zeros:
+/// what lets one table of fragments serve fifteen tools. Four do not, and every
+/// one of them was a wrong answer rather than a missing one:
 ///
 /// - ESLint writes a rule's severity as `0`, `1` or `2` as readily as `off`,
 ///   `warn` and `error`. `"no-explicit-any": 2 -> 0` turns a rule off, and the
@@ -105,6 +105,12 @@ pub fn is_threshold_config(path: &str) -> bool {
 ///   50` is a floor lowered as plainly as `fail_under`, and `target` is also
 ///   TypeScript's language level, where it is a string and nothing to do with
 ///   quality.
+/// - golangci-lint reads `0` under `max-issues-per-linter` and `max-same-issues`
+///   as *no limit*, so on that key zero is the loosest value there is and the
+///   `max-` prefix rule has the order exactly backwards. See [`Bound`].
+/// - Clippy spells its ceilings `<something>-threshold`, and `threshold` is a
+///   shared *floor* fragment. `too-many-lines-threshold` is the maximum length
+///   a function may reach, and the shared table read raising it as a tightening.
 ///
 /// So the dialect is read off the file name, from the same tool table that
 /// decides whether the file is opened at all.
@@ -114,6 +120,10 @@ enum Dialect {
     Eslint,
     /// Codecov.
     Codecov,
+    /// golangci-lint.
+    Golangci,
+    /// Clippy.
+    Clippy,
     /// Everything else: the shared vocabulary and nothing more.
     Shared,
 }
@@ -123,6 +133,10 @@ fn dialect_of(path: &str) -> Dialect {
         Dialect::Eslint
     } else if config::names_one_of(path, &[tools::CODECOV, tools::CODECOV_DOT]) {
         Dialect::Codecov
+    } else if config::names_one_of(path, &[tools::GOLANGCI]) {
+        Dialect::Golangci
+    } else if config::names_one_of(path, &[tools::CLIPPY]) {
+        Dialect::Clippy
     } else {
         Dialect::Shared
     }
@@ -216,6 +230,16 @@ const CEILING_KEY_FRAGMENTS: &[&str] = &[
     "max-errors",
     "iteration_cap",
 ];
+
+/// golangci-lint's two keys where `0` means *unlimited*.
+///
+/// Both are issue caps: `max-issues-per-linter` (default 50) and
+/// `max-same-issues` (default 3) stop the linter reporting past that many, and
+/// setting either to zero turns the cap off rather than down to nothing. They
+/// are named rather than derived because the sentinel is a fact about
+/// golangci-lint and nothing in the key says it — which is the reason the
+/// `max-` prefix rule could not have got this right.
+const GOLANGCI_ZERO_IS_UNLIMITED: &[&str] = &["max-issues-per-linter", "max-same-issues"];
 
 /// Keys spelled `max…` whose number is nonetheless a floor.
 ///
@@ -629,48 +653,122 @@ fn loosening(dialect: Dialect, key: &str, before: &str, after: &str) -> Option<&
         return Some("checking skipped");
     }
     if let (Some(b), Some(a)) = (number(before), number(after)) {
-        if is_ceiling(dialect, &key) {
-            return (a > b).then_some("allowance raised");
-        }
-        if is_floor(dialect, &key) {
-            return (a < b).then_some("floor lowered");
-        }
+        return match bound_of(dialect, &key) {
+            Some(Bound::Ceiling) => (a > b).then_some("allowance raised"),
+            Some(Bound::Floor) => (a < b).then_some("floor lowered"),
+            Some(Bound::CeilingWhereZeroIsOff) => {
+                if b != 0.0 && a == 0.0 {
+                    Some("limit removed")
+                } else if b == 0.0 {
+                    // There was no limit and now there is one. Whatever finite
+                    // number it is, it is tighter than none.
+                    None
+                } else {
+                    (a > b).then_some("allowance raised")
+                }
+            }
+            None => None,
+        };
     }
     None
 }
 
-/// Whether a key's number is a ceiling, so that raising it loosens.
+/// Which way a key's number has to move for the gate it sets to loosen.
 ///
-/// The named fragments, and then the prefix: a leaf key beginning `max-` or
-/// `max_` says of itself that its number is an allowance. That is the sentence
-/// [`unrankable`] already used to justify the table — "compared where the rule's
-/// own name says the number is a ceiling" — applied to every rule it is true of
-/// rather than to the six somebody listed. The separator is required, so
-/// `maxAge` is not a threshold and `max-depth` is.
-fn is_ceiling(_dialect: Dialect, key: &str) -> bool {
-    if MAX_THAT_IS_A_FLOOR.iter().any(|k| key.contains(k)) {
-        return false;
-    }
-    if CEILING_KEY_FRAGMENTS.iter().any(|k| key.contains(k)) {
-        return true;
-    }
-    let leaf = key.rsplit('.').next().unwrap_or(key);
-    leaf.starts_with("max-") || leaf.starts_with("max_")
+/// # A direction is a fact about the tool, and two tools disagreed with the table
+///
+/// The shared fragments answer for fifteen tools because a `max-` is an
+/// allowance and a `min-` is a requirement almost everywhere. *Almost* is the
+/// word that cost two wrong-direction answers, and a wrong direction is worse
+/// than no answer: it tells a team they loosened a gate they had just tightened,
+/// which is the accusation PREMORTEM A4 says gets the tool uninstalled.
+///
+/// - golangci-lint's `max-issues-per-linter` and `max-same-issues` read `0` as
+///   *unlimited*. `50 -> 0` takes the cap off and the prefix rule read it as an
+///   allowance lowered, so the real loosening was silent; `0 -> 50` imposes a
+///   cap where there was none and the same rule called it an allowance raised,
+///   so an honest tightening was accused.
+/// - Clippy's `too-many-lines-threshold` is the maximum length a function may
+///   reach, and it matches the shared *floor* fragments `threshold` and `lines`.
+///   Raising it was silent and lowering it fired.
+///
+/// So the tool is asked first, and the shared fragments answer for every key it
+/// has no opinion about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bound {
+    /// Raising it loosens.
+    Ceiling,
+    /// Lowering it loosens.
+    Floor,
+    /// A ceiling whose tool reads `0` as the absence of one, so zero is looser
+    /// than every finite value and larger is still looser among the rest.
+    CeilingWhereZeroIsOff,
 }
 
-/// Whether a key's number is a floor, so that lowering it loosens.
-///
-/// The shared fragments, and then the one key whose meaning is its tool's:
-/// Codecov's `target` is the coverage percentage a project must hold, so
-/// `80 -> 50` is `fail_under` under another name. It is not in the shared table
-/// because `target` is also TypeScript's language level, where it is a string
-/// and says nothing about quality — see [`Dialect`].
-fn is_floor(dialect: Dialect, key: &str) -> bool {
-    if FLOOR_KEY_FRAGMENTS.iter().any(|k| key.contains(k)) {
-        return true;
-    }
+/// The direction a key's number moves to loosen, or `None` when neither the
+/// tool nor the shared vocabulary says which way it runs.
+fn bound_of(dialect: Dialect, key: &str) -> Option<Bound> {
     let leaf = key.rsplit('.').next().unwrap_or(key);
-    dialect == Dialect::Codecov && leaf == "target"
+    if let Some(bound) = dialect_bound(dialect, leaf) {
+        return Some(bound);
+    }
+    // The named fragments, and then the prefix: a leaf key beginning `max-` or
+    // `max_` says of itself that its number is an allowance. That is the
+    // sentence [`unrankable`] already used to justify the table — "compared
+    // where the rule's own name says the number is a ceiling" — applied to every
+    // rule it is true of rather than to the six somebody listed. The separator
+    // is required, so `maxAge` is not a threshold and `max-depth` is.
+    if !MAX_THAT_IS_A_FLOOR.iter().any(|k| key.contains(k))
+        && (CEILING_KEY_FRAGMENTS.iter().any(|k| key.contains(k))
+            || leaf.starts_with("max-")
+            || leaf.starts_with("max_"))
+    {
+        return Some(Bound::Ceiling);
+    }
+    // The shared fragments, and then the one key whose meaning is its tool's:
+    // Codecov's `target` is the coverage percentage a project must hold, so
+    // `80 -> 50` is `fail_under` under another name. It is not in the shared
+    // table because `target` is also TypeScript's language level, where it is a
+    // string and says nothing about quality — see [`Dialect`].
+    if FLOOR_KEY_FRAGMENTS.iter().any(|k| key.contains(k))
+        || (dialect == Dialect::Codecov && leaf == "target")
+    {
+        return Some(Bound::Floor);
+    }
+    None
+}
+
+/// What one tool's own vocabulary says about a key, where it disagrees with the
+/// shared fragments.
+///
+/// Clippy's rule is stated the way Clippy states it — a `-threshold` suffix
+/// names a maximum — with `min-` taken first, because `min-ident-chars-threshold`
+/// is the one Clippy key that carries the suffix and means a minimum. Returning
+/// `None` there hands it back to the shared floor fragments, which already have
+/// it right.
+fn dialect_bound(dialect: Dialect, leaf: &str) -> Option<Bound> {
+    match dialect {
+        Dialect::Golangci => GOLANGCI_ZERO_IS_UNLIMITED
+            .contains(&leaf)
+            .then_some(Bound::CeilingWhereZeroIsOff),
+        Dialect::Clippy => {
+            if leaf.starts_with("min-") || leaf.starts_with("min_") {
+                None
+            } else {
+                leaf.ends_with("-threshold").then_some(Bound::Ceiling)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether a key's number is a plain ceiling, so that raising it loosens.
+///
+/// Plain: [`Bound::CeilingWhereZeroIsOff`] is deliberately not one of these,
+/// because both callers go on to compare two numbers with `>` and that
+/// comparison is the thing zero-means-unlimited breaks.
+fn is_ceiling(dialect: Dialect, key: &str) -> bool {
+    bound_of(dialect, key) == Some(Bound::Ceiling)
 }
 
 /// Why a changed value could not be ranked at all, or `None` when the detector
@@ -747,7 +845,7 @@ fn deletion(dialect: Dialect, key: &str, before: &str) -> Option<&'static str> {
         || (boolean(before).is_some()
             && (STRICT_WHEN_TRUE.iter().any(|k| leaf == *k)
                 || STRICT_WHEN_FALSE.iter().any(|k| leaf == *k)))
-        || (number(before).is_some() && (is_ceiling(dialect, &key) || is_floor(dialect, &key)));
+        || (number(before).is_some() && bound_of(dialect, &key).is_some());
     modelled.then_some(
         "a setting this detector ranks was deleted rather than changed, and whether the \
          tool's default is looser than the value it had is not decidable from the text — \
@@ -1525,6 +1623,185 @@ disallow_untyped_defs = False
                  stops meaning anything: {outcome:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_golangci_cap_turned_off_is_the_loosening_it_is() {
+        // `0` is golangci-lint's word for *no limit*, so `50 -> 0` stops the
+        // linter capping anything. The `max-` prefix rule read it as an
+        // allowance lowered and said nothing at all.
+        for (path, base, head) in [
+            (
+                ".golangci.yml",
+                "issues:\n  max-issues-per-linter: 50\n",
+                "issues:\n  max-issues-per-linter: 0\n",
+            ),
+            (
+                ".golangci.toml",
+                "[issues]\nmax-same-issues = 3\n",
+                "[issues]\nmax-same-issues = 0\n",
+            ),
+        ] {
+            let view = ChangeView::new(vec![FileChange::modified(path, base, head)]);
+            let outcome = ThresholdConfigEdit.run(&view);
+            assert!(outcome.fired, "{path}: {outcome:?}");
+            assert!(
+                outcome.findings[0].detail.contains("limit removed"),
+                "{path}: {:?}",
+                outcome.findings
+            );
+        }
+    }
+
+    #[test]
+    fn a_golangci_cap_imposed_where_there_was_none_is_a_tightening() {
+        // The direction that matters most: `0 -> 50` puts a cap on a linter
+        // that had none, and the prefix rule accused it of raising an
+        // allowance. A wrong-direction accusation against honest work is the
+        // failure this project ranks worst.
+        for (path, base, head) in [
+            (
+                ".golangci.yml",
+                "issues:\n  max-issues-per-linter: 0\n",
+                "issues:\n  max-issues-per-linter: 50\n",
+            ),
+            (
+                ".golangci.toml",
+                "[issues]\nmax-same-issues = 0\n",
+                "[issues]\nmax-same-issues = 50\n",
+            ),
+        ] {
+            let view = ChangeView::new(vec![FileChange::modified(path, base, head)]);
+            let outcome = ThresholdConfigEdit.run(&view);
+            assert!(!outcome.fired, "{path}: {outcome:?}");
+            assert!(outcome.unassessed.is_empty(), "{path}: {outcome:?}");
+        }
+    }
+
+    #[test]
+    fn between_two_finite_golangci_caps_the_larger_is_still_the_looser() {
+        // The sentinel is the exception and not the rule: with neither side at
+        // zero the key is the ceiling its name says it is.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".golangci.yml",
+            "issues:\n  max-issues-per-linter: 10\n",
+            "issues:\n  max-issues-per-linter: 500\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(outcome.findings[0].detail.contains("allowance raised"));
+
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".golangci.yml",
+            "issues:\n  max-issues-per-linter: 500\n",
+            "issues:\n  max-issues-per-linter: 10\n",
+        )]);
+        assert!(!ThresholdConfigEdit.run(&view).fired);
+    }
+
+    #[test]
+    fn the_sentinel_is_golangci_s_and_nobody_else_s() {
+        // The same key spelled into another tool's file keeps the shared
+        // reading, because the sentinel is a fact about golangci-lint. Anything
+        // else would reverse an honest `max-` somewhere else in the ecosystem.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "ruff.toml",
+            "max-issues-per-linter = 50\n",
+            "max-issues-per-linter = 0\n",
+        )]);
+        assert!(!ThresholdConfigEdit.run(&view).fired);
+        assert_eq!(
+            bound_of(Dialect::Golangci, "issues.max-issues-per-linter"),
+            Some(Bound::CeilingWhereZeroIsOff),
+            "and the section-qualified spelling is the same key"
+        );
+    }
+
+    #[test]
+    fn a_golangci_cap_deleted_is_reported_rather_than_answered() {
+        // The zero-sentinel keys are modelled settings, so removing one is a
+        // change inside this detector's subject that it cannot rank — the same
+        // treatment every other modelled deletion gets.
+        let view = ChangeView::new(vec![FileChange::modified(
+            ".golangci.yml",
+            "issues:\n  max-issues-per-linter: 50\n  exclude-use-default: false\n",
+            "issues:\n  exclude-use-default: false\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert!(
+            outcome
+                .unassessed
+                .iter()
+                .any(|f| f.detail.contains("max-issues-per-linter")),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_clippy_maximum_is_not_a_floor_for_being_spelled_threshold() {
+        // `too-many-lines-threshold` is the longest a function may be, and it
+        // matched the shared floor fragments `threshold` and `lines`. Raising it
+        // was silent and lowering it — a tightening — fired.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "clippy.toml",
+            "too-many-lines-threshold = 100\n",
+            "too-many-lines-threshold = 1000\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(outcome.findings[0].detail.contains("allowance raised"));
+
+        let view = ChangeView::new(vec![FileChange::modified(
+            "clippy.toml",
+            "too-many-lines-threshold = 1000\n",
+            "too-many-lines-threshold = 100\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(!outcome.fired, "{outcome:?}");
+        assert!(outcome.unassessed.is_empty(), "{outcome:?}");
+    }
+
+    #[test]
+    fn the_one_clippy_threshold_that_means_a_minimum_keeps_its_direction() {
+        // `min-ident-chars-threshold` is the shortest name Clippy will accept
+        // without complaining, so lowering it lets more through. It is the
+        // reason the suffix rule asks about `min-` first.
+        let view = ChangeView::new(vec![FileChange::modified(
+            "clippy.toml",
+            "min-ident-chars-threshold = 12\n",
+            "min-ident-chars-threshold = 1\n",
+        )]);
+        let outcome = ThresholdConfigEdit.run(&view);
+        assert!(outcome.fired, "{outcome:?}");
+        assert!(outcome.findings[0].detail.contains("floor lowered"));
+
+        let view = ChangeView::new(vec![FileChange::modified(
+            "clippy.toml",
+            "min-ident-chars-threshold = 1\n",
+            "min-ident-chars-threshold = 12\n",
+        )]);
+        assert!(!ThresholdConfigEdit.run(&view).fired);
+    }
+
+    #[test]
+    fn the_threshold_suffix_rule_is_clippy_s_and_nobody_else_s() {
+        // Everywhere but Clippy a bare `threshold` is a floor — coverage tools
+        // spell their minimum that way — and the suffix rule must not reach
+        // them.
+        assert_eq!(
+            bound_of(Dialect::Shared, "threshold"),
+            Some(Bound::Floor),
+            "a coverage threshold is a minimum"
+        );
+        assert_eq!(
+            bound_of(Dialect::Clippy, "too-many-lines-threshold"),
+            Some(Bound::Ceiling)
+        );
+        assert_eq!(
+            bound_of(Dialect::Clippy, "min-ident-chars-threshold"),
+            Some(Bound::Floor)
+        );
     }
 
     #[test]
