@@ -464,6 +464,7 @@ impl Prepared {
             iteration_state_recovered: iteration.recovered,
             completeness: self.completeness,
             registry_skew: &self.registry_skew,
+            unreadable_paths: &self.unreadable_paths,
         };
         let verdict = verdict::evaluate(&self.results, &context, iteration.state);
 
@@ -638,6 +639,7 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
             iteration_state_recovered: false,
             completeness,
             registry_skew: &registry_skew,
+            unreadable_paths: &unreadable_paths,
         },
     );
 

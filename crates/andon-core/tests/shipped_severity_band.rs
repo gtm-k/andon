@@ -566,6 +566,7 @@ fn the_static_family_can_still_reach_the_med_plus_band() {
         iteration_state_recovered: false,
         completeness: andon_core::schema::enums::Completeness::Complete,
         registry_skew: &[],
+        unreadable_paths: &[],
     };
     assert!(
         measured

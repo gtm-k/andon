@@ -212,6 +212,7 @@ mod eslint_probe {
             iteration_state_recovered: false,
             completeness: Completeness::Complete,
             registry_skew: &[],
+            unreadable_paths: &[],
         }
     }
 

@@ -614,6 +614,7 @@ mod tests {
                 iteration_state_recovered: false,
                 completeness: crate::schema::enums::Completeness::Complete,
                 registry_skew: &[],
+                unreadable_paths: &[],
             }
         }
         let a = evaluate(std::slice::from_ref(&result), &context(&strict), iteration);

@@ -1747,6 +1747,145 @@ fn an_unreadable_path_survives_into_every_later_reading_of_the_record() {
     );
 }
 
+/// Write a dirty change whose bytes cannot reach the object database.
+///
+/// This is what a read-only object store does to `measure::read_without_staging`,
+/// and it is the only way to reach the assembly path: the verdict is reached
+/// while the record is being built, so a record doctored afterwards — which is
+/// how [`an_unreadable_path_survives_into_every_later_reading_of_the_record`]
+/// drives the renderers — cannot exercise it at all.
+///
+/// `git hash-object -w` writes `.git/objects/<xx>/<rest>`, so a regular file
+/// where that two-character directory belongs makes the write fail and leaves
+/// every read in the repository working, which is the shape of the real failure.
+/// The content is padded until its hash lands on a prefix this repository holds
+/// no objects under, so blocking it cannot take a real object down with it.
+fn write_an_unwritable_change(git: &Git, path: &Path) {
+    let objects = git.facts().git_dir.join("objects");
+    for padding in 0..64 {
+        std::fs::write(path, format!("{NESTED_TS}\n// {padding}\n")).expect("write");
+        let oid = git
+            .cmd(["hash-object", "--"])
+            .args([path])
+            .text()
+            .expect("git hashes a working-tree file");
+        let dir = objects.join(&oid.trim()[..2]);
+        if dir.exists() {
+            continue;
+        }
+        std::fs::write(&dir, b"not a directory").expect("the objects directory is writable");
+        // The premise, checked rather than assumed: writing fails and reading
+        // does not. A test that silently lost its fault injection would pass by
+        // measuring an ordinary change.
+        assert!(
+            git.cmd(["hash-object", "-w", "--"])
+                .args([path])
+                .text()
+                .is_err(),
+            "the object store still accepts writes, so nothing here is unreadable"
+        );
+        assert!(
+            std::fs::read_to_string(path).is_ok(),
+            "the file is readable"
+        );
+        return;
+    }
+    panic!("no free hash prefix in 64 tries");
+}
+
+#[test]
+fn a_change_that_could_not_be_read_is_never_recorded_as_a_pass() {
+    // THE DEFECT. `unreadable_paths` became durable and every renderer learned
+    // to print it, and the verdict still never asked: a measurement whose change
+    // could not be read reached `pass`, was **saved** as `pass`, and `ledger
+    // show` re-served it with the headline `PASS` printed three lines above the
+    // list of paths it had not read. `main`'s exit-code table already said a pass
+    // requires that the change was actually read; the record did not.
+    //
+    // Carrying a fact is not the same as acting on it. This is the test that the
+    // verdict acts on it, and that the one surface which re-serves a record from
+    // the commit answers the same way as the six that read it from disk.
+    let repo = stranger_repo();
+    let root = repo.path();
+    let path = root.to_str().expect("utf-8").to_string();
+    let git = Git::open(root).expect("a repository");
+    write_an_unwritable_change(&git, &root.join("src").join("classify.ts"));
+
+    let measured = run(&["measure", "--repo", &path, "--no-color", "--record"]);
+    let rendered = stdout(&measured);
+    assert_eq!(
+        measured.status.code(),
+        Some(1),
+        "a change that could not be read did not earn the tool-could-not-look exit:\n{rendered}"
+    );
+
+    let record: MeasurementRecord = andon_cli::store::read_last(&git).expect("a record was saved");
+    assert_eq!(
+        record.unreadable_paths,
+        vec!["src/classify.ts".to_string()],
+        "the fault injection did not produce an unreadable path, so this test asserts nothing"
+    );
+
+    // The verdict itself, in the record that outlives this process.
+    use andon_core::schema::enums::Verdict;
+    assert_ne!(
+        record.verdict.verdict,
+        Verdict::Pass,
+        "a measurement that could not read {:?} was saved as a pass",
+        record.unreadable_paths
+    );
+    // `advise` and not `block`: nothing was found, because nothing was read, and
+    // exit 2 is reserved for "this change has something to deal with". The
+    // exit-code table's own distinction between 1 and 2.
+    assert_eq!(record.verdict.verdict, Verdict::Advise);
+    assert!(
+        record
+            .verdict
+            .reasons
+            .iter()
+            .any(|r| r.code == andon_core::verdict::reason::CHANGE_NOT_READ
+                && r.message.contains("src/classify.ts")),
+        "the verdict does not say why it is not a pass: {:?}",
+        record.verdict.reasons
+    );
+    assert!(
+        !rendered.contains("The line keeps moving"),
+        "the headline still told the reader to carry on:\n{rendered}"
+    );
+
+    // And the same record, re-served from the commit it was filed against.
+    let shown = run(&["ledger", "show", "--repo", &path, "--no-color"]);
+    let served = stdout(&shown);
+    assert!(
+        served.contains("NOT READ") && served.contains("src/classify.ts"),
+        "`ledger show` did not name what the record could not read:\n{served}"
+    );
+    assert!(
+        !served.contains("PASS"),
+        "`ledger show` printed PASS above the list of what was never read:\n{served}"
+    );
+    assert_eq!(
+        shown.status.code(),
+        Some(1),
+        "`ledger show` gave a clean exit over a record whose change was not read:\n{served}"
+    );
+    // `--exit-zero` still means what it says on every surface.
+    assert_eq!(
+        run(&[
+            "ledger",
+            "show",
+            "--repo",
+            &path,
+            "--no-color",
+            "--exit-zero"
+        ])
+        .status
+        .code(),
+        Some(0),
+        "`--exit-zero` did not reach `ledger show`"
+    );
+}
+
 #[test]
 fn a_filter_driver_that_cannot_be_neutralized_is_refused() {
     // The fail-closed half of the filter defence, and the only branch of it

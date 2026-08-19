@@ -261,10 +261,24 @@ fn code_for_record(record: &MeasurementRecord, exit_zero: bool) -> ExitCode {
     if exit_zero {
         return ExitCode::SUCCESS;
     }
-    if !record.unreadable_paths.is_empty() {
+    if covers_less_than_asked(record) {
         return ExitCode::from(1);
     }
     code_for(record.verdict.verdict, false)
+}
+
+/// Whether this record describes less than the change it was asked about.
+///
+/// One predicate rather than the field read at each surface, because the surfaces
+/// disagreed the last time it was: `measure`, `report`, `wait`, `--json`, the
+/// HTML report and the agent profile were taught the rule and `ledger show` was
+/// not, so the one command whose whole job is to re-serve a record months later
+/// answered 0 while printing `NOT READ` on the line above. The verdict now says
+/// so too (`verdict::reason::CHANGE_NOT_READ`), and this is why the exit code
+/// stays 1 rather than following the verdict to 0: `advise` keeps the line
+/// moving, and a change nobody read must not.
+fn covers_less_than_asked(record: &MeasurementRecord) -> bool {
+    !record.unreadable_paths.is_empty()
 }
 
 fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
@@ -423,6 +437,16 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                     "{}",
                     render::terminal::render_record(record, colour(flags), detail(flags))
                 );
+            }
+            // The coverage rule, and only the coverage rule. `show` is a query
+            // over what is already filed, so it does not turn a historical
+            // `block` into an exit 2 — a gate keyed on the newest of several
+            // records against one commit is P8's question about the ledger, not
+            // an answer this command may invent. What it must not do is serve a
+            // record whose change was never read and call that a clean run,
+            // which is what it did.
+            if records.iter().any(covers_less_than_asked) && !flags.on("exit-zero") {
+                return Ok(ExitCode::from(1));
             }
         }
         // The cap comes from the policy in force, never from the default. An
