@@ -69,19 +69,74 @@ const BASE_CANDIDATES: &[&str] = &[
 /// Why no range could be resolved at all.
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveFailure {
-    /// The repository's HEAD has no parent and the caller named no base.
+    /// The repository's HEAD has no parent this checkout can see.
     ///
-    /// The one honest dead end. There is no earlier state to compare against,
-    /// so every alternative would mean measuring something against itself and
+    /// The one honest dead end: there is no earlier state to compare against, so
+    /// every alternative would mean measuring something against itself and
     /// reporting the result as a change.
+    ///
+    /// # Why it asks whether the clone is shallow
+    ///
+    /// "Commit something" is the remedy for a repository with one commit in it.
+    /// It is the wrong remedy, and a false statement, for the far more common
+    /// way to reach this: `actions/checkout` with `fetch-depth: 1`, the default
+    /// CI checkout, where the earlier state exists and simply was not fetched.
+    /// Telling that operator to commit something sends them away from the one
+    /// command that fixes it.
+    ///
+    /// `git.facts().shallow` is the same fact [`ResolveError::NoMergeBase`]
+    /// already reads for the same reason; this is that reading applied one
+    /// dead end over.
     #[error(
-        "this repository has a single commit ({head_short}) and no earlier state to compare it \
-         against, so there is no change to measure. Commit something, or name both ends \
-         explicitly: `andon measure --base <rev> --head <rev>`"
+        "{}. {}",
+        if *.shallow {
+            format!(
+                "this is a shallow clone and {head_short} is at the boundary of the history it \
+                 was given, so there is no earlier state here to compare it against — the \
+                 commits before it exist, they were just not fetched"
+            )
+        } else {
+            format!(
+                "this repository has a single commit ({head_short}) and no earlier state to \
+                 compare it against, so there is no change to measure"
+            )
+        },
+        if *.shallow {
+            "Fetch the rest — `git fetch --unshallow`, or `--deepen <n>` — or name both ends \
+             explicitly: `andon measure --base <rev> --head <rev>`"
+        } else {
+            "Commit something, or name both ends explicitly: \
+             `andon measure --base <rev> --head <rev>`"
+        }
     )]
     NoParent {
         /// Abbreviated HEAD, so the message names the commit it is about.
         head_short: String,
+        /// Whether the history is truncated rather than absent. Decides which
+        /// of two remedies is the true one.
+        shallow: bool,
+    },
+    /// Every base candidate resolved, and none of them left anything to measure.
+    ///
+    /// `--no-fallback` is a request to be refused rather than handed the last
+    /// merged change, so this is the refusal it asked for. It is a separate
+    /// variant from [`Self::NoParent`] because it is a separate situation and
+    /// the two were merged: `--no-fallback` returned "this repository has a
+    /// single commit" on a repository with three, having never asked whether
+    /// `HEAD~1` existed. A refusal that misdescribes the repository sends the
+    /// reader to fix something that is not broken.
+    #[error(
+        "there is no working change to measure here: HEAD ({head_short}) matches every base \
+         this repository offers ({}), and the tree is clean.\n  \
+         `--no-fallback` is what refuses rather than measuring the last merged change instead. \
+         Drop it to measure that, or name a base: `andon measure --base <rev>`",
+        if .tried.is_empty() { "none were found".to_string() } else { .tried.join(", ") }
+    )]
+    NoWorkingChange {
+        /// Abbreviated HEAD.
+        head_short: String,
+        /// The base candidates that resolved, in the order they were tried.
+        tried: Vec<String>,
     },
     /// There is uncommitted work, and this build cannot measure it.
     ///
@@ -295,8 +350,21 @@ pub fn resolve(git: &Git, request: &Request) -> Result<Resolution, ResolveFailur
         format!("the working change against {}", tried.join(", "))
     };
     if request.no_fallback {
+        // Which refusal this is depends on the repository, so it is asked rather
+        // than assumed. A root commit really has no earlier state; a repository
+        // with history whose HEAD simply matches every candidate has one, and
+        // telling its owner to commit something describes a repository they do
+        // not have.
+        let head_short = short(&rev_parse(git, &head_spec)?);
+        if rev_exists(git, &format!("{head_spec}~1")) {
+            return Err(ResolveFailure::NoWorkingChange {
+                head_short,
+                tried: tried.iter().map(|c| c.to_string()).collect(),
+            });
+        }
         return Err(ResolveFailure::NoParent {
-            head_short: short(&rev_parse(git, &head_spec)?),
+            head_short,
+            shallow: git.facts().shallow,
         });
     }
     last_merged_change(git, &head_spec, &asked_for, &uncommitted)
@@ -366,6 +434,10 @@ fn last_merged_change(
     if !rev_exists(git, &parent_spec) {
         return Err(ResolveFailure::NoParent {
             head_short: short(&head_oid),
+            // The default path with no flags reaches here, which is what makes
+            // the shallow case PREMORTEM A1 rather than a corner: a CI checkout
+            // at `fetch-depth: 1` is a stranger's first command.
+            shallow: git.facts().shallow,
         });
     }
 

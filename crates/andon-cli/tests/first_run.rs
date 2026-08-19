@@ -173,6 +173,12 @@ fn refusing_the_fallback_is_a_legible_refusal_rather_than_an_empty_report() {
     // The other honest answer. A caller who does not want a substitution gets a
     // refusal that names the situation — never a report of nothing dressed as a
     // measurement.
+    //
+    // And the situation it names has to be the one the repository is in. This
+    // fixture has four commits; the refusal used to tell it it had one, because
+    // `--no-fallback` reached for the root-commit dead end without ever asking
+    // whether `HEAD~1` existed. The way out it printed — "commit something" —
+    // was advice for a repository nobody was holding.
     let repo = stranger_repo();
     let output = run(&[
         "measure",
@@ -183,8 +189,66 @@ fn refusing_the_fallback_is_a_legible_refusal_rather_than_an_empty_report() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no earlier state") || stderr.contains("single commit"),
-        "{stderr}"
+        stderr.contains("no working change"),
+        "the refusal does not say what is actually true of this repository:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("single commit"),
+        "a repository with history was told it has a single commit:\n{stderr}"
+    );
+    // The way out, which is the half a refusal exists for.
+    assert!(stderr.contains("--base"), "{stderr}");
+}
+
+#[test]
+fn a_shallow_clone_is_told_to_fetch_rather_than_to_commit() {
+    // PREMORTEM A1, on the standard CI checkout. `actions/checkout` defaults to
+    // `fetch-depth: 1`, so the boundary commit of a truncated history is what a
+    // great many first commands run against — and the refusal told them "this
+    // repository has a single commit ... Commit something", which is false
+    // about the repository and sends the reader away from `git fetch
+    // --unshallow`, the one command that fixes it.
+    //
+    // `git.facts().shallow` was already read for exactly this purpose by
+    // `ResolveError::NoMergeBase`. This is that reading, one dead end over.
+    let repo = stranger_repo();
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let shallow = temp.path().join("shallow");
+    let bootstrap = Git::open(repo.path()).expect("a repository");
+    let url = format!(
+        "file://{}",
+        repo.path().to_str().expect("utf-8").replace('\\', "/")
+    );
+    bootstrap
+        .cmd(["clone", "--quiet", "--depth", "1", &url])
+        .arg(&shallow)
+        .output()
+        .expect("the shallow clone happens; without it this test asserts nothing");
+    assert!(
+        Git::open(&shallow)
+            .expect("the clone is a repository")
+            .facts()
+            .shallow,
+        "the clone is not shallow, so this test asserts nothing"
+    );
+
+    // No flags at all: the default path, which is what makes this A1 rather
+    // than a corner reachable only by asking for it.
+    let output = run(&[
+        "measure",
+        "--repo",
+        shallow.to_str().expect("utf-8"),
+        "--no-color",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("shallow") && stderr.contains("--unshallow"),
+        "a shallow clone was not told the history was truncated, or not told how to fix \
+         it:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("single commit") && !stderr.contains("Commit something"),
+        "a shallow clone was told to commit something:\n{stderr}"
     );
 }
 
