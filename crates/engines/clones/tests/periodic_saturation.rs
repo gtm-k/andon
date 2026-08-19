@@ -678,3 +678,75 @@ fn a_bucket_too_richly_interrupted_to_walk_says_so() {
     assert_eq!(report.duplicated_tokens(), report.total_tokens());
     assert_eq!(report.duplicated_ratio(), 1.0);
 }
+
+#[test]
+fn the_budget_is_spent_per_file_and_so_is_the_caveat() {
+    // The two files share one repeated window, so they share the hash bucket
+    // the budget is measured in — and only one of them is expensive. `a.ts` is
+    // a hundred twenty-row runs split by a helper: four thousand occurrences
+    // against a hundred regions, four times the budget. `b.ts` is the same rows
+    // in one unbroken table, which is one region, no later region to be laid
+    // against, and no region work at all.
+    //
+    // The decision used to be taken once for the bucket, so `b.ts` was told its
+    // regions had been sampled and every number over it came back `partial`.
+    // That is a caveat about a search that never happened to it, in a report
+    // whose whole claim is that a caveat names the file that earned it.
+    let mut interrupted = String::from("export const t = [\n");
+    for _ in 0..100 {
+        let rows: Vec<String> = (0..20).map(|i| format!("  [{i}, {}],", i * 3)).collect();
+        interrupted.push_str(&rows.join("\n"));
+        interrupted.push('\n');
+        interrupted.push_str(HELPER);
+    }
+    interrupted.push_str("];\n");
+
+    let unbroken = table("u", 200);
+
+    let inputs = vec![input("a.ts", &interrupted), input("b.ts", &unbroken)];
+    let (index, _) = Index::empty().update(&inputs);
+    let paths: Vec<String> = inputs.iter().map(|i| i.path.clone()).collect();
+    let report = detect(&index, &paths);
+
+    // The two really do share a bucket, or the assertion below is about a file
+    // the expensive one never met and proves nothing. Asserted over the
+    // fingerprints rather than over the reported groups: the greedy selection
+    // keeps the longest disjoint matches, which here are the two same-file
+    // ones, so a cross-file group is not what sharing a hash looks like in the
+    // output. A window hash held by both files is.
+    let shared: std::collections::BTreeSet<u64> = index.files["a.ts"]
+        .windows
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        .intersection(&index.files["b.ts"].windows.iter().copied().collect())
+        .copied()
+        .collect();
+    assert!(
+        !shared.is_empty(),
+        "the fixture must put both files in one hash bucket, which is the unit \
+         the budget is measured in"
+    );
+
+    assert_eq!(
+        report.truncated_paths.iter().collect::<Vec<_>>(),
+        vec!["a.ts"],
+        "only the file whose own walk reached the budget may carry the caveat"
+    );
+    // And the caveat was the only thing the neighbour ever cost it. Measured
+    // rather than pinned, so the claim is recomputed on every run instead of
+    // remembered: `b.ts` beside the expensive file covers at least what it
+    // covers on its own, because the copies it shares with `a.ts` are
+    // duplication too. What it must never do is come back with a caveat.
+    let alone = vec![input("b.ts", &unbroken)];
+    let (alone_index, _) = Index::empty().update(&alone);
+    let alone_report = detect(&alone_index, &["b.ts".to_string()]);
+    assert!(alone_report.truncated_paths.is_empty());
+    assert!(
+        report.duplicated_tokens_by_path["b.ts"] >= alone_report.duplicated_tokens_by_path["b.ts"],
+        "the expensive neighbour must not take confirmed duplication away from \
+         the cheap file: {} beside it, {} alone",
+        report.duplicated_tokens_by_path["b.ts"],
+        alone_report.duplicated_tokens_by_path["b.ts"]
+    );
+}

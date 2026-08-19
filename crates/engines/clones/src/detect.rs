@@ -105,6 +105,11 @@ pub struct CloneReport {
     /// budget covers — which is the point. A caveat that arrived on every
     /// generated file would say nothing about the one where the search really
     /// was cut short.
+    ///
+    /// The budget is spent per file and this holds the files that reached their
+    /// own. It used to hold every file that merely shared a hash bucket with
+    /// one that did, so a one-region file whose walk cost nothing was told its
+    /// regions had been sampled. See [`Runs::work_by_file`].
     pub truncated_paths: BTreeSet<String>,
 }
 
@@ -259,13 +264,22 @@ pub fn detect_with_cap(index: &Index, paths: &[String], saturation_cap: usize) -
         // the one place this pass knows it did not look everywhere — so the
         // files it touched are recorded and reported `partial`, rather than a
         // sampled search being handed on as a finished one.
-        let truncated = saturated && runs.work(occurrences) > REGION_PAIR_BUDGET;
-        if truncated {
-            for occurrence in occurrences {
-                truncated_files.insert(occurrence.file);
-            }
-        }
+        //
+        // Per file, because the walk breaks at the first foreign region and no
+        // file's cost has ever depended on another's. See `Runs::work_by_file`
+        // for the file this used to demote for its neighbour's repetition.
+        let over_budget: BTreeSet<u32> = if saturated {
+            runs.work_by_file(occurrences)
+                .into_iter()
+                .filter(|(_, work)| *work > REGION_PAIR_BUDGET)
+                .map(|(file, _)| file)
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        truncated_files.extend(&over_budget);
         for (i, a) in occurrences.iter().enumerate() {
+            let truncated = over_budget.contains(&a.file);
             let rest = &occurrences[i + 1..];
             let partners: Cow<'_, [Occurrence]> = if saturated {
                 Cow::Owned(bounded_partners(
@@ -569,11 +583,11 @@ impl Runs {
         }
     }
 
-    /// What laying every region against every occurrence would cost.
+    /// What laying every region against every occurrence would cost, per file.
     ///
-    /// Per file and summed, and over the regions *after* each occurrence rather
-    /// than all of them. Both narrowings are the difference between costing
-    /// what the walk does and costing something it does not:
+    /// Over the regions *after* each occurrence rather than all of them, and
+    /// never across a file boundary. Both narrowings are the difference between
+    /// costing what the walk does and costing something it does not:
     ///
     /// - the alignment is a token offset and means nothing across a file
     ///   boundary, so the walk never leaves `a`'s own file. Counting the whole
@@ -584,17 +598,37 @@ impl Runs {
     ///   `occurrences x 1` reported 200,000 identical lines `partial` — the
     ///   plainest generated file there is, answered exactly, carrying a caveat
     ///   about a search that never happened.
-    fn work(&self, occurrences: &[Occurrence]) -> usize {
-        let mut total = 0usize;
+    ///
+    /// # Kept apart per file, because that is where it is spent
+    ///
+    /// These per-file costs used to be summed and compared to the budget once,
+    /// and every file in the bucket then joined
+    /// [`CloneReport::truncated_paths`] together. The sum is not what any one
+    /// file's walk costs: a file whose repetition is one unbroken region does
+    /// no region work at all, and it was still told its regions had been
+    /// sampled because something else in the same bucket was expensive. That is
+    /// a caveat about a search that never happened to it, in a report whose
+    /// whole claim is that a caveat names the file that earned it.
+    ///
+    /// Applying the budget per file is exact rather than merely kinder: the
+    /// walk it bounds stops at the first foreign region, so no file's cost has
+    /// ever depended on another's. What changes is the ceiling on one bucket —
+    /// the sum of what each file spends under its own budget, rather than one
+    /// gate over all of them. Every file is still bounded, and every file that
+    /// reaches its bound is still named.
+    fn work_by_file(&self, occurrences: &[Occurrence]) -> BTreeMap<u32, usize> {
+        let mut out: BTreeMap<u32, usize> = BTreeMap::new();
         let mut file: Option<u32> = None;
         let mut regions = 0usize;
         let mut members = 0usize;
-        let close = |regions: usize, members: usize, total: usize| {
-            total.saturating_add(members.saturating_mul(regions.saturating_sub(1)))
+        let mut close = |file: Option<u32>, regions: usize, members: usize| {
+            if let Some(file) = file {
+                out.insert(file, members.saturating_mul(regions.saturating_sub(1)));
+            }
         };
         for &(first, last) in &self.spans {
             if Some(occurrences[first].file) != file {
-                total = close(regions, members, total);
+                close(file, regions, members);
                 file = Some(occurrences[first].file);
                 regions = 0;
                 members = 0;
@@ -602,7 +636,8 @@ impl Runs {
             regions += 1;
             members += last - first + 1;
         }
-        close(regions, members, total)
+        close(file, regions, members);
+        out
     }
 
     fn members<'a>(&self, occurrences: &'a [Occurrence], region: usize) -> &'a [Occurrence] {
