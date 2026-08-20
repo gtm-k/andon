@@ -23,6 +23,9 @@
 //! `--<harness> --remove` undoes exactly what the install wrote and nothing
 //! else. And every run ends by saying what it wrote and where, because an
 //! installer whose effects are invisible is one nobody can trust to undo.
+//! A run a refusal cuts short is no exception: the refusal carries the list
+//! of steps already taken, so a gate that went live (or was removed) before
+//! the refusal never goes unsaid.
 
 use std::path::{Path, PathBuf};
 
@@ -71,6 +74,45 @@ pub fn cmd_init(flags: &Flags) -> Result<String, String> {
         (false, false, false) => Ok(INIT_USAGE.to_string()),
         _ => Err("one harness at a time: --claude, --cursor, or --ci".to_string()),
     }
+}
+
+/// One install or removal step, deferred so a refusal earlier in the sequence
+/// keeps the steps after it from running at all.
+type DeferredStep<'a> = Box<dyn FnOnce() -> Result<Step, String> + 'a>;
+
+/// Run the steps in order, stopping at the first refusal — which must then
+/// say what the steps before it already did.
+///
+/// The refusal arrives *after* real effects: the cursor installer writes the
+/// pre-commit gate and then meets a rules file it does not own, so "not
+/// touching it" alone describes a repository with no gate while one is live
+/// on disk — precisely the invisible effect the module docs call the
+/// disqualifying shape. The done list rides on the error so the operator
+/// reads the actual state, not the state the refusal implies.
+fn run_steps(steps: Vec<DeferredStep<'_>>) -> Result<Vec<Step>, String> {
+    let mut done = Vec::new();
+    for step in steps {
+        match step() {
+            Ok(outcome) => done.push(outcome),
+            Err(error) => return Err(refused_after(&error, &done)),
+        }
+    }
+    Ok(done)
+}
+
+/// The refusal, with what already happened beside it. A refusal at the first
+/// step interrupted nothing and passes through unchanged.
+fn refused_after(error: &str, done: &[Step]) -> String {
+    if done.is_empty() {
+        return error.to_string();
+    }
+    let mut out = format!("{error}\n\nSteps already taken before this refusal:\n");
+    for step in done {
+        out.push_str(&step.line());
+        out.push('\n');
+    }
+    out.push_str("The repository is in the state those lines describe; nothing was rolled back.");
+    out
 }
 
 /// What one install step did, for the closing report.

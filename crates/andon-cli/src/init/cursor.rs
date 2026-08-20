@@ -65,19 +65,20 @@ pub fn run(repo: &Path, self_measure: bool, remove: bool) -> Result<String, Stri
     let rules_path = root.join(".cursor").join("rules").join("andon.mdc");
     let mcp_path = root.join(".cursor").join("mcp.json");
 
-    let steps = if remove {
+    let steps: Vec<super::DeferredStep> = if remove {
         vec![
-            remove_owned_file(&hook_path, "the andon pre-commit gate")?,
-            remove_owned_file(&rules_path, "the andon rules file")?,
-            remove_mcp_server(&mcp_path)?,
+            Box::new(|| remove_owned_file(&hook_path, "the andon pre-commit gate")),
+            Box::new(|| remove_owned_file(&rules_path, "the andon rules file")),
+            Box::new(|| remove_mcp_server(&mcp_path)),
         ]
     } else {
         vec![
-            install_pre_commit(&hook_path, self_measure)?,
-            install_rules(&rules_path)?,
-            install_mcp_server(&mcp_path)?,
+            Box::new(|| install_pre_commit(&hook_path, self_measure)),
+            Box::new(|| install_rules(&rules_path)),
+            Box::new(|| install_mcp_server(&mcp_path)),
         ]
     };
+    let steps = super::run_steps(steps)?;
 
     let closing = if remove {
         "Nothing of Andon's remains in this repository's Cursor configuration or git hooks."

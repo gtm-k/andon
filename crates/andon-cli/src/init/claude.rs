@@ -40,14 +40,18 @@ pub fn run(repo: &Path, self_measure: bool, remove: bool) -> Result<String, Stri
     let settings = root.join(".claude").join("settings.json");
     let mcp = root.join(".mcp.json");
 
-    let steps = if remove {
-        vec![remove_stop_hook(&settings)?, remove_mcp_server(&mcp)?]
+    let steps: Vec<super::DeferredStep> = if remove {
+        vec![
+            Box::new(|| remove_stop_hook(&settings)),
+            Box::new(|| remove_mcp_server(&mcp)),
+        ]
     } else {
         vec![
-            install_stop_hook(&settings, self_measure)?,
-            install_mcp_server(&mcp)?,
+            Box::new(|| install_stop_hook(&settings, self_measure)),
+            Box::new(|| install_mcp_server(&mcp)),
         ]
     };
+    let steps = super::run_steps(steps)?;
 
     let closing = if remove {
         "Nothing of Andon's remains in this repository's Claude Code configuration."

@@ -314,6 +314,118 @@ fn a_foreign_pre_commit_hook_is_refused_with_the_line_to_add() {
 }
 
 #[test]
+fn a_cursor_install_refusal_still_reports_the_gate_it_wrote() {
+    let repo = scratch();
+    // The rules file belongs to somebody else; the gate step before it runs.
+    let rules = repo.path().join(".cursor").join("rules").join("andon.mdc");
+    std::fs::create_dir_all(rules.parent().unwrap()).unwrap();
+    std::fs::write(&rules, "somebody elses rules\n").unwrap();
+
+    let output = run_in(repo.path(), &["init", "--cursor"]);
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    let hook = repo.path().join(".git").join("hooks").join("pre-commit");
+    assert!(hook.exists(), "the gate step before the refusal really ran");
+    assert!(
+        message.contains("before this refusal") && message.contains("wrote"),
+        "a live gate the refusal does not mention is an invisible effect: {message}"
+    );
+    assert!(
+        message.contains("pre-commit"),
+        "the done list must name the gate: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&rules).unwrap(),
+        "somebody elses rules\n",
+        "the refused file is exactly as the installer found it"
+    );
+}
+
+#[test]
+fn a_cursor_remove_refusal_still_reports_the_gate_it_removed() {
+    let repo = scratch();
+    let installed = run_in(repo.path(), &["init", "--cursor"]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    // The rules file has since been replaced by somebody else's.
+    let rules = repo.path().join(".cursor").join("rules").join("andon.mdc");
+    std::fs::write(&rules, "somebody elses rules\n").unwrap();
+
+    let output = run_in(repo.path(), &["init", "--cursor", "--remove"]);
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    let hook = repo.path().join(".git").join("hooks").join("pre-commit");
+    assert!(
+        !hook.exists(),
+        "the gate removal before the refusal really ran"
+    );
+    assert!(
+        message.contains("before this refusal")
+            && message.contains("removed")
+            && message.contains("pre-commit gate"),
+        "a gate that silently stopped existing is an invisible effect: {message}"
+    );
+    // The step after the refusal never ran: the MCP registration is intact.
+    let mcp = std::fs::read_to_string(repo.path().join(".cursor").join("mcp.json")).unwrap();
+    assert!(mcp.contains("andon"), "{mcp}");
+}
+
+#[test]
+fn a_claude_install_refusal_still_reports_the_hook_it_wrote() {
+    let repo = scratch();
+    // The MCP step will refuse: an `andon` server this installer did not write.
+    std::fs::write(
+        repo.path().join(".mcp.json"),
+        r#"{"mcpServers": {"andon": {"command": "somebody-elses-andon"}}}"#,
+    )
+    .unwrap();
+
+    let output = run_in(repo.path(), &["init", "--claude"]);
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    let settings =
+        std::fs::read_to_string(repo.path().join(".claude").join("settings.json")).unwrap();
+    assert!(
+        settings.contains("andon hook claude-stop"),
+        "the Stop-hook step before the refusal really ran: {settings}"
+    );
+    assert!(
+        message.contains("before this refusal")
+            && message.contains("wrote")
+            && message.contains("Stop hook"),
+        "a live Stop hook the refusal does not mention is an invisible effect: {message}"
+    );
+}
+
+#[test]
+fn a_claude_remove_refusal_still_reports_the_hook_it_removed() {
+    let repo = scratch();
+    let installed = run_in(repo.path(), &["init", "--claude"]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    // The MCP entry has since been replaced by somebody else's.
+    std::fs::write(
+        repo.path().join(".mcp.json"),
+        r#"{"mcpServers": {"andon": {"command": "somebody-elses-andon"}}}"#,
+    )
+    .unwrap();
+
+    let output = run_in(repo.path(), &["init", "--claude", "--remove"]);
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    let settings =
+        std::fs::read_to_string(repo.path().join(".claude").join("settings.json")).unwrap();
+    assert!(
+        !settings.contains("claude-stop"),
+        "the Stop-hook removal before the refusal really ran: {settings}"
+    );
+    assert!(
+        message.contains("before this refusal")
+            && message.contains("removed")
+            && message.contains("Stop hook"),
+        "a hook that silently stopped existing is an invisible effect: {message}"
+    );
+}
+
+#[test]
 fn init_ci_prints_the_committed_recipe() {
     let repo = scratch();
     let output = run_in(repo.path(), &["init", "--ci"]);
