@@ -324,7 +324,9 @@ fn decide(
         );
         let replace = match &worst {
             None => true,
-            Some((_, current, _)) => rank(outcome.attestation) > rank(current.attestation),
+            Some((_, current, _)) => {
+                attestation_rank(outcome.attestation) > attestation_rank(current.attestation)
+            }
         };
         if replace {
             worst = Some((index, outcome, base_relation));
@@ -449,7 +451,13 @@ pub fn base_relation_of(
 /// Not derived from the enum's declaration order, which is a documentation
 /// order: this is a trust ordering and it is spelled out so that adding a value
 /// to the enum is a compile error here rather than a silent misplacement.
-fn rank(value: Attestation) -> u8 {
+///
+/// Public because this ordering is the ONE ordering: `andon-ledger`'s durable
+/// worst-of consumption rule (PLAN P8; decision log P1.5 (a)) re-exports this
+/// function rather than restating the table, so the verifier's in-run worst-of
+/// and a downstream consumer's read of the finished ledger cannot rank the same
+/// two values differently.
+pub fn attestation_rank(value: Attestation) -> u8 {
     match value {
         Attestation::Confirmed => 0,
         Attestation::ConfirmedStatic => 1,
@@ -693,13 +701,13 @@ mod tests {
             Attestation::UnwitnessedBaseMismatch,
         ] {
             assert!(
-                rank(Attestation::Divergent) > rank(other),
+                attestation_rank(Attestation::Divergent) > attestation_rank(other),
                 "divergent must outrank {other:?}"
             );
         }
         // And a confirmation is the only thing a second record can be beaten
         // down from, never up to.
-        assert_eq!(rank(Attestation::Confirmed), 0);
+        assert_eq!(attestation_rank(Attestation::Confirmed), 0);
     }
 
     #[test]
