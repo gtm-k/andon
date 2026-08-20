@@ -260,6 +260,38 @@ fn a_planted_cluster_turns_check_into_exit_two_with_a_warning() {
 }
 
 #[test]
+fn honest_zero_values_do_not_redden_the_check() {
+    // The review's executed repro, pinned at the shipped surface: the clones
+    // ladders' first rung sits at 1, so before `band_of` refused
+    // zero-containing bands, six honest zeros — the value of a change with no
+    // duplication at all — read as six values "hugging just below the rung"
+    // and the weekly S1 cron went permanently red on honest data.
+    let repo = honest_repo();
+    let path = repo.path().to_str().expect("utf-8");
+    let git = Git::open(repo.path()).expect("repo");
+    let head = head_of(&git);
+    let records: Vec<MeasurementRecord> = (0..6)
+        .map(|_| planted("clones.duplicated-tokens", MetricValue::Count(0)))
+        .collect();
+    plant(&git, &head, &records);
+
+    let output = run(&["ledger", "stats", "--repo", path, "--check"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "honest zeros must not redden the check; stdout: {}\nstderr: {}",
+        stdout(&output),
+        stderr(&output)
+    );
+    let out = stdout(&output);
+    assert!(!out.contains("WARNING:"), "{out}");
+    assert!(
+        out.contains("No value distribution hugs a declared severity rung"),
+        "{out}"
+    );
+}
+
+#[test]
 fn check_with_an_honest_ledger_exits_zero_and_says_so() {
     let repo = honest_repo();
     let path = repo.path().to_str().expect("utf-8");

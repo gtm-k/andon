@@ -34,10 +34,19 @@ pub fn worst_attestation(values: &[Attestation]) -> Option<Attestation> {
 
 /// The record a consumer must treat as decisive for one head.
 ///
-/// The worst by attestation. Ties go to the **earlier** record (first in
-/// note-body order): between two records equally bad, preferring the later one
-/// would reward re-measuring, and the whole point of this module is that
-/// re-measuring buys nothing.
+/// The worst by attestation. Ties go to the record that comes **first in
+/// note-body order** — which is deterministic for a given body but **not
+/// temporal**: a `cat_sort_uniq` merge re-sorts the body's lines
+/// lexicographically, while a fast-forward adoption preserves append order, so
+/// which equally-ranked record is "first" depends on the merge topology the
+/// body came through. That is sound today because ties are exactly-equal
+/// ranks and nothing here reads any other field off the winner; a consumer
+/// that starts acting on the decisive record's *other* fields (P9's
+/// check-conclusion mapping is the candidate) must not treat the tie-winner
+/// as "the earliest" or "the latest" measurement — only as "one of the
+/// equally-worst, chosen deterministically". What stays true under every
+/// topology: preferring anything else would reward re-measuring, and the
+/// whole point of this module is that re-measuring buys nothing.
 pub fn decisive<'a>(records: &'a [MeasurementRecord]) -> Option<&'a MeasurementRecord> {
     let mut worst: Option<&'a MeasurementRecord> = None;
     for record in records {
@@ -79,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tie_keeps_the_earlier_record() {
+    fn a_tie_keeps_the_first_record_in_body_order() {
         let mut first = with_attestation(Attestation::Unwitnessed);
         first.invocation.iteration = 1;
         let mut second = with_attestation(Attestation::Unwitnessed);

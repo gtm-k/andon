@@ -72,14 +72,22 @@ jobs:
       # needed for the ledger itself — a notes tree references no commit in
       # history — but the fetch stays shallow-safe either way.
       #
-      # A transport failure fails the step loudly. An absent ref is the young-
-      # repository case and must stay green, so the two exits are separated the
-      # same way the fetch machinery separates them: ls-remote answers "is the
-      # ref there" first, and only a present ref is fetched.
+      # TRANSPORT FAILURE IS NOT AN EMPTY LEDGER. Testing `ls-remote` only
+      # through `[ -n "$(...)" ]` fails open: a command substitution is exempt
+      # from `set -e`, so a dead or unauthorized remote produces empty output,
+      # reads as "ref does not exist yet", and the gate runs green over a
+      # ledger it never fetched — the exact fail-open `NotesError::Transport`
+      # exists to prevent. So the exit status of ls-remote is checked on its
+      # own: a remote that cannot answer fails this step red; a remote that
+      # answers "no such ref" is the young-repository case and stays green.
       - name: Fetch the ledger
         run: |
           for ref in refs/notes/andon-measure refs/notes/andon-attest; do
-            if [ -n "$(git ls-remote origin "$ref")" ]; then
+            if ! listing=$(git ls-remote origin "$ref"); then
+              echo "::error::could not reach origin while asking for $ref — a transport failure is not an empty ledger, and running the gate over one would report green on nothing"
+              exit 1
+            fi
+            if [ -n "$listing" ]; then
               git fetch --no-tags origin "+$ref:$ref"
               echo "fetched $ref"
             else
@@ -87,22 +95,29 @@ jobs:
             fi
           done
 
-      - name: Install toolchain
-        run: rustup component add rustfmt clippy
-
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # `--check` makes the finding the exit code: 2 on a clustering warning,
       # 0 on a distribution nobody is hugging (including the empty ledger).
+      # Both refs are checked because both were fetched: the measure ledger is
+      # where an agent's shaved numbers would land, and the attest ledger is
+      # the verifier's recompute of the same values — a distribution signature
+      # present in one and not the other is itself worth seeing in the summary.
       # The full report goes to the step summary either way, so the reader of
       # a red run sees the warning's own sentence — which metric, which rung,
       # which regime — without reconstructing it from a failure line.
       - name: Distribution and clustering check
         run: |
-          set +e
-          cargo run --quiet -p andon-cli --bin andon -- ledger stats --check | tee -a "$GITHUB_STEP_SUMMARY"
-          status=${PIPESTATUS[0]}
-          if [ "$status" -eq 2 ]; then
-            echo "::error::the value distribution hugs a declared severity rung — see the summary; PREMORTEM S1"
-          fi
-          exit "$status"
+          worst=0
+          for ledger_ref in measure attest; do
+            echo "## ledger stats --ref $ledger_ref" >> "$GITHUB_STEP_SUMMARY"
+            set +e
+            cargo run --quiet -p andon-cli --bin andon -- ledger stats --check --ref "$ledger_ref" | tee -a "$GITHUB_STEP_SUMMARY"
+            status=${PIPESTATUS[0]}
+            set -e
+            if [ "$status" -eq 2 ]; then
+              echo "::error::the $ledger_ref ledger's value distribution hugs a declared severity rung — see the summary; PREMORTEM S1"
+            fi
+            if [ "$status" -gt "$worst" ]; then worst=$status; fi
+          done
+          exit "$worst"

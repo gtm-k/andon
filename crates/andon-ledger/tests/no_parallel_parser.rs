@@ -24,10 +24,19 @@ use std::path::{Path, PathBuf};
 /// The ways bytes become a deserialized value in this workspace.
 ///
 /// `from_str` covers `serde_json::from_str` however it is imported;
-/// `from_slice` and `from_reader` close the sibling routes. `toml::from_str`
-/// would be caught by the same net, which is correct — a record has no
-/// business arriving as TOML either.
-const PARSE_MARKERS: &[&str] = &["from_str", "from_slice", "from_reader"];
+/// `from_slice` and `from_reader` close the sibling byte routes;
+/// `from_value` closes the serde_json::Value staging route (parse to a Value
+/// through some other door, then deserialize the Value); `::deserialize(`
+/// closes the direct Deserializer invocation. `toml::from_str` would be
+/// caught by the same net, which is correct — a record has no business
+/// arriving as TOML either.
+const PARSE_MARKERS: &[&str] = &[
+    "from_str",
+    "from_slice",
+    "from_reader",
+    "from_value",
+    "::deserialize(",
+];
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -91,18 +100,24 @@ fn the_ledger_crate_parses_no_records_of_its_own() {
 
 #[test]
 fn the_cli_ledger_surface_parses_no_records_of_its_own() {
-    // The one CLI file this phase owns. The rest of the CLI predates P8 and
+    // The CLI files this phase touched: the ledger module it owns and the
+    // dispatch in main.rs it extended. The rest of the CLI predates P8 and
     // has its own reader discipline (and its own review history); scanning it
     // from here would make this crate's gate red over code it cannot change.
-    let ledger_rs = manifest_dir()
+    let cli_src = manifest_dir()
         .parent()
         .expect("crates/")
         .join("andon-cli")
-        .join("src")
-        .join("ledger.rs");
-    assert!(
-        ledger_rs.is_file(),
-        "the CLI ledger surface moved; point this guard at its new home rather than deleting it"
-    );
-    assert_no_parsing_in(&[ledger_rs]);
+        .join("src");
+    let scanned: Vec<_> = [cli_src.join("ledger.rs"), cli_src.join("main.rs")]
+        .into_iter()
+        .inspect(|file| {
+            assert!(
+                file.is_file(),
+                "{} moved; point this guard at its new home rather than deleting it",
+                file.display()
+            );
+        })
+        .collect();
+    assert_no_parsing_in(&scanned);
 }

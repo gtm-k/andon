@@ -551,10 +551,15 @@ fn cluster_warnings(
 ) -> Vec<ClusterWarning> {
     let mut out = Vec::new();
     for rung in rungs {
+        // A rung whose band would contain zero has no hugging shape to detect
+        // — see `band_of`. Skipped before any value is read.
+        let Some((floor, ceiling)) = band_of(rung) else {
+            continue;
+        };
         let mut in_band = 0usize;
         let mut total = 0usize;
         for value in values {
-            let Some((v, floor, ceiling)) = band_position(rung, value) else {
+            let Some(v) = value_on_axis(rung, value) else {
                 continue;
             };
             total += 1;
@@ -586,28 +591,52 @@ fn cluster_warnings(
     out
 }
 
-/// Where `value` stands against `rung`'s band: `(value, band floor, rung)`,
-/// all in f64, or `None` when the kinds do not match.
-fn band_position(rung: Threshold, value: &MetricValue) -> Option<(f64, f64, f64)> {
-    // Integer-kinded bands are at least one unit wide, so a small rung still
-    // has a band; the ratio band is the fraction alone, since a ratio has no
-    // smallest unit.
-    match (rung, value) {
-        (Threshold::Count(at), MetricValue::Count(v)) => {
+/// The "just under" band for one rung: `(floor, ceiling)` in f64, or `None`
+/// when the rung has no meaningful band.
+///
+/// # A band that contains zero detects nothing
+///
+/// Integer-kinded bands are widened to at least one unit so a small rung still
+/// has a band — and that widening gives every rung at 1 the band `[0, 1)`,
+/// which contains **zero**. Zero is not a shaved number; it is the value of
+/// nothing found, and for most count metrics it is the honest mode: a clean
+/// change has 0 duplicated tokens, 0 clone groups, 0 coupled files. Counting
+/// zeros as "hugging just below the rung" turned five honest measurements into
+/// five warnings and would have made the weekly S1 cron permanently red on
+/// honest data — the PREMORTEM A4 shape, a gate whose red means nothing. So a
+/// rung whose band would contain zero declares no band at all: there is no
+/// value strictly between nothing-found and the rung to shave down to, so
+/// hugging under such a rung is not an observable shape. Rungs further up keep
+/// their bands, and blatant hugging there still fires — the named tests pin
+/// both directions.
+fn band_of(rung: Threshold) -> Option<(f64, f64)> {
+    // The ratio band is the fraction alone, since a ratio has no smallest unit.
+    let (floor, ceiling) = match rung {
+        Threshold::Count(at) => {
             let width = ((at as f64) * CLUSTER_BAND_FRACTION).max(1.0);
-            Some((*v as f64, at as f64 - width, at as f64))
+            (at as f64 - width, at as f64)
         }
-        (Threshold::Integer(at), MetricValue::Integer(v)) => {
+        Threshold::Integer(at) => {
             let width = ((at as f64).abs() * CLUSTER_BAND_FRACTION).max(1.0);
-            Some((*v as f64, at as f64 - width, at as f64))
+            (at as f64 - width, at as f64)
         }
-        (Threshold::Ratio(at), MetricValue::Ratio(v)) => {
-            Some((*v, at * (1.0 - CLUSTER_BAND_FRACTION), at))
-        }
-        (Threshold::Millis(at), MetricValue::Duration { millis }) => {
+        Threshold::Ratio(at) => (at * (1.0 - CLUSTER_BAND_FRACTION), at),
+        Threshold::Millis(at) => {
             let width = ((at as f64) * CLUSTER_BAND_FRACTION).max(1.0);
-            Some((*millis as f64, at as f64 - width, at as f64))
+            (at as f64 - width, at as f64)
         }
+    };
+    let contains_zero = floor <= 0.0 && 0.0 < ceiling;
+    (!contains_zero).then_some((floor, ceiling))
+}
+
+/// `value` on the same axis as `rung`, or `None` when the kinds do not match.
+fn value_on_axis(rung: Threshold, value: &MetricValue) -> Option<f64> {
+    match (rung, value) {
+        (Threshold::Count(_), MetricValue::Count(v)) => Some(*v as f64),
+        (Threshold::Integer(_), MetricValue::Integer(v)) => Some(*v as f64),
+        (Threshold::Ratio(_), MetricValue::Ratio(v)) => Some(*v),
+        (Threshold::Millis(_), MetricValue::Duration { millis }) => Some(*millis as f64),
         _ => None,
     }
 }
@@ -692,6 +721,60 @@ mod tests {
                 warning.message
             );
         }
+    }
+
+    // A ladder shaped like the shipped clones tables: the first rung at 1,
+    // where the widened band would be [0, 1) — the honest-zero trap.
+    const LOW_RUNGS: &[Rung] = &[
+        Rung {
+            at: Threshold::Count(1),
+            severity: Severity::Low,
+        },
+        Rung {
+            at: Threshold::Count(20),
+            severity: Severity::Medium,
+        },
+    ];
+
+    fn low_rung_ladder(metric_id: &str) -> Option<SeverityLadder> {
+        (metric_id == "static.cognitive-complexity")
+            .then_some(SeverityLadder::Thresholds(LOW_RUNGS))
+    }
+
+    #[test]
+    fn honest_zeros_under_a_rung_at_one_never_warn() {
+        // The review's repro in miniature: zero is the honest mode of a count
+        // metric (a clean change has 0 duplicated tokens), and a rung at 1
+        // must not read eight of them as eight values shaved to just under
+        // the line. Before `band_of` refused zero-containing bands, this was
+        // eight-of-eight "hugging" and a permanently red S1 cron.
+        let entries = vec![entry_with_values(
+            count_values(&[0, 0, 0, 0, 0, 0, 0, 0]),
+            None,
+        )];
+        let built = distribution(&entries, &low_rung_ladder, false);
+        assert!(built.warnings.is_empty(), "{:?}", built.warnings);
+    }
+
+    #[test]
+    fn a_disabled_zero_band_rung_does_not_shield_the_rungs_above_it() {
+        // The other direction the fix must hold: refusing the rung at 1 must
+        // not quiet the ladder — blatant hugging under the rung at 20 still
+        // fires with the zeros sitting in the same distribution.
+        let entries = vec![entry_with_values(
+            count_values(&[0, 0, 19, 19, 19, 18, 19, 19]),
+            None,
+        )];
+        let built = distribution(&entries, &low_rung_ladder, false);
+        assert_eq!(built.warnings.len(), 1, "{:?}", built.warnings);
+        let warning = &built.warnings[0];
+        assert!(
+            warning.message.contains("rung at 20"),
+            "{}",
+            warning.message
+        );
+        assert_eq!(warning.in_band, 6);
+        assert_eq!(warning.total, 8);
     }
 
     #[test]
