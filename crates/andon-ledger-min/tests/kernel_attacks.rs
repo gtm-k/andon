@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use andon_core::git::{Git, Revision};
 use andon_core::schema::enums::{Attestation, InvocationSource, RecordKind, Verdict};
-use andon_core::schema::payload::MeasurementRecord;
+use andon_core::schema::payload::{MeasurementRecord, MetricValue};
 use andon_ledger_min::measure::measure;
 use andon_ledger_min::notes::Notes;
 use andon_ledger_min::scenario::{self, Manifest, PrepareOptions};
@@ -472,4 +472,54 @@ fn a_failed_recovery_does_not_displace_the_push_failure_that_caused_it() {
         message.contains("recovering from that rejection failed"),
         "and the recovery failure must be reported alongside it: {message}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// the clumsy forger: a value edited in place, seal left describing the old one
+// ---------------------------------------------------------------------------
+
+/// A record whose value was edited without re-sealing must not read back.
+///
+/// The competent forger re-seals — `andon-spike-forge` does, and the
+/// independent recompute is what catches it. The clumsy one edits the note
+/// body and leaves the digest describing the number that used to be there.
+/// Nothing on any load path asked whether a record's own fields still hash to
+/// its own digest, so the edited record sailed through `Notes::read`, paired
+/// against the recompute on its untouched digest, and collected `confirmed` —
+/// the seal matched the other leg's seal while sealing nothing.
+#[test]
+fn a_value_edited_without_resealing_is_refused_at_the_read() {
+    let (git, head, trusted) = staged("honest/moving-main/manifest.toml", "clumsy-forger");
+
+    let notes = Notes::measure(&git);
+    let mut records = notes
+        .read(&head)
+        .expect("the scenario recorded a self-report");
+    assert!(!records.is_empty(), "the fixture measures before it is attacked");
+    let target = records[0].results[0].metric_id.clone();
+    // Edit one measured value the way a hostile hand edits a note: in place,
+    // digest untouched.
+    records[0].results[0].value = MetricValue::Count(999_999);
+    notes
+        .write(&head, &records)
+        .expect("the write path does not judge");
+
+    let err = notes
+        .read(&head)
+        .expect_err("a record that contradicts itself must not read back");
+    let message = err.to_string();
+    assert!(message.contains(&target), "{message}");
+
+    // The verifier reads through the same gate, so the edit cannot reach the
+    // compare and buy a `confirmed` on its untouched digest.
+    let err = verify(
+        &git,
+        &VerifyRequest {
+            head: head.clone(),
+            trusted_branch: trusted,
+            fork_tier: false,
+        },
+    )
+    .expect_err("the verifier must refuse what the ledger refuses");
+    assert!(err.to_string().contains(&target), "{err}");
 }

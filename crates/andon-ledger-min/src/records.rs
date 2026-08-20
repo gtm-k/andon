@@ -263,7 +263,31 @@ pub fn compare(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use andon_core::schema::payload::MetricValue;
     use andon_core::testing::sample_record;
+
+    /// A record whose value was edited without re-sealing must not read back.
+    ///
+    /// There is no recompute at a file read, so the read itself is the only
+    /// place the edit can be noticed: the digest beside the value still
+    /// describes the number that used to be there.
+    #[test]
+    fn a_value_edited_without_resealing_does_not_read_back() {
+        let dir = std::env::temp_dir().join(format!("andon-records-seal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("record.json");
+
+        let mut record = sample_record();
+        write(&path, &record).expect("writes");
+        read(&path).expect("an honest record reads back");
+
+        record.results[0].value = MetricValue::Count(999_999);
+        write(&path, &record).expect("the write path does not judge");
+        let err = read(&path).expect_err("a record that contradicts itself must not read back");
+        assert!(err.to_string().contains("sample.metric"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn identical_records_agree() {
