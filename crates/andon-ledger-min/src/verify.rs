@@ -129,9 +129,16 @@ pub enum VerifyError {
 /// and a loop that keeps producing unusable records is exactly what
 /// `escalate_to_human` exists for (PREMORTEM A4/S6).
 ///
-/// A constant rather than a policy field **only because this is the spike**. It
+/// A constant rather than a policy field, and the routing has moved once: it
 /// belongs in `.andon.toml` beside the iteration cap, where changing it is a
-/// ledgered edit; P8 moves it there.
+/// ledgered edit, and the plan first assigned that move to P8. P8 found the
+/// blocker — any new `Policy` field changes `policy_hash`, which the frozen
+/// golden fixtures pin (`golden.rs`: "the policy schema moved, so every
+/// record's policy_hash did") — and the orchestrator ruled the move deferred
+/// to **P9**, where base-commit policy loading is the natural home and the
+/// authoritative reviewer is available to gate the golden re-record the hash
+/// change forces. Until then the constant stands, and current behavior is
+/// unchanged.
 pub const REPEAT_ESCALATION_THRESHOLD: usize = 3;
 
 /// What the verifier was asked to do.
