@@ -38,13 +38,42 @@
 //! do, and the defence is not in this engine — it is P3's tamper suite noticing
 //! that function-scope coverage fell.
 //!
-//! # Names are for humans; identity is the line span
+//! # Names are for humans; identity is the name and where it is
 //!
 //! `ResultScope` carries `symbol` and `line_span`, and the *pair* is the
 //! identity — two anonymous callbacks in one file are distinguished by where
 //! they are, not by what they are called. So the name is allowed to be
 //! `<anonymous>`, and a class-qualified name is used where one is available
 //! because `Store.set` reads better in a report than `set`.
+//!
+//! # A line is not always a position
+//!
+//! One line can hold two functions with one name. `xs.map(x => x).filter(x => x)`
+//! is the plainest case, `.then().catch()` is the next, a jQuery chain is the
+//! third, and a minified bundle is thousands of them: same `<anonymous>`, same
+//! start line, same end line, so the same scope bytes. Assembly refuses a
+//! payload whose pairing key names two results — an ambiguous pairing is where a
+//! forged result shadows an honest one
+//! ([`andon_core::payload::AssemblyError::DuplicateResult`]) — so before
+//! [`disambiguate`] existed, one such line ended the whole measurement with exit
+//! 1 and nothing measured. The refusal is right and is untouched; what was wrong
+//! is that ordinary code reached it.
+//!
+//! So a site whose name and line span do not tell it apart from another site in
+//! the same file takes its start column: `<anonymous>@31`. Two outermost sites
+//! are disjoint subtrees, so no two start at the same byte, and two that share a
+//! start line therefore differ in column — the qualified name names exactly one
+//! site. Every member of such a group is qualified, not just the second onward,
+//! so a name depends on the set it is in and not on where the walk reached it.
+//!
+//! **Only colliding sites are qualified, and that is deliberate.** A file whose
+//! names and spans already differ produces the byte-identical scope it always
+//! did, so no digest moves, no [`crate::lang::SPEC_REVISION`] moves with it, and
+//! no honest change is told its measurement diverged. Nothing is lost to the
+//! asymmetry: a file that takes a column today produced no record at all before,
+//! because it aborted the run it was in.
+
+use std::collections::HashMap;
 
 use tree_sitter::Node;
 
@@ -60,7 +89,8 @@ pub struct FunctionSite<'t> {
     /// The function-like node.
     pub node: Node<'t>,
     /// Class-qualified where a class is in scope, `<anonymous>` where nothing
-    /// names it.
+    /// names it, and column-qualified where the name and the line span do not
+    /// tell this site apart from another in the same file ([`disambiguate`]).
     pub name: String,
     /// First line, 1-based inclusive.
     pub start_line: u32,
@@ -114,7 +144,40 @@ pub fn functions<'t>(parsed: &'t Parsed<'_>) -> Vec<FunctionSite<'t>> {
         let children: Vec<Node<'t>> = node.children(&mut cursor).collect();
         stack.extend(children.into_iter().rev());
     }
+    disambiguate(&mut sites);
     sites
+}
+
+/// Give every site in a name-and-span collision its start column.
+///
+/// Counted in one pass over a map rather than compared pairwise: a minified
+/// bundle puts thousands of sites on one line, and the quadratic scan that reads
+/// more naturally would be quadratic in exactly the file this function exists
+/// for.
+///
+/// The column is 1-based, like [`FunctionSite::start_line`] and like every
+/// editor a reader will open the file in. Tree-sitter counts from zero, and in
+/// bytes rather than characters — a distinction with no consequence for
+/// uniqueness, and one worth naming for anyone who compares the number against a
+/// column an editor shows on a line with multi-byte text.
+fn disambiguate(sites: &mut [FunctionSite<'_>]) {
+    let mut occurrences: HashMap<(&str, u32, u32), usize> = HashMap::new();
+    for site in sites.iter() {
+        *occurrences
+            .entry((site.name.as_str(), site.start_line, site.end_line))
+            .or_insert(0) += 1;
+    }
+    let ambiguous: Vec<bool> = sites
+        .iter()
+        .map(|site| occurrences[&(site.name.as_str(), site.start_line, site.end_line)] > 1)
+        .collect();
+
+    for (site, ambiguous) in sites.iter_mut().zip(ambiguous) {
+        if ambiguous {
+            let column = site.node.start_position().column as u32 + 1;
+            site.name = format!("{}@{column}", site.name);
+        }
+    }
 }
 
 /// The name to report, qualified by an enclosing class where there is one.
@@ -235,11 +298,95 @@ mod tests {
         let parsed = parse(Language::TypeScript, source.as_bytes()).expect("parses");
         let sites = functions(&parsed);
         assert_eq!(sites.len(), 3);
-        // The pair inside the ternary shares a line and differs by column-free
-        // identity only in that neither took `a`'s name — the third is `b`.
-        assert_eq!(sites[0].name, ANONYMOUS);
-        assert_eq!(sites[1].name, ANONYMOUS);
+        // The pair inside the ternary shares a name and a line span, so the line
+        // span is not where they are — the column is. Before they carried it,
+        // these two scopes were the same bytes and the payload they were in was
+        // refused whole.
+        assert_eq!(sites[0].name, "<anonymous>@18");
+        assert_eq!(sites[1].name, "<anonymous>@28");
+        // `b` is named and alone on its line: untouched, and byte-for-byte the
+        // scope it always produced.
         assert_eq!(sites[2].name, "b");
+    }
+
+    /// The chain shapes this qualification exists for, in the languages a user
+    /// reported them in. Each one used to end the run it was in.
+    #[test]
+    fn ordinary_method_chains_produce_distinguishable_sites() {
+        for (language, source) in [
+            (
+                Language::TypeScript,
+                "export const out = xs.map(x => x * 2).filter(x => x > 0);\n",
+            ),
+            (
+                Language::JavaScript,
+                "fetch(u).then(r => r.json()).catch(e => log(e));\n",
+            ),
+            (
+                Language::JavaScript,
+                "$(\".a\").on(\"click\", function () { hide(); }).on(\"blur\", function () { hide(); });\n",
+            ),
+            (
+                Language::Python,
+                "xs = list(map(lambda x: x + 1, filter(lambda x: x > 0, ys)))\n",
+            ),
+        ] {
+            let parsed = parse(language, source.as_bytes()).expect("parses");
+            let sites = functions(&parsed);
+            assert_eq!(sites.len(), 2, "{source}");
+            assert_ne!(sites[0].name, sites[1].name, "{source}");
+            // Same line, so the name is the whole of what tells them apart.
+            assert_eq!(sites[0].start_line, sites[1].start_line, "{source}");
+            assert_eq!(sites[0].end_line, sites[1].end_line, "{source}");
+        }
+    }
+
+    #[test]
+    fn a_qualified_name_names_exactly_one_site() {
+        // The property assembly needs: within one file, no two sites share a
+        // `(name, line span)` — which is the scope, once the path and blob are
+        // fixed. Twenty anonymous arrows on one line, as a minified bundle
+        // writes them.
+        let source = format!(
+            "const fs = [{}];\n",
+            (0..20).map(|_| "() => 1").collect::<Vec<_>>().join(", ")
+        );
+        let parsed = parse(Language::JavaScript, source.as_bytes()).expect("parses");
+        let sites = functions(&parsed);
+        assert_eq!(sites.len(), 20);
+        let keys: std::collections::BTreeSet<_> = sites
+            .iter()
+            .map(|site| (site.name.clone(), site.start_line, site.end_line))
+            .collect();
+        assert_eq!(keys.len(), 20, "{keys:?}");
+    }
+
+    #[test]
+    fn two_functions_with_one_name_on_one_line_are_told_apart() {
+        // Not only anonymous ones: a name repeated on a line collides the same
+        // way, and a minifier produces exactly this.
+        let parsed = parse(
+            Language::JavaScript,
+            b"const o = { f: function () { return 1 } }, p = { f: function () { return 2 } };\n",
+        )
+        .expect("parses");
+        let sites = functions(&parsed);
+        assert_eq!(sites.len(), 2);
+        assert_eq!(sites[0].name, "f@16");
+        assert_eq!(sites[1].name, "f@53");
+    }
+
+    #[test]
+    fn same_name_on_different_lines_keeps_the_bare_name() {
+        // The line span already tells these apart, so nothing is appended — the
+        // scope bytes are the ones this engine has always produced for them.
+        let parsed =
+            parse(Language::Python, b"f = lambda x: x\ng = lambda x: x\n").expect("parses");
+        let names: Vec<String> = functions(&parsed)
+            .into_iter()
+            .map(|site| site.name)
+            .collect();
+        assert_eq!(names, vec!["f", "g"]);
     }
 
     #[test]

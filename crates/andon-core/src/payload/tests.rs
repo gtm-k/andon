@@ -1441,6 +1441,36 @@ fn two_results_sharing_a_pairing_key_are_refused() {
 }
 
 #[test]
+fn the_duplicate_pairing_key_error_names_the_file_and_the_position() {
+    // The other half of that refusal: what the person who ran one command reads.
+    // This abort is reachable from an ordinary method chain, so the message is
+    // one a user meets rather than a corner in a backtrace, and `{scope:?}`
+    // answered them with a line of Rust struct syntax.
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    let target = &mut engines[0].results[0];
+    target.scope.kind = ScopeKind::Function;
+    target.scope.path = Some("vendor/gsap.min.js".to_string());
+    target.scope.symbol = Some("<anonymous>".to_string());
+    target.scope.line_span = Some(crate::schema::payload::LineSpan { start: 10, end: 10 });
+    target.seal(&compare_context()).expect("reseals");
+    let duplicate = engines[0].results[0].clone();
+    engines[0].results.push(duplicate);
+
+    let message = prepare(request(&policy, &registry, engines))
+        .expect_err("must refuse")
+        .to_string();
+    for expected in ["vendor/gsap.min.js", "<anonymous>", "line 10"] {
+        assert!(
+            message.contains(expected),
+            "{expected} missing from: {message}"
+        );
+    }
+    assert!(!message.contains("ResultScope {"), "{message}");
+}
+
+#[test]
 fn the_same_metric_at_two_scopes_is_fine() {
     // The other side of the same rule: per-file results share a metric id by
     // design, and only the pair has to be unique.
