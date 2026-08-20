@@ -1444,8 +1444,14 @@ fn two_results_sharing_a_pairing_key_are_refused() {
 fn the_duplicate_pairing_key_error_names_the_file_and_the_position() {
     // The other half of that refusal: what the person who ran one command reads.
     // This abort is reachable from an ordinary method chain, so the message is
-    // one a user meets rather than a corner in a backtrace, and `{scope:?}`
-    // answered them with a line of Rust struct syntax.
+    // one a user meets rather than a corner in a backtrace.
+    //
+    // `describe_scope` already reads the scope rather than debug-printing it —
+    // that landed in `e3a1ed1`, before this test existed. What was missing is a
+    // pin: nothing failed if the message regressed to `{scope:?}`. This test is
+    // that pin and nothing more, and it is here rather than beside the other
+    // assembly tests because the shape it names — an anonymous callback at a
+    // minified line — is the one an ordinary repository actually produces.
     let policy = Policy::default();
     let registry = shipped_registry();
     let mut engines = five_engines(&registry);
