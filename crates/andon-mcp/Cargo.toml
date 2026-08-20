@@ -1,0 +1,41 @@
+# The MCP surface. A thin adapter over andon-cli's library — every number an
+# agent sees through this server comes from the same functions the CLI runs, or
+# the two surfaces drift (this project's dominant defect class).
+#
+# rmcp is the official Rust MCP SDK, `=`-pinned like the grammars: the set of
+# protocol versions this server negotiates is a property of the rmcp release,
+# so a floating requirement would let `cargo update` silently change what this
+# server speaks. Bumping the pin is a reviewable edit; the conformance test
+# pins the negotiated version so a bump that changes it is loud.
+#
+# tokio is rmcp's own required runtime, already in the tree as its dependency —
+# declaring it here adds no crate to the lock; it only lets main() start the
+# runtime rmcp needs.
+[package]
+name = "andon-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "MCP stdio server over Andon's measurement pipeline"
+
+[[bin]]
+name = "andon-mcp"
+path = "src/main.rs"
+
+[dependencies]
+andon-core.workspace = true
+andon-cli = { path = "../andon-cli" }
+serde.workspace = true
+serde_json.workspace = true
+rmcp = { version = "=3.1.4", default-features = false, features = [
+    "server",
+    "macros",
+    "transport-io",
+] }
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
