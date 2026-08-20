@@ -43,9 +43,7 @@ use std::path::{Path, PathBuf};
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{
-    CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo,
-};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use serde::Deserialize;
 
@@ -269,7 +267,11 @@ impl AndonMcp {
             Ok(record) => record,
             Err(e) => return refusal(e),
         };
-        match render::profile(&record, andon_core::schema::agent_profile::PROFILE_NAME, &repo) {
+        match render::profile(
+            &record,
+            andon_core::schema::agent_profile::PROFILE_NAME,
+            &repo,
+        ) {
             Ok(profile) => text(profile),
             Err(e) => refusal(e),
         }
@@ -289,7 +291,11 @@ impl AndonMcp {
             Ok(record) => record,
             Err(e) => return refusal(e),
         };
-        let profile = match render::profile(&record, andon_core::schema::agent_profile::PROFILE_NAME, &repo) {
+        let profile = match render::profile(
+            &record,
+            andon_core::schema::agent_profile::PROFILE_NAME,
+            &repo,
+        ) {
             Ok(profile) => profile,
             Err(e) => return refusal(e),
         };
@@ -367,8 +373,7 @@ fn bounded_listing(listing: String, repo: &Path) -> String {
 /// repository or without a policy file.
 fn agent_budget_bytes(repo: &Path) -> usize {
     let policy = match Git::open(repo) {
-        Ok(git) => measure::load_policy(&git, &measure::PolicySource::Worktree)
-            .unwrap_or_default(),
+        Ok(git) => measure::load_policy(&git, &measure::PolicySource::Worktree).unwrap_or_default(),
         Err(_) => andon_core::policy::Policy::default(),
     };
     (policy.agent.profile_token_budget as usize) * (policy.agent.bytes_per_token as usize)
