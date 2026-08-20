@@ -280,6 +280,43 @@ fn check_with_an_honest_ledger_exits_zero_and_says_so() {
 }
 
 #[test]
+fn trailer_emits_one_line_per_record_that_round_trips_through_the_parser() {
+    // The producing surface of the trailer digest option: what this prints is
+    // what a fork contributor pastes into a commit message, so it must be the
+    // bare line — parseable by the same reader P9's verifier uses — with no
+    // framing around it.
+    let repo = honest_repo();
+    let path = repo.path().to_str().expect("utf-8");
+    let git = Git::open(repo.path()).expect("repo");
+    let record = planted("sample.metric", MetricValue::Count(3));
+    plant(&git, &head_of(&git), std::slice::from_ref(&record));
+
+    let output = run(&["ledger", "trailer", "--repo", path]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let out = stdout(&output);
+    let expected = andon_ledger::trailer::trailer_digest(&record).expect("digest");
+    assert_eq!(
+        andon_ledger::trailer::digests_in(&out),
+        vec![expected],
+        "the printed line must carry the record's own trailer digest: {out}"
+    );
+    assert_eq!(
+        out.lines().count(),
+        1,
+        "bare trailer lines only — framing would end up inside a commit message: {out}"
+    );
+
+    // And an unrecorded commit says so instead of printing nothing.
+    let output = run(&["ledger", "trailer", "--repo", path, "HEAD~1"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("No record is recorded against"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
 fn migrate_carries_the_record_onto_the_landed_commit_and_says_what_it_did() {
     let repo = honest_repo();
     let path = repo.path().to_str().expect("utf-8");

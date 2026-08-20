@@ -452,11 +452,15 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
 }
 
 const LEDGER_USAGE: &str = "\
-andon ledger <list|show|ack|stats|sync|migrate> [--repo <PATH>]
+andon ledger <list|show|ack|stats|sync|migrate|trailer> [--repo <PATH>]
 
   list              every commit carrying a measurement record
   show [<COMMIT>]   the records recorded against one commit (default: HEAD)
   ack [--branch B]  clear the loop counter after a human has looked at an escalation
+  trailer [<COMMIT>]  one Andon-Measure-Digest trailer line per record on the
+                    commit (default: HEAD), ready for a commit message. A
+                    trailer travels where notes refs do not — a fork PR — and
+                    the verifier compares against the digest alone
   stats             the ledger as a dataset. Single-repo local analytics for this
                     repository's maintainer — not a fleet dashboard.
     --by <DIM>          slice by one dimension with a verdict breakdown; the
@@ -579,6 +583,16 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 .get("to")
                 .ok_or("migrate needs --to <REV>, the commit the squash landed")?;
             print!("\n{}\n", ledger::migrate(&git, from, to)?);
+        }
+        "trailer" => {
+            let commit = flags
+                .positional()
+                .get(1)
+                .map(String::as_str)
+                .unwrap_or("HEAD");
+            // Bare trailer lines on stdout, no framing: the output's job is to
+            // be appended to a commit message, by a person or by `--trailer`.
+            print!("{}", ledger::trailer(&git, commit)?);
         }
         other => {
             return Err(format!(

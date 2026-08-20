@@ -378,6 +378,39 @@ pub fn sync(git: &Git, remote: &str, attempts: u32) -> Result<String, String> {
     Ok(out)
 }
 
+/// One trailer line per record on `commit`, for a commit message.
+///
+/// The producing surface for the trailer digest option: notes refs do not
+/// travel with a fork PR, and a commit message does, so a contributor on a
+/// fork appends these lines to the commit message (`git commit --amend
+/// --trailer "$(andon ledger trailer)"` or by hand) and P9's fork-tier
+/// verifier compares against the digest with no notes transport at all.
+///
+/// The records come through the guarded reader — same path as `show` — so a
+/// note line that cannot be believed refuses to become a trailer rather than
+/// vouching for itself in a new medium.
+pub fn trailer(git: &Git, commit: &str) -> Result<String, String> {
+    let records = Notes::new(git, MEASURE_REF)
+        .read(commit)
+        .map_err(|e| e.to_string())?;
+    if records.is_empty() {
+        return Ok(format!(
+            "\n  No record is recorded against {commit} in {MEASURE_REF}, so there is no \
+             trailer to emit.\n  `andon measure --record` writes one against the commit it \
+             measured.\n"
+        ));
+    }
+    let mut out = String::new();
+    for record in &records {
+        let _ = writeln!(
+            out,
+            "{}",
+            andon_ledger::trailer::trailer_line(record).map_err(|e| e.to_string())?
+        );
+    }
+    Ok(out)
+}
+
 /// Carry both refs' records from a pre-squash head onto the landed commit.
 pub fn migrate(git: &Git, from: &str, to: &str) -> Result<String, String> {
     let migrations = migrate_squash(git, from, to).map_err(|e| e.to_string())?;
