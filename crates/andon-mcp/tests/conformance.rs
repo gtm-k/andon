@@ -122,7 +122,10 @@ fn measure_change_returns_the_agent_profile_and_stays_inside_the_declared_budget
     server.initialize("2025-11-25");
     let result = server.call_tool("measure_change", json!({}));
 
-    assert_ne!(result["isError"], true, "an ordinary measurement is not an error: {result}");
+    assert_ne!(
+        result["isError"], true,
+        "an ordinary measurement is not an error: {result}"
+    );
     let payload = result["content"][0]["text"].as_str().expect("text content");
 
     // The payload parses, names its view, and is a verdict about the change.
@@ -200,7 +203,9 @@ fn await_results_reports_the_lane_beside_the_profile() {
     let result = server.call_tool("await_results", json!({}));
     assert_ne!(result["isError"], true);
     let profile: Value = serde_json::from_str(
-        result["content"][0]["text"].as_str().expect("profile block"),
+        result["content"][0]["text"]
+            .as_str()
+            .expect("profile block"),
     )
     .expect("profile parses");
     assert_eq!(profile["profile"], "agent-mode");

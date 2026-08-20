@@ -55,7 +55,9 @@ fn a_block_is_fixed_and_passes_with_the_loop_counter_behaving() {
         })
         .expect("a MED+ diff-actionable finding is what a block hands the agent");
     let scope = finding["scope"].as_str().expect("a scope string");
-    let (path, rest) = scope.split_once(':').expect("scope carries more than a path");
+    let (path, rest) = scope
+        .split_once(':')
+        .expect("scope carries more than a path");
     let (span, symbol) = rest.split_once(':').expect("scope carries span and symbol");
     assert_eq!(path, "src.ts");
     assert_eq!(symbol, "classify");
