@@ -49,6 +49,85 @@ fn workspace() -> PathBuf {
         .join("..")
 }
 
+/// A base whose range to `HEAD` provably contains a path the policy withholds.
+///
+/// Asked of git rather than assumed. A test that needs a withheld path in the
+/// changed set had been taking whatever the last commit happened to touch, so it
+/// passed after a commit that edited `fixtures/` and failed after one that did
+/// not -- a one-line comment appended to `lib.rs` was enough to turn it red. The
+/// premise a test needs is the test's to establish; inheriting it from history
+/// makes the outcome a fact about the last commit rather than about the code.
+///
+/// `None` means this repository has no commit touching an excluded path at all,
+/// which is a different situation from "the last commit did not" and is
+/// reported as one rather than skipped silently.
+fn base_whose_range_withholds() -> Option<String> {
+    // The subtrees `.andon.toml` declares under `[self_measure] excluded_paths`.
+    // Named here rather than read from that file: this is the premise the test
+    // needs, and taking it from the same source the product reads would let one
+    // edit move the claim and its check together.
+    const WITHHELD: &[&str] = &[
+        "fixtures/gamed",
+        "fixtures/adversarial",
+        "fixtures/honest/corpus",
+        "fixtures/matrix",
+        "fixtures/golden",
+    ];
+    let mut args = vec![
+        "log".to_string(),
+        "--format=%H".to_string(),
+        "-1".to_string(),
+        "HEAD".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(WITHHELD.iter().map(|p| (*p).to_string()));
+    let out = Command::new("git")
+        .current_dir(workspace())
+        .args(&args)
+        .output()
+        .ok()?;
+    let newest = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if newest.is_empty() {
+        return None;
+    }
+    // Its parent, so that `base..HEAD` contains that commit's changes rather
+    // than starting after them.
+    let out = Command::new("git")
+        .current_dir(workspace())
+        .args(["rev-parse", &format!("{newest}^")])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        // A root commit has no parent, so no range can be formed from it.
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Measure this repository over an explicit base.
+fn measure_self_from(base: &str) -> Result<MeasurementRecord, String> {
+    let output = Command::new(EXE)
+        .args([
+            "measure",
+            "--repo",
+            workspace().to_str().expect("utf-8"),
+            "--base",
+            base,
+            "--self-measure",
+            "--json",
+            "--exit-zero",
+        ])
+        .output()
+        .map_err(|e| format!("{EXE}: {e}"))?;
+    if output.stdout.is_empty() {
+        return Err(format!(
+            "andon measure produced no record: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+}
+
 /// Measure this repository the way the dogfood job does.
 fn measure_self() -> Result<MeasurementRecord, String> {
     let output = Command::new(EXE)
@@ -358,12 +437,23 @@ fn every_surface_that_renders_a_self_measurement_says_what_it_withheld() {
     if measurable().is_err() {
         return;
     }
-    let record = measure_self().expect("the self-measurement runs");
+    // Measure a range that provably contains a withheld path, rather than
+    // whatever the last commit happened to touch. Without this, the assertion
+    // below is a fact about recent history: it held after a commit that edited
+    // `fixtures/` and failed after one that did not.
+    let Some(base) = base_whose_range_withholds() else {
+        // Not a skip for convenience. This repository declares excluded paths
+        // and has no commit touching one, so there is no run of the kind this
+        // test describes to be had.
+        return;
+    };
+    let record = measure_self_from(&base).expect("the self-measurement runs");
     let provenance = record.self_measure.as_ref().expect("provenance");
     assert!(
         !provenance.excluded_paths.is_empty(),
-        "this repository's own policy withholds fixtures, so a run that withheld none is not \
-         the run this test is about"
+        "the range {base}..HEAD contains a commit touching a path `[self_measure] \
+         excluded_paths` withholds, so the run should have withheld something and \
+         did not"
     );
 
     let dir = tempfile::tempdir().expect("a temporary directory");
