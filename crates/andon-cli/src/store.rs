@@ -85,9 +85,19 @@ pub fn write_last(git: &Git, record: &MeasurementRecord) -> Result<PathBuf, Stri
 }
 
 /// Read a record from an explicit path.
+///
+/// The seal check is part of the read, not a courtesy after it: `report`,
+/// `wait`, and `explain` have no recompute to compare against, so a record
+/// whose fields no longer hash to its own digests would otherwise render as
+/// authoritatively as an honest one.
 pub fn read_record(path: &Path) -> Result<MeasurementRecord, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+    let record: MeasurementRecord =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    record
+        .verify_seals()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(record)
 }
 
 /// Read the last record of this checkout, or say there is none.

@@ -91,6 +91,28 @@ pub enum NotesError {
         #[source]
         source: serde_json::Error,
     },
+    /// A note line parsed as a record whose fields do not hash to its own
+    /// digests.
+    ///
+    /// Refused for the reason a malformed line is refused, and kept apart from
+    /// it because the two mean different things to the person reading the
+    /// error: a malformed line is bytes that were never a record, and this is a
+    /// record that was one until somebody edited it — or storage corrupted it —
+    /// after it was sealed. Neither is an attestation outcome: `divergent`
+    /// states that two records disagree, and this one record disagrees with
+    /// itself before any compare is reached.
+    #[error("{notes_ref} on {commit}: line {line} holds a record that cannot be believed: {source}")]
+    SealBroken {
+        /// Which ref the note came from.
+        notes_ref: String,
+        /// Which commit it was attached to.
+        commit: String,
+        /// 1-based line number within the note body.
+        line: usize,
+        /// Which seal does not hold, and why that is a refusal.
+        #[source]
+        source: andon_core::schema::payload::SealError,
+    },
     /// The remote could not answer, which is not the same as having no ledger.
     ///
     /// Kept apart from every other error because the whole point is that it must
@@ -227,12 +249,25 @@ impl<'a> Notes<'a> {
             if line.is_empty() {
                 continue;
             }
-            let record = serde_json::from_str(line).map_err(|source| NotesError::Malformed {
-                notes_ref: self.notes_ref.clone(),
-                commit: commit.to_string(),
-                line: index + 1,
-                source,
-            })?;
+            let record: MeasurementRecord =
+                serde_json::from_str(line).map_err(|source| NotesError::Malformed {
+                    notes_ref: self.notes_ref.clone(),
+                    commit: commit.to_string(),
+                    line: index + 1,
+                    source,
+                })?;
+            // The parse proves the line is record-shaped; this proves the
+            // record still says what was sealed. Without it, a value edited in
+            // the note body rides its untouched digest through the verifier's
+            // compare and out the other side as `confirmed`.
+            record
+                .verify_seals()
+                .map_err(|source| NotesError::SealBroken {
+                    notes_ref: self.notes_ref.clone(),
+                    commit: commit.to_string(),
+                    line: index + 1,
+                    source,
+                })?;
             records.push(record);
         }
         Ok(records)
