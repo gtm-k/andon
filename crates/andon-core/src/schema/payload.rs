@@ -130,8 +130,7 @@ pub enum SealError {
     /// A result's digest is not the digest of the contents beside it.
     #[error(
         "result '{metric_id}' carries a digest that is not the digest of the contents beside it. \
-         This record contradicts itself: it was edited after it was sealed, or corrupted where \
-         it was stored"
+         This record contradicts itself: it was edited after it was sealed, corrupted where it was stored, or sealed under an older schema than this binary recomputes"
     )]
     Broken {
         /// The metric whose seal does not hold.
@@ -168,6 +167,20 @@ impl MeasurementRecord {
     /// before a record exists, so between the two checks a record is covered
     /// from construction to every later read; a loader that skips this hands
     /// its reader a record nobody vouches for.
+    ///
+    /// # What this deliberately does not bind
+    ///
+    /// Only the fields inside [`ResultDigestInput`] are covered. The record-level
+    /// trust fields -- `attestation`, `verdict`, per-result `severity`,
+    /// `self_measure`, `policy_hash` -- are outside every per-result digest (E20
+    /// keeps `severity` out so policy can move post-seal), so a stored record
+    /// with those fields edited passes this check and re-serves them. That is
+    /// the documented v1 trust boundary: the authoritative verifier recomputes
+    /// and never reads those fields off a self-report, and binding them at rest
+    /// is v1.5's problem (a whole-record seal beside sigstore provenance). This
+    /// check closes value-forgery against the seal; it does not make a stored
+    /// record comprehensively tamper-proof, and prose citing it should not say
+    /// it does.
     ///
     /// A failure is a refusal, not an attestation outcome. `divergent` states
     /// that two honest-shaped records disagree, and writing it here would put

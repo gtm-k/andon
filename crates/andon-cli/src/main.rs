@@ -427,7 +427,21 @@ fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
     .map_err(|e| e.to_string())?;
 
     let subject = explain::subject_of(query)?;
-    let record = git.as_ref().and_then(|git| store::read_last(git).ok());
+    // `explain` works without a record, and a fresh checkout has none — that
+    // absence stays silent. A record that EXISTS and refuses to read is a
+    // different fact: swallowing it into the same `None` would render the page
+    // as if nothing were recorded, which is exactly the invisible-refusal shape
+    // `verify_seals` exists to prevent. The reader is told on stderr and the
+    // explanation still prints.
+    let record = git.as_ref().and_then(|git| match store::read_last(git) {
+        Ok(record) => Some(record),
+        Err(why) => {
+            if store::last_record_path(git).exists() {
+                eprintln!("explain: the last measurement exists and was not used: {why}");
+            }
+            None
+        }
+    });
     print!(
         "{}",
         explain::explain(&subject, &policy, &registry, record.as_ref())?

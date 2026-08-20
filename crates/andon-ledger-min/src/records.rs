@@ -284,7 +284,6 @@ pub fn compare(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andon_core::schema::payload::MetricValue;
     use andon_core::testing::sample_record;
 
     #[test]
