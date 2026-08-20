@@ -85,20 +85,22 @@ const WITHHELD: &[&str] = &[
 /// which is a different situation from "the last commit did not" and is
 /// reported as one rather than skipped silently.
 fn base_whose_range_withholds() -> Option<String> {
-    let mut args = vec![
-        "log".to_string(),
-        "--format=%H".to_string(),
-        "-1".to_string(),
-        "HEAD".to_string(),
-        "--".to_string(),
-    ];
-    args.extend(WITHHELD.iter().map(|p| (*p).to_string()));
     // Through the wrapper rather than a hand-rolled `Command`: `Git::cmd` is
     // what carries pinned config and a swept environment, and its own doc says
     // that is more than a bare `Command` in a test file would. Without it,
     // `GIT_DIR` in the environment silently redirects these two calls at another
     // repository and this function reports "no such commit" about the wrong one.
-    let git = andon_core::git::Git::open(&workspace()).ok()?;
+    let git = match andon_core::git::Git::open(&workspace()) {
+        Ok(git) => git,
+        Err(e) => {
+            // The fourth cause, beside the three below. Unreachable while
+            // `measurable()` opens the same handle first and returns ahead of
+            // this, but a bare `.ok()?` here would be one more silent path in a
+            // function whose subject is silent paths.
+            eprintln!("dogfood: git could not be opened ({e}); this test did not run");
+            return None;
+        }
+    };
     // `rev-list` rather than `log`: plumbing, so no `log.*` formatting setting
     // can prepend anything to the hash this parses.
     let mut args: Vec<String> = vec!["rev-list".into(), "-1".into(), "HEAD".into(), "--".into()];
@@ -155,24 +157,29 @@ fn base_whose_range_withholds() -> Option<String> {
 /// otherwise make fail for a reason that is not the contributor's.
 #[test]
 fn the_premise_this_test_states_is_one_the_policy_still_holds() {
-    let toml = std::fs::read_to_string(workspace().join(".andon.toml")).expect("the policy reads");
-    let declared: Vec<&str> = {
-        let start = toml
-            .find("excluded_paths = [")
-            .expect("the policy declares exclusions");
-        let end = start + toml[start..].find(']').expect("a closed list");
-        toml[start..end]
-            .match_indices('"')
-            .map(|(i, _)| i)
-            .collect::<Vec<_>>()
-            .chunks(2)
-            .filter(|c| c.len() == 2)
-            .map(|c| &toml[start + c[0] + 1..start + c[1]])
-            .collect()
-    };
+    // Read with the parser the product uses, not by counting quote characters.
+    // The hand parse this replaces could be defeated by a comment INSIDE the
+    // array, and by the specific comment a person writes while removing an
+    // entry: dropping `"fixtures/matrix/**"` and leaving
+    // `# dropped at P6: "fixtures/matrix/**" is measured again` behind made the
+    // quoted path in the comment read as a declaration, so the guard passed on
+    // exactly the edit it exists to catch. A `]` in a comment — and this file's
+    // comments write `[self_measure]` repeatedly — truncated the array instead
+    // and produced a false red whose message named a premise the policy plainly
+    // still held.
+    //
+    // Using `Policy::from_toml` does not re-entangle the claim with its check.
+    // The premise is still stated by `WITHHELD` in this file; only the reader
+    // changed. `the_declared_exclusions_are_the_ones_that_were_applied`, a few
+    // tests above, reads the same file the same way.
+    let policy_path = workspace().join(".andon.toml");
+    let policy = Policy::from_toml(&std::fs::read_to_string(&policy_path).expect("a policy"))
+        .expect("the policy parses");
+    let declared = &policy.self_measure.excluded_paths;
     assert!(
         !declared.is_empty(),
-        "no exclusions parsed out of .andon.toml; the premise cannot be checked"
+        "no exclusions declared, so the premise this file states cannot be checked against \
+         anything"
     );
     for stated in WITHHELD {
         assert!(
