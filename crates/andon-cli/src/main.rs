@@ -53,7 +53,7 @@ andon — measurement that carries its evidence.
   andon report        render the last measurement again, or one from a file
   andon explain       the claim a number stands on, and what it does not predict
   andon wait          what the async lane still owes this measurement
-  andon ledger        measurements recorded in the commit
+  andon ledger        the recorded measurements: list, stats, sync, migrate
   andon attest-stub   recompute a change as the verifier would, and compare
   andon init          install a gate-shaped hook for a harness, removably
   andon hook          what an installed hook runs (see `andon init`)
@@ -123,6 +123,9 @@ const SWITCHES: &[&str] = &[
     "cursor",
     "ci",
     "remove",
+    "distribution",
+    "across-regimes",
+    "check",
 ];
 
 fn run() -> Result<ExitCode, String> {
@@ -448,17 +451,46 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
     Ok(code_for_record(&record, flags.on("exit-zero")))
 }
 
+const LEDGER_USAGE: &str = "\
+andon ledger <list|show|ack|stats|sync|migrate|trailer> [--repo <PATH>]
+
+  list              every commit carrying a measurement record
+  show [<COMMIT>]   the records recorded against one commit (default: HEAD)
+  ack [--branch B]  clear the loop counter after a human has looked at an escalation
+  trailer [<COMMIT>]  one Andon-Measure-Digest trailer line per record on the
+                    commit (default: HEAD), ready for a commit message. A
+                    trailer travels where notes refs do not — a fork PR — and
+                    the verifier compares against the digest alone
+  stats             the ledger as a dataset. Single-repo local analytics for this
+                    repository's maintainer — not a fleet dashboard.
+    --by <DIM>          slice by one dimension with a verdict breakdown; the
+                        dimensions are source, harness, model, author, iteration
+    --filter <D>=<V>    keep only records where dimension D has value V
+    --distribution      per-metric value distributions, grouped by measurement
+                        regime, with the threshold-clustering warning. Values
+                        measured under different regimes are never pooled unless
+                        --across-regimes is passed, and the pooled view stays
+                        labeled as mixed
+    --check             exit 2 when any clustering warning fires, so a CI job
+                        goes red on the finding rather than on a log grep
+    --ref <NAME>        which ledger to read: measure (default) or attest
+  sync              fetch both ledger refs, merge with cat_sort_uniq, and push —
+                    retrying with backoff. Exhausted retries fail red: the
+                    records stay safe locally and the failure says what to do
+    --remote <NAME>     the remote to sync with (default: origin)
+    --attempts <N>      push attempts per ref before failing loudly (default: 3)
+  migrate           carry records from a pre-squash head onto the landed commit
+    --from <REV>        the branch head that was squash-merged
+    --to <REV>          the commit the squash landed (e.g. the new main tip)";
+
 fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
     if flags.on("help") || flags.first().is_none() {
-        println!(
-            "andon ledger <list|show|ack> [--repo <PATH>]\n\n  \
-             list              every commit carrying a measurement record\n  \
-             show [<COMMIT>]   the records recorded against one commit (default: HEAD)\n  \
-             ack [--branch B]  clear the loop counter after a human has looked at an escalation"
-        );
+        println!("{LEDGER_USAGE}");
         return Ok(ExitCode::SUCCESS);
     }
-    flags.reject_unknown(&["repo", "branch"])?;
+    flags.reject_unknown(&[
+        "repo", "branch", "by", "filter", "ref", "remote", "attempts", "from", "to",
+    ])?;
     let git = Git::open(&flags.path("repo", ".")).map_err(|e| e.to_string())?;
 
     match flags.first().unwrap_or("list") {
@@ -499,7 +531,74 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 .map_err(|e| e.to_string())?;
             print!("\n{}\n", ledger::ack(&git, flags.get("branch"), &policy)?);
         }
-        other => return Err(format!("unknown ledger command '{other}'")),
+        "stats" => {
+            let by = match flags.get("by") {
+                None => None,
+                Some(name) => {
+                    Some(andon_ledger::stats::Dimension::parse(name).ok_or_else(|| {
+                        format!(
+                            "'{name}' is not a ledger dimension; the dimensions are source, \
+                             harness, model, author, iteration"
+                        )
+                    })?)
+                }
+            };
+            let filter = flags
+                .get("filter")
+                .map(andon_ledger::stats::Filter::parse)
+                .transpose()?;
+            let request = ledger::StatsRequest {
+                notes_ref: ledger::ref_named(flags.get("ref").unwrap_or("measure"))?.to_string(),
+                distribution: flags.on("distribution") || flags.on("check"),
+                across_regimes: flags.on("across-regimes"),
+                by,
+                filter,
+            };
+            let (report, clustered) = ledger::stats_report(&git, &request)?;
+            print!("{report}");
+            // `--check` keys the exit on the finding: 2 is the "the line
+            // stops" code, and a clustering signature is a stop-and-look
+            // signal for a human, distinguishable from 1 (the tool fell over).
+            if clustered && flags.on("check") {
+                return Ok(ExitCode::from(2));
+            }
+        }
+        "sync" => {
+            let attempts = match flags.get("attempts") {
+                None => 3,
+                Some(text) => text.parse::<u32>().map_err(|_| {
+                    format!("--attempts wants a number of push attempts, not '{text}'")
+                })?,
+            };
+            print!(
+                "\n{}\n",
+                ledger::sync(&git, flags.get("remote").unwrap_or("origin"), attempts)?
+            );
+        }
+        "migrate" => {
+            let from = flags
+                .get("from")
+                .ok_or("migrate needs --from <REV>, the branch head that was squash-merged")?;
+            let to = flags
+                .get("to")
+                .ok_or("migrate needs --to <REV>, the commit the squash landed")?;
+            print!("\n{}\n", ledger::migrate(&git, from, to)?);
+        }
+        "trailer" => {
+            let commit = flags
+                .positional()
+                .get(1)
+                .map(String::as_str)
+                .unwrap_or("HEAD");
+            // Bare trailer lines on stdout, no framing: the output's job is to
+            // be appended to a commit message, by a person or by `--trailer`.
+            print!("{}", ledger::trailer(&git, commit)?);
+        }
+        other => {
+            return Err(format!(
+                "unknown ledger command '{other}'\n\n{LEDGER_USAGE}"
+            ))
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

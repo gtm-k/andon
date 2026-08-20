@@ -36,6 +36,7 @@ andon-engine-artifacts = { path = "../engines/artifacts" }
 andon-engine-clones = { path = "../engines/clones" }
 andon-engine-process = { path = "../engines/process" }
 andon-engine-tamper = { path = "../engines/tamper" }
+andon-ledger = { path = "../andon-ledger" }
 andon-ledger-min = { path = "../andon-ledger-min" }
 andon-static-metrics = { path = "../engines/static-metrics" }
 serde.workspace = true

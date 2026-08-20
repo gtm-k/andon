@@ -20,6 +20,7 @@ dependencies = [
  "andon-engine-clones",
  "andon-engine-process",
  "andon-engine-tamper",
+ "andon-ledger",
  "andon-ledger-min",
  "andon-static-metrics",
  "serde",
@@ -100,6 +101,17 @@ dependencies = [
  "tree-sitter-javascript",
  "tree-sitter-python",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "andon-ledger"
+version = "0.1.0"
+dependencies = [
+ "andon-core",
+ "andon-ledger-min",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
