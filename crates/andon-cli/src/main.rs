@@ -55,6 +55,8 @@ andon — measurement that carries its evidence.
   andon wait          what the async lane still owes this measurement
   andon ledger        measurements recorded in the commit
   andon attest-stub   recompute a change as the verifier would, and compare
+  andon init          install a gate-shaped hook for a harness, removably
+  andon hook          what an installed hook runs (see `andon init`)
 
 Run `andon <command> --help` for one command's options.
 
@@ -117,6 +119,10 @@ const SWITCHES: &[&str] = &[
     "exit-zero",
     "list",
     "fork-tier",
+    "claude",
+    "cursor",
+    "ci",
+    "remove",
 ];
 
 fn run() -> Result<ExitCode, String> {
@@ -142,6 +148,12 @@ fn run() -> Result<ExitCode, String> {
         "wait" => cmd_wait(&flags),
         "ledger" => cmd_ledger(&flags),
         "attest-stub" => cmd_attest(&flags),
+        "init" => {
+            print!("{}", andon_cli::init::cmd_init(&flags)?);
+            println!();
+            Ok(ExitCode::SUCCESS)
+        }
+        "hook" => Ok(ExitCode::from(andon_cli::init::hook::cmd_hook(&flags)?)),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
 }

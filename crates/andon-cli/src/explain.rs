@@ -148,7 +148,9 @@ pub fn run(
     let registry =
         measure::load_registry(registry_dir, &policy, as_of).map_err(|e| e.to_string())?;
     let subject = subject_of(query)?;
-    let record = git.as_ref().and_then(|git| crate::store::read_last(git).ok());
+    let record = git
+        .as_ref()
+        .and_then(|git| crate::store::read_last(git).ok());
     explain(&subject, &policy, &registry, record.as_ref())
 }
 
