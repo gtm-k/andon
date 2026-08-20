@@ -117,8 +117,15 @@ fn run(kind: HookKind, repo: PathBuf, self_measure: bool) -> u8 {
     let measurement = match measure::measure(&request) {
         Ok(measurement) => measurement,
         // Nothing in flight is, for a hook, nothing to gate. The resolver's
-        // own refusal is the detector — no second copy of its ladder here.
-        Err(MeasureError::Resolve(ResolveFailure::NoWorkingChange { .. })) => return 0,
+        // own refusals are the detector — no second copy of its ladder here.
+        // Two refusals mean it: `NoWorkingChange` (a clean tree whose HEAD
+        // matches every base on offer), and `NoParent` (a clean tree on a
+        // root commit, where even the last merged change does not exist —
+        // a dirty tree never reaches it here, because a worktree head
+        // measures against the root commit fine).
+        Err(MeasureError::Resolve(
+            ResolveFailure::NoWorkingChange { .. } | ResolveFailure::NoParent { .. },
+        )) => return 0,
         Err(e) => {
             eprintln!("andon: {e}");
             return 1;
