@@ -70,13 +70,28 @@ pub const CLUSTER_BAND_FRACTION: f64 = 0.10;
 /// delaying it on a ledger that accumulates every dogfood run.
 pub const CLUSTER_MIN_SAMPLES: usize = 5;
 
-/// Fraction of a group's values that must sit in one rung's band to warn.
+/// Fraction of a group's population that must sit in one rung's band to warn.
 ///
 /// Project-declared, ex ante. Honest complexity-like distributions concentrate
 /// far below the rung (most functions are simple), so even a third of all
 /// values inside the top tenth below a rung is already strange; half is chosen
 /// to make the warning hard to trip by chance and cheap to audit when it does
 /// — the message names the exact values' metric, regime, and rung.
+///
+/// # What the denominator is
+///
+/// For the kinds where zero means nothing-found (counts and ratios — see
+/// [`zero_means_nothing_found`]), **the population is the non-zero values**,
+/// and both this fraction and [`CLUSTER_MIN_SAMPLES`] are judged against it.
+/// Zeros are not part of a shaved distribution, so they belong neither in the
+/// band nor in the population being judged for shaving: with zeros in the
+/// denominator, six blatantly hugging values beside seven honest zeros read as
+/// 6/13 = 46% and stayed silent, so a genuine S1 streak was undetectable
+/// unless gamed values outnumbered the metric's own honest zeros — and on a
+/// real dogfood ledger the duplicated-tokens column is all zeros. Judging
+/// `MIN_SAMPLES` against the same non-zero population keeps the other edge
+/// honest too: five zeros and one hugging value is not a distribution, it is
+/// one value.
 pub const CLUSTER_WARN_FRACTION: f64 = 0.5;
 
 /// One record, and the commit whose note carries it.
@@ -556,12 +571,21 @@ fn cluster_warnings(
         let Some((floor, ceiling)) = band_of(rung) else {
             continue;
         };
+        let excludes_zero = zero_means_nothing_found(rung);
         let mut in_band = 0usize;
         let mut total = 0usize;
         for value in values {
             let Some(v) = value_on_axis(rung, value) else {
                 continue;
             };
+            // Zeros leave the population entirely for the nothing-found kinds
+            // — see `zero_means_nothing_found`. They cannot be in-band (the
+            // band never contains zero) and they must not pad the denominator:
+            // six shaved values beside seven honest zeros is a 100% hugging
+            // streak among the values that exist, not a 46% non-event.
+            if excludes_zero && v == 0.0 {
+                continue;
+            }
             total += 1;
             if v >= floor && v < ceiling {
                 in_band += 1;
@@ -570,6 +594,11 @@ fn cluster_warnings(
         if in_band >= CLUSTER_MIN_SAMPLES && in_band as f64 / total as f64 >= CLUSTER_WARN_FRACTION
         {
             let rung_text = threshold_text(rung);
+            let population = if excludes_zero {
+                "non-zero values"
+            } else {
+                "values"
+            };
             out.push(ClusterWarning {
                 metric_id: metric_id.to_string(),
                 regime_label: regime_label.to_string(),
@@ -577,8 +606,8 @@ fn cluster_warnings(
                 in_band,
                 total,
                 message: format!(
-                    "{metric_id} under [{regime_label}]: {in_band} of {total} values sit just \
-                     below the rung at {rung_text} (within the top {percent}% under it). A \
+                    "{metric_id} under [{regime_label}]: {in_band} of {total} {population} sit \
+                     just below the rung at {rung_text} (within the top {percent}% under it). A \
                      distribution that hugs a threshold from below is the shape of iterating \
                      against the gate until the number slips under the line (PREMORTEM S1). \
                      Look at which changes produced these values — `andon ledger stats --by \
@@ -589,6 +618,27 @@ fn cluster_warnings(
         }
     }
     out
+}
+
+/// Whether zero on this rung's axis means "nothing found" rather than a
+/// measured quantity.
+///
+/// For counts and ratios, zero is the absence the ladder exists to notice the
+/// end of: 0 duplicated tokens, 0.0 duplication ratio. `band_of` already keeps
+/// such zeros out of every band; this predicate finishes the same reasoning on
+/// the denominator side — a value that is not part of a shaved distribution
+/// belongs neither in the band nor in the population being judged for shaving.
+/// Without it, honest zeros dilute the fraction and a genuine hugging streak
+/// is undetectable on exactly the metrics whose honest mode IS zero (a real
+/// dogfood ledger's duplicated-tokens column is all zeros), which would hollow
+/// the S1 monitor where the cron points it.
+///
+/// Integer and duration rungs are left alone: an integer is a delta where zero
+/// is a measured "no change", and a duration of zero is a measured time, not
+/// an absence. No shipped ladder ranks either today; the conservative reading
+/// costs nothing.
+fn zero_means_nothing_found(rung: Threshold) -> bool {
+    matches!(rung, Threshold::Count(_) | Threshold::Ratio(_))
 }
 
 /// The "just under" band for one rung: `(floor, ceiling)` in f64, or `None`
@@ -760,7 +810,9 @@ mod tests {
     fn a_disabled_zero_band_rung_does_not_shield_the_rungs_above_it() {
         // The other direction the fix must hold: refusing the rung at 1 must
         // not quiet the ladder — blatant hugging under the rung at 20 still
-        // fires with the zeros sitting in the same distribution.
+        // fires with the zeros sitting in the same distribution. The zeros
+        // are outside the population entirely, so six of the six non-zero
+        // values are in the band.
         let entries = vec![entry_with_values(
             count_values(&[0, 0, 19, 19, 19, 18, 19, 19]),
             None,
@@ -774,7 +826,71 @@ mod tests {
             warning.message
         );
         assert_eq!(warning.in_band, 6);
-        assert_eq!(warning.total, 8);
+        assert_eq!(warning.total, 6);
+    }
+
+    #[test]
+    fn honest_zeros_cannot_dilute_a_hugging_streak() {
+        // The confirm-pass MED, count shape: six blatantly hugging values
+        // beside seven honest zeros. With zeros padding the denominator this
+        // was 6/13 = 46% and silent — a genuine S1 streak undetectable unless
+        // gamed values outnumbered the metric's own honest zeros, on metrics
+        // whose honest mode IS zero. Among the values that exist, it is 6/6.
+        let entries = vec![entry_with_values(
+            count_values(&[18, 19, 19, 19, 18, 19, 0, 0, 0, 0, 0, 0, 0]),
+            None,
+        )];
+        let built = distribution(&entries, &count_ladder, false);
+        assert_eq!(built.warnings.len(), 1, "{:?}", built.warnings);
+        let warning = &built.warnings[0];
+        assert_eq!(warning.in_band, 6);
+        assert_eq!(warning.total, 6, "zeros must not pad the denominator");
+        assert!(
+            warning.message.contains("6 of 6 non-zero values"),
+            "{}",
+            warning.message
+        );
+    }
+
+    const RATIO_RUNGS: &[Rung] = &[Rung {
+        at: Threshold::Ratio(0.20),
+        severity: Severity::Medium,
+    }];
+
+    fn ratio_ladder(metric_id: &str) -> Option<SeverityLadder> {
+        (metric_id == "static.cognitive-complexity")
+            .then_some(SeverityLadder::Thresholds(RATIO_RUNGS))
+    }
+
+    #[test]
+    fn honest_zeros_cannot_dilute_a_hugging_streak_of_ratios() {
+        // The same dilution, ratio shape: 0.0 is the nothing-found value of a
+        // ratio metric (a change with no duplication has ratio 0.0), and six
+        // values at 0.19 under the rung at 0.20 are a streak whatever number
+        // of honest zeros sit beside them.
+        let values: Vec<MetricValue> = [0.19, 0.19, 0.19, 0.19, 0.19, 0.19, 0.0, 0.0, 0.0, 0.0]
+            .iter()
+            .map(|v| MetricValue::Ratio(*v))
+            .collect();
+        let entries = vec![entry_with_values(values, None)];
+        let built = distribution(&entries, &ratio_ladder, false);
+        assert_eq!(built.warnings.len(), 1, "{:?}", built.warnings);
+        let warning = &built.warnings[0];
+        assert_eq!(warning.in_band, 6);
+        assert_eq!(warning.total, 6);
+    }
+
+    #[test]
+    fn a_sub_minimum_cluster_stays_quiet_however_many_zeros_sit_beside_it() {
+        // MIN_SAMPLES is judged against the same non-zero population: four
+        // hugging values and ten zeros is four values, below the floor of
+        // five, and four values are an anecdote whichever way they lean.
+        let entries = vec![entry_with_values(
+            count_values(&[19, 19, 18, 19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            None,
+        )];
+        let built = distribution(&entries, &count_ladder, false);
+        assert!(built.warnings.is_empty(), "{:?}", built.warnings);
     }
 
     #[test]
