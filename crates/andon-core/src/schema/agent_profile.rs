@@ -255,12 +255,22 @@ pub fn encoded_len(profile: &AgentProfile) -> usize {
         .unwrap_or(usize::MAX)
 }
 
+// The span sits between path and symbol so the prefix stays an editor-clickable
+// `path:line` reference, and so byte-cap truncation (which cuts from the end)
+// costs the symbol before it costs the location. The CLI's human render shows
+// only the start line; this view carries the whole span because its reader has
+// to know where the region ends without opening the file to look.
 fn render_scope(scope: &super::payload::ResultScope) -> String {
-    match (&scope.path, &scope.symbol) {
-        (Some(path), Some(symbol)) => format!("{path}:{symbol}"),
-        (Some(path), None) => path.clone(),
-        (None, Some(symbol)) => symbol.clone(),
-        (None, None) => format!("{:?}", scope.kind).to_lowercase(),
+    let span = scope
+        .line_span
+        .map(|span| format!("{}-{}", span.start, span.end));
+    match (&scope.path, &scope.symbol, span) {
+        (Some(path), Some(symbol), Some(span)) => format!("{path}:{span}:{symbol}"),
+        (Some(path), Some(symbol), None) => format!("{path}:{symbol}"),
+        (Some(path), None, Some(span)) => format!("{path}:{span}"),
+        (Some(path), None, None) => path.clone(),
+        (None, Some(symbol), _) => symbol.clone(),
+        (None, None, _) => format!("{:?}", scope.kind).to_lowercase(),
     }
 }
 
@@ -286,6 +296,41 @@ mod tests {
         assert_eq!(truncate_bytes("aé", 3), "aé");
         assert_eq!(truncate_bytes("aéb", 3), "aé");
         assert_eq!(truncate_bytes("aéb", 2), "a");
+    }
+
+    #[test]
+    fn a_med_plus_finding_carries_path_span_and_symbol() {
+        // PLAN P6's agent-consumer bar: a MED+ finding must carry a location an
+        // agent can act on — path, span, and symbol — through the one surface
+        // built for agents. The engines put all three on the result; this pins
+        // that the projection does not drop the span on the way through.
+        let mut record = crate::testing::sample_record();
+        let mut result = crate::testing::sample_result();
+        result.severity = Severity::Medium;
+        result.scope.kind = crate::schema::payload::ScopeKind::Function;
+        result.scope.path = Some("src/index.ts".to_string());
+        result.scope.symbol = Some("classify".to_string());
+        result.scope.line_span = Some(crate::schema::payload::LineSpan { start: 12, end: 84 });
+        record.results = vec![result];
+
+        let profile = build_agent_profile(&record, &AgentProfileBounds::default());
+        assert_eq!(profile.findings.len(), 1);
+        assert_eq!(profile.findings[0].scope, "src/index.ts:12-84:classify");
+    }
+
+    #[test]
+    fn a_finding_without_a_span_renders_path_and_symbol() {
+        // The doc example on `AgentFinding::scope` — this shape still exists.
+        let mut record = crate::testing::sample_record();
+        let mut result = crate::testing::sample_result();
+        result.scope.kind = crate::schema::payload::ScopeKind::Function;
+        result.scope.path = Some("src/index.ts".to_string());
+        result.scope.symbol = Some("handleRequest".to_string());
+        result.scope.line_span = None;
+        record.results = vec![result];
+
+        let profile = build_agent_profile(&record, &AgentProfileBounds::default());
+        assert_eq!(profile.findings[0].scope, "src/index.ts:handleRequest");
     }
 
     #[test]
