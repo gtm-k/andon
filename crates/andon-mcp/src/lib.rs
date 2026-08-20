@@ -213,31 +213,46 @@ impl AndonMcp {
             Err(e) => return refusal(e.to_string()),
         };
 
-        // Saved for `get_results`/`await_results` and for the CLI's `report`,
-        // best-effort for the CLI's reason: a transient filesystem failure must
-        // not throw away a computed measurement. The failure is appended to the
-        // payload text rather than logged, because stderr is not a surface this
-        // caller reads.
-        let save_failure = match Git::open(&repo) {
-            Ok(git) => store::write_last(&git, &measurement.record).err(),
-            Err(e) => Some(e.to_string()),
-        };
-
-        let profile =
-            match render::profile(&measurement.record, andon_core::schema::agent_profile::PROFILE_NAME, &repo) {
-                Ok(profile) => profile,
-                Err(e) => return refusal(e),
-            };
-        match save_failure {
-            None => text(profile),
-            Some(e) => CallToolResult::success(vec![
-                ContentBlock::text(profile),
-                ContentBlock::text(format!(
-                    "note: this measurement was not saved for `get_results`: {e}. The profile \
-                     above is unaffected; call `measure_change` again to store it."
-                )),
-            ]),
+        // Two best-effort writes after the answer is computed, for the CLI's
+        // reason: a transient failure must not throw away a measurement that
+        // exists. The saved copy serves `get_results`; the ledger note is the
+        // P6 dogfood instrumentation — an agent-initiated measurement records
+        // its `invocation_source` durably, the way the hook's `--record` does,
+        // or the N=10 acceptance has no evidence that non-hook calls happened.
+        let mut notices: Vec<String> = Vec::new();
+        match Git::open(&repo) {
+            Ok(git) => {
+                if let Err(e) = store::write_last(&git, &measurement.record) {
+                    notices.push(format!(
+                        "note: this measurement was not saved for `get_results`: {e}. The \
+                         profile above is unaffected; call `measure_change` again to store it."
+                    ));
+                }
+                match ledger::record(&git, &measurement.record, &measurement.ledger_anchor) {
+                    // Routine success is the operator's line, not the agent's:
+                    // it goes where the harness logs server stderr.
+                    Ok(note) => eprintln!("andon-mcp: {note}"),
+                    Err(e) => notices.push(format!(
+                        "note: this measurement was not recorded in the ledger: {e}"
+                    )),
+                }
+            }
+            Err(e) => notices.push(format!(
+                "note: this measurement was neither saved nor ledger-recorded: {e}"
+            )),
         }
+
+        let profile = match render::profile(
+            &measurement.record,
+            andon_core::schema::agent_profile::PROFILE_NAME,
+            &repo,
+        ) {
+            Ok(profile) => profile,
+            Err(e) => return refusal(e),
+        };
+        let mut content = vec![ContentBlock::text(profile)];
+        content.extend(notices.into_iter().map(ContentBlock::text));
+        CallToolResult::success(content)
     }
 
     /// Re-serve the last measurement as the agent profile, without measuring.
