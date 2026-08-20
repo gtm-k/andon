@@ -76,8 +76,16 @@ struct TrailerRow {
     deterministic: bool,
 }
 
-/// The trailer digest of a record: 64 lowercase hex characters.
-pub fn trailer_digest(record: &MeasurementRecord) -> Result<String, TrailerError> {
+/// The canonical JSON the trailer digest is computed over.
+///
+/// Public so the wire contract has a face: P9's verifier must reproduce these
+/// bytes exactly to reproduce the digest, and `tests/trailer_vector.rs` pins
+/// them verbatim. Debugging a trailer mismatch starts by diffing two of these.
+pub fn digest_input_canonical(record: &MeasurementRecord) -> Result<String, TrailerError> {
+    Ok(canonical::to_canonical_string(&input_of(record)?)?)
+}
+
+fn input_of(record: &MeasurementRecord) -> Result<TrailerDigestInput<'_>, TrailerError> {
     let rows = digest_rows(record)?
         .into_iter()
         .map(|row| TrailerRow {
@@ -87,14 +95,18 @@ pub fn trailer_digest(record: &MeasurementRecord) -> Result<String, TrailerError
             deterministic: row.deterministic,
         })
         .collect();
-    let input = TrailerDigestInput {
+    Ok(TrailerDigestInput {
         schema_version: record.schema_version,
         base_oid: &record.compare_context.base_oid,
         head_oid: &record.compare_context.head_oid,
         head_kind: record.compare_context.head_kind,
         rows,
-    };
-    Ok(canonical::digest(&input)?)
+    })
+}
+
+/// The trailer digest of a record: 64 lowercase hex characters.
+pub fn trailer_digest(record: &MeasurementRecord) -> Result<String, TrailerError> {
+    Ok(canonical::digest(&input_of(record)?)?)
 }
 
 /// The full trailer line, ready to append to a commit message.
