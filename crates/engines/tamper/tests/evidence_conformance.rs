@@ -65,6 +65,7 @@ fn context() -> MeasureContext {
         compare_context: CompareContext {
             base_oid: "0".repeat(40),
             head_oid: "1".repeat(40),
+            head_kind: andon_core::schema::payload::HeadKind::Commit,
             git_version: "git version 2.51.0".to_string(),
             base_resolution: "explicit".to_string(),
         },

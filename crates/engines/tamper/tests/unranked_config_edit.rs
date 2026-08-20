@@ -50,6 +50,7 @@ fn context() -> MeasureContext {
         compare_context: CompareContext {
             base_oid: "0".repeat(40),
             head_oid: "1".repeat(40),
+            head_kind: andon_core::schema::payload::HeadKind::Commit,
             git_version: "git version 2.51.0".to_string(),
             base_resolution: "explicit".to_string(),
         },
@@ -422,6 +423,7 @@ fn a_firing_that_is_also_unranked_elsewhere_still_stops_the_line() {
 
     let policy = Policy::default();
     let ctx = andon_core::verdict::VerdictContext {
+        unreadable_paths: &[],
         completeness: andon_core::parse_health::weakest(&results),
         policy: &policy,
         policy_change: None,
