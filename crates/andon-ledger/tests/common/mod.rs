@@ -68,7 +68,7 @@ pub fn head(git: &Git) -> String {
 }
 
 /// Create a bare central repository at `path`.
-pub fn bare_origin(path: &Path) -> () {
+pub fn bare_origin(path: &Path) {
     bootstrap()
         .cmd(["init", "--quiet", "--bare", "--initial-branch", "main"])
         .arg(path)

@@ -86,7 +86,10 @@ mod tests {
         second.invocation.iteration = 2;
         let records = vec![first, second];
         assert_eq!(
-            decisive(&records).expect("two records").invocation.iteration,
+            decisive(&records)
+                .expect("two records")
+                .invocation
+                .iteration,
             1,
             "between equal records, re-measuring must buy nothing"
         );

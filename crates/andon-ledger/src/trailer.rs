@@ -173,8 +173,8 @@ mod tests {
     fn near_misses_are_not_trailers() {
         for message in [
             "Andon-Measure-Digest: not-hex-at-all",
-            "Andon-Measure-Digest: abc123",                    // too short
-            "Andon-Measure-Digest deadbeef",                   // no colon
+            "Andon-Measure-Digest: abc123",  // too short
+            "Andon-Measure-Digest deadbeef", // no colon
             "Some-Other-Trailer: 0000000000000000000000000000000000000000000000000000000000000000",
         ] {
             assert!(

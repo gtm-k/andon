@@ -530,14 +530,14 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
         "stats" => {
             let by = match flags.get("by") {
                 None => None,
-                Some(name) => Some(andon_ledger::stats::Dimension::parse(name).ok_or_else(
-                    || {
+                Some(name) => {
+                    Some(andon_ledger::stats::Dimension::parse(name).ok_or_else(|| {
                         format!(
                             "'{name}' is not a ledger dimension; the dimensions are source, \
                              harness, model, author, iteration"
                         )
-                    },
-                )?),
+                    })?)
+                }
             };
             let filter = flags
                 .get("filter")
@@ -580,7 +580,11 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 .ok_or("migrate needs --to <REV>, the commit the squash landed")?;
             print!("\n{}\n", ledger::migrate(&git, from, to)?);
         }
-        other => return Err(format!("unknown ledger command '{other}'\n\n{LEDGER_USAGE}")),
+        other => {
+            return Err(format!(
+                "unknown ledger command '{other}'\n\n{LEDGER_USAGE}"
+            ))
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

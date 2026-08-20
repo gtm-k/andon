@@ -365,11 +365,7 @@ pub fn sync(git: &Git, remote: &str, attempts: u32) -> Result<String, String> {
                 out,
                 "  {}: {}merged and pushed.",
                 ref_sync.notes_ref,
-                if ref_sync.fetched {
-                    "fetched, "
-                } else {
-                    ""
-                }
+                if ref_sync.fetched { "fetched, " } else { "" }
             ),
             Pushed::OnAttempt(n) => writeln!(
                 out,

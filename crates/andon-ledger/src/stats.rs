@@ -305,9 +305,7 @@ pub fn regime_label(regime: &MeasurementRegime) -> String {
             engine_version,
             git_version,
             history_window_days,
-        } => format!(
-            "process v{engine_version} git {git_version} window {history_window_days}d"
-        ),
+        } => format!("process v{engine_version} git {git_version} window {history_window_days}d"),
         MeasurementRegime::Artifacts {
             engine_version,
             parser_versions,
@@ -459,8 +457,7 @@ pub fn distribution(
                     .collect();
                 Some(summarize(&all))
             } else {
-                let labels: Vec<String> =
-                    groups.iter().map(|g| g.regime_label.clone()).collect();
+                let labels: Vec<String> = groups.iter().map(|g| g.regime_label.clone()).collect();
                 refusals.push(CrossRegimeRefusal {
                     message: refusal_message(&metric_id, &labels),
                     metric_id: metric_id.clone(),

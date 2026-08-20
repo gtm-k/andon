@@ -86,8 +86,14 @@ fn exhausted_retries_are_a_red_failure_that_names_the_state_and_the_next_step() 
 
     // "nothing was lost" is a claim, so it is checked, not trusted: the record
     // is still in the local ref after the failed sync.
-    let records = Notes::measure(&a).read(&pr).expect("the local ledger reads");
-    assert_eq!(records.len(), 1, "the failure must not eat the local record");
+    let records = Notes::measure(&a)
+        .read(&pr)
+        .expect("the local ledger reads");
+    assert_eq!(
+        records.len(),
+        1,
+        "the failure must not eat the local record"
+    );
 }
 
 #[test]
@@ -96,10 +102,7 @@ fn a_single_attempt_configuration_still_fails_loudly() {
     // loudness must not depend on the retry loop having looped.
     let (_origin, a, _pr) = rigged("fault-single");
     let err = sync_all(&a, "origin", &fast(1)).expect_err("one rejected push is still a failure");
-    assert!(matches!(
-        err,
-        SyncError::PushExhausted { attempts: 1, .. }
-    ));
+    assert!(matches!(err, SyncError::PushExhausted { attempts: 1, .. }));
     assert!(err.to_string().contains("LEDGER PUSH FAILED"));
 }
 

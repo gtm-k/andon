@@ -179,7 +179,14 @@ fn stats_carries_the_scope_line_and_answers_by_dimension() {
     // single-repo, not the fleet — must be in the output, not in a doc.
     let repo = honest_repo();
     let path = repo.path().to_str().expect("utf-8");
-    let output = run(&["measure", "--repo", path, "--record", "--harness", "test-rig"]);
+    let output = run(&[
+        "measure",
+        "--repo",
+        path,
+        "--record",
+        "--harness",
+        "test-rig",
+    ]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 
     let output = run(&["ledger", "stats", "--repo", path]);
@@ -195,16 +202,19 @@ fn stats_carries_the_scope_line_and_answers_by_dimension() {
         assert!(out.contains(needle), "missing {needle:?} in: {out}");
     }
 
-    let output = run(&[
-        "ledger", "stats", "--repo", path, "--by", "source",
-    ]);
+    let output = run(&["ledger", "stats", "--repo", path, "--by", "source"]);
     let out = stdout(&output);
     assert!(out.contains("by invocation-source:"), "{out}");
     assert!(out.contains("human-cli: 1 record(s)"), "{out}");
 
     // The filter keeps what matches and says what it kept.
     let output = run(&[
-        "ledger", "stats", "--repo", path, "--filter", "harness=nonexistent",
+        "ledger",
+        "stats",
+        "--repo",
+        path,
+        "--filter",
+        "harness=nonexistent",
     ]);
     let out = stdout(&output);
     assert!(out.contains("kept 0 of 1 record(s)"), "{out}");
@@ -281,9 +291,15 @@ fn migrate_carries_the_record_onto_the_landed_commit_and_says_what_it_did() {
         &[planted("sample.metric", MetricValue::Count(3))],
     );
     // The squash stand-in: a new commit that no note points at.
-    git.cmd(["commit", "--quiet", "--allow-empty", "-m", "squash: landing"])
-        .output()
-        .expect("commit");
+    git.cmd([
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "squash: landing",
+    ])
+    .output()
+    .expect("commit");
     let landed = head_of(&git);
 
     let output = run(&[
