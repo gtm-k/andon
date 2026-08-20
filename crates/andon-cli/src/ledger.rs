@@ -4,16 +4,18 @@
 //!
 //! The ledger is the repository as a longitudinal dataset: every measurement
 //! recorded against the commit it measured, in a git notes namespace, dimensioned
-//! by who asked, through what harness, on which pass. **P8 owns the full
-//! machinery** — the dimensions query, `ledger stats --distribution`, squash
-//! migration as a supported operation, fault-injected push failures.
+//! by who asked, through what harness, on which pass. The full machinery is
+//! P8's `andon-ledger` crate — the dimensions query, `ledger stats
+//! --distribution` with the clustering warning and the cross-regime refusal,
+//! squash migration as a supported operation, and the sync loop whose exhausted
+//! push retries fail red rather than quietly.
 //!
-//! What is here is the part the CLI needs to be useful on its own and no more:
-//! append this measurement to the commit, list what is recorded, show one
-//! commit's records, and clear the iteration counter once a human has looked at
-//! an escalation. The notes plumbing itself is P1.5's
-//! (`andon_ledger_min::notes`), already concurrency-safe and squash-aware; this
-//! is a caller, not a second implementation.
+//! What is here is rendering and dispatch and no more: append this measurement
+//! to the commit, list what is recorded, show one commit's records, clear the
+//! iteration counter once a human has looked at an escalation, and turn the
+//! ledger crate's answers into sentences. The notes plumbing itself is P1.5's
+//! (`andon_ledger_min::notes`), already concurrency-safe and squash-aware; both
+//! this module and `andon-ledger` are callers, not second implementations.
 //!
 //! # `ack` is here rather than nowhere
 //!
@@ -29,7 +31,10 @@ use andon_core::git::Git;
 use andon_core::policy::Policy;
 use andon_core::schema::payload::MeasurementRecord;
 use andon_core::verdict::iteration::IterationStore;
-use andon_ledger_min::notes::{Notes, MEASURE_REF};
+use andon_ledger::migrate::migrate_squash;
+use andon_ledger::stats::{self, Dimension, Filter};
+use andon_ledger::sync::{sync_all, Pushed, SyncOptions};
+use andon_ledger_min::notes::{Notes, ATTEST_REF, MEASURE_REF};
 
 use crate::store;
 
@@ -161,6 +166,263 @@ pub fn show(git: &Git, commit: &str) -> Result<Vec<MeasurementRecord>, String> {
     Notes::new(git, MEASURE_REF)
         .read(commit)
         .map_err(|e| e.to_string())
+}
+
+/// What `andon ledger stats` was asked for.
+pub struct StatsRequest {
+    /// Which ledger ref to read (`measure` or `attest`).
+    pub notes_ref: String,
+    /// Whether to include per-metric value distributions.
+    pub distribution: bool,
+    /// Whether pooled cross-regime aggregates were explicitly requested.
+    pub across_regimes: bool,
+    /// Slice one dimension with a verdict breakdown.
+    pub by: Option<Dimension>,
+    /// Keep only records matching this dimension=value restriction.
+    pub filter: Option<Filter>,
+}
+
+/// The stats rendering, and whether any threshold-clustering warning fired.
+///
+/// The second half is for `--check`: a warning that only exists as prose in a
+/// log is invisible to the one actor the CI cron has — the exit code — so the
+/// caller turns `true` into a nonzero exit rather than grepping its own output.
+pub fn stats_report(git: &Git, request: &StatsRequest) -> Result<(String, bool), String> {
+    let scan = stats::load_ref(git, &request.notes_ref).map_err(|e| e.to_string())?;
+    let total_loaded = scan.entries.len();
+    let mut entries = scan.entries;
+    if let Some(filter) = &request.filter {
+        entries.retain(|entry| filter.matches(&entry.record));
+    }
+
+    let mut out = String::new();
+    let _ = writeln!(out, "\n  {}\n", stats::SCOPE_LINE);
+    let commits: std::collections::BTreeSet<&str> =
+        entries.iter().map(|e| e.commit.as_str()).collect();
+    let _ = writeln!(
+        out,
+        "  {} record(s) on {} commit(s) in {} ({:.1} KB of note bodies).",
+        entries.len(),
+        commits.len(),
+        scan.notes_ref,
+        scan.body_bytes as f64 / 1024.0
+    );
+    if let Some(filter) = &request.filter {
+        let _ = writeln!(
+            out,
+            "  Filtered: {}={} kept {} of {} record(s).",
+            filter.dimension.name(),
+            filter.value,
+            entries.len(),
+            total_loaded
+        );
+    }
+    if entries.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n  Nothing to summarize. `andon measure --record` writes a record against the\n  \
+             commit it measured; `andon ledger sync` brings the remote's ledger here.\n"
+        );
+        return Ok((out, false));
+    }
+
+    match request.by {
+        Some(dimension) => {
+            let _ = writeln!(out, "\n  by {}:", dimension.name());
+            for (value, cell) in stats::slice(&entries, dimension) {
+                let verdicts: Vec<String> = cell
+                    .verdicts
+                    .iter()
+                    .map(|(verdict, n)| format!("{verdict} {n}"))
+                    .collect();
+                let _ = writeln!(
+                    out,
+                    "    {value}: {} record(s) — {}",
+                    cell.records,
+                    verdicts.join(", ")
+                );
+            }
+        }
+        None => {
+            let _ = writeln!(out, "\n  dimensions (slice one with --by <name>):");
+            for dimension in Dimension::ALL {
+                let sliced = stats::slice(&entries, dimension);
+                let cells: Vec<String> = sliced
+                    .iter()
+                    .map(|(value, cell)| format!("{value} {}", cell.records))
+                    .collect();
+                let _ = writeln!(out, "    {}: {}", dimension.name(), cells.join(" · "));
+            }
+        }
+    }
+
+    let mut clustered = false;
+    if request.distribution {
+        let built = stats::distribution(
+            &entries,
+            &crate::shipped::ladder_for,
+            request.across_regimes,
+        );
+        let _ = writeln!(out, "\n  distribution (per metric, per regime):");
+        for metric in &built.metrics {
+            let _ = writeln!(out, "    {}", metric.metric_id);
+            for group in &metric.groups {
+                let _ = writeln!(
+                    out,
+                    "      [{}]\n        {}",
+                    group.regime_label,
+                    summary_line(&group.summary)
+                );
+            }
+            if let Some(pooled) = &metric.pooled {
+                let _ = writeln!(
+                    out,
+                    "      [mixed-regime, pooled across {} regimes by --across-regimes]\n        {}",
+                    metric.groups.len(),
+                    summary_line(pooled)
+                );
+            }
+        }
+        for refusal in &built.refusals {
+            let _ = writeln!(out, "\n  {}", refusal.message.replace('\n', "\n  "));
+        }
+        for warning in &built.warnings {
+            clustered = true;
+            let _ = writeln!(out, "\n  WARNING: {}", warning.message);
+        }
+        if built.warnings.is_empty() {
+            let _ = writeln!(
+                out,
+                "\n  No value distribution hugs a declared severity rung from below."
+            );
+        }
+    }
+    let _ = writeln!(out);
+    Ok((out, clustered))
+}
+
+/// One summary line for a group of values.
+fn summary_line(summary: &stats::ValueSummary) -> String {
+    let mut parts = Vec::new();
+    if summary.numeric > 0 {
+        parts.push(format!(
+            "{} numeric value(s): min {} · max {} · mean {:.2}",
+            summary.numeric,
+            trim_float(summary.min.unwrap_or(0.0)),
+            trim_float(summary.max.unwrap_or(0.0)),
+            summary.mean.unwrap_or(0.0)
+        ));
+    }
+    if summary.fired + summary.unfired > 0 {
+        parts.push(format!(
+            "{} of {} flag(s) fired",
+            summary.fired,
+            summary.fired + summary.unfired
+        ));
+    }
+    if summary.absent > 0 {
+        parts.push(format!("{} absent (text marker)", summary.absent));
+    }
+    if parts.is_empty() {
+        parts.push("no values".to_string());
+    }
+    parts.join(" · ")
+}
+
+/// Render a float without a trailing `.0` on whole numbers.
+fn trim_float(value: f64) -> String {
+    if value.fract() == 0.0 && value.abs() < 1e15 {
+        format!("{}", value as i64)
+    } else {
+        format!("{value}")
+    }
+}
+
+/// Fetch, merge, and push both ledger refs.
+pub fn sync(git: &Git, remote: &str, attempts: u32) -> Result<String, String> {
+    let options = SyncOptions {
+        attempts,
+        ..SyncOptions::default()
+    };
+    // A failed sync propagates the loud message whole — including the
+    // PushExhausted text that names the consequence and the recovery — and
+    // main() turns it into exit 1.
+    let synced = sync_all(git, remote, &options).map_err(|e| e.to_string())?;
+    let mut out = String::new();
+    for ref_sync in synced {
+        let _ = match ref_sync.pushed {
+            Pushed::NothingToPush => writeln!(
+                out,
+                "  {}: nothing recorded locally{}; nothing to push.",
+                ref_sync.notes_ref,
+                if ref_sync.fetched {
+                    ""
+                } else {
+                    " and nothing on the remote"
+                }
+            ),
+            Pushed::OnAttempt(1) => writeln!(
+                out,
+                "  {}: {}merged and pushed.",
+                ref_sync.notes_ref,
+                if ref_sync.fetched {
+                    "fetched, "
+                } else {
+                    ""
+                }
+            ),
+            Pushed::OnAttempt(n) => writeln!(
+                out,
+                "  {}: pushed on attempt {n} — the remote moved underneath the first push(es); \
+                 the retry re-fetched, merged, and recovered every record.",
+                ref_sync.notes_ref
+            ),
+        };
+    }
+    Ok(out)
+}
+
+/// Carry both refs' records from a pre-squash head onto the landed commit.
+pub fn migrate(git: &Git, from: &str, to: &str) -> Result<String, String> {
+    let migrations = migrate_squash(git, from, to).map_err(|e| e.to_string())?;
+    let mut out = String::new();
+    let mut moved_any = false;
+    for migration in migrations {
+        if migration.source_records == 0 {
+            let _ = writeln!(
+                out,
+                "  {}: no records on the source commit; nothing to migrate.",
+                migration.notes_ref
+            );
+        } else {
+            moved_any = true;
+            let _ = writeln!(
+                out,
+                "  {}: {} record(s) migrated; the landed commit now carries {}.",
+                migration.notes_ref, migration.source_records, migration.target_records
+            );
+        }
+    }
+    if moved_any {
+        let _ = writeln!(
+            out,
+            "  The source notes stay in place — the pre-squash commits are still history and\n  \
+             their records are still true of them. Run `andon ledger sync` to publish."
+        );
+    }
+    Ok(out)
+}
+
+/// The notes ref a user-facing name selects.
+pub fn ref_named(name: &str) -> Result<&'static str, String> {
+    match name {
+        "measure" => Ok(MEASURE_REF),
+        "attest" => Ok(ATTEST_REF),
+        other => Err(format!(
+            "'{other}' is not a ledger ref name; the refs are 'measure' ({MEASURE_REF}) and \
+             'attest' ({ATTEST_REF})"
+        )),
+    }
 }
 
 /// Clear the iteration counter for a branch, the exit from `escalate_to_human`.
