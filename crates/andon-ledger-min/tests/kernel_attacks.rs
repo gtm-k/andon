@@ -495,7 +495,10 @@ fn a_value_edited_without_resealing_is_refused_at_the_read() {
     let mut records = notes
         .read(&head)
         .expect("the scenario recorded a self-report");
-    assert!(!records.is_empty(), "the fixture measures before it is attacked");
+    assert!(
+        !records.is_empty(),
+        "the fixture measures before it is attacked"
+    );
     let target = records[0].results[0].metric_id.clone();
     // Edit one measured value the way a hostile hand edits a note: in place,
     // digest untouched.
@@ -522,4 +525,35 @@ fn a_value_edited_without_resealing_is_refused_at_the_read() {
     )
     .expect_err("the verifier must refuse what the ledger refuses");
     assert!(err.to_string().contains(&target), "{err}");
+}
+
+/// The same clumsy forger, at the file store rather than the note.
+///
+/// `records::read`/`records::write` are the cross-OS comparison's transport,
+/// and a record file is even easier to edit than a note. This test lived in
+/// `src/records.rs` first and `binary_separation` refused it there — code that
+/// alters a sealed record may not be linked by the measuring binary, test
+/// module or not, and the guard does not read `#[cfg]`. It is right: the home
+/// for tampering is this file, outside the scanned tree, beside the note-level
+/// twin above.
+#[test]
+fn a_value_edited_in_a_record_file_is_refused_at_the_read() {
+    use andon_core::testing::sample_record;
+    use andon_ledger_min::records;
+
+    let dir = std::env::temp_dir().join(format!("andon-records-seal-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let path = dir.join("record.json");
+
+    let mut record = sample_record();
+    records::write(&path, &record).expect("writes");
+    records::read(&path).expect("an honest record reads back");
+
+    record.results[0].value = MetricValue::Count(999_999);
+    records::write(&path, &record).expect("the write path does not judge");
+    let err =
+        records::read(&path).expect_err("a record that contradicts itself must not read back");
+    assert!(err.to_string().contains("sample.metric"), "{err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

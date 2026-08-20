@@ -101,7 +101,9 @@ pub enum NotesError {
     /// after it was sealed. Neither is an attestation outcome: `divergent`
     /// states that two records disagree, and this one record disagrees with
     /// itself before any compare is reached.
-    #[error("{notes_ref} on {commit}: line {line} holds a record that cannot be believed: {source}")]
+    #[error(
+        "{notes_ref} on {commit}: line {line} holds a record that cannot be believed: {source}"
+    )]
     SealBroken {
         /// Which ref the note came from.
         notes_ref: String,
