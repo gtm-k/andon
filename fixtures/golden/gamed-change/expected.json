@@ -75,7 +75,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "c20faa60f784c2030453b90d2c810ea9221a49478e1bc4bf001b8e223787a85d"
+      "digest": "c57aa985db6f229dad7d8858679787ebc8c059d9fb62132f80f6832ee486fc31"
     },
     {
       "metric_id": "clones.duplicated-token-ratio",
@@ -90,7 +90,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "4166bafff05c4bab071ffc13ea22939d21e3f097052faa7499a141a89c7686eb"
+      "digest": "c2b3e22dd8c93a53c3894499d6015b5b88f25414856cf54b5728c437d531d1e2"
     },
     {
       "metric_id": "clones.duplicated-tokens",
@@ -105,7 +105,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "af61d5310a2562a6d5c9974782bddc84f95cd4eb0e9ec22e6c8724aecd61eef6"
+      "digest": "e7eb3a63b3ae6e012a4325b84599dfbe6d0d466d8a5333c7ad6b6ef37021535f"
     },
     {
       "metric_id": "clones.file-duplicated-tokens",
@@ -120,7 +120,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "735864b1ed16efda7da4d3254c2e8c8d69c8791233b2c74fb513ddfa52143bf6"
+      "digest": "9f8370b25c8b2c948ce4a3f5d4a901e5642ed6db08bd984446463fd623d74be5"
     },
     {
       "metric_id": "clones.largest-clone-tokens",
@@ -135,7 +135,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "352d529e29d47f162c054473176f8314c4bdade9dd45a9c75a11c76c6a484449"
+      "digest": "2afc271891ce3cd5d6dab0548689b99b35347da7bb4414ff05d3045718ef27b2"
     },
     {
       "metric_id": "process.change-coupling",
@@ -525,7 +525,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "0c442778c09776f006f66e7feb9765fc4dd6ea3ebdc5135fe7a4258ad6c69817"
+      "digest": "01a0373cbc7eb932f1a75bf79ac7944780f59d1d370516d5b46185b2bb6d93a4"
     },
     {
       "metric_id": "tamper.assertion-free-test.magnitude",
@@ -540,7 +540,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "2c9a8df4f0953e78946393c2054ee8416172750c345d1c711e5f31e1aba9c173"
+      "digest": "601f839b5b8c715b8399ae2c843a7dae8d9bf95e91450c5ef111cf79c2ffee67"
     },
     {
       "metric_id": "tamper.coverage-exclusion-drift",
@@ -555,7 +555,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "ddec3f95e272de2c571992f49d9f1300a2624986040762ebc655e3e9d78eb981"
+      "digest": "ffd974761caf23d5f2103ced51a30f56751968e2f047b12ad68893ebea682113"
     },
     {
       "metric_id": "tamper.coverage-exclusion-drift.magnitude",
@@ -570,7 +570,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "c27e625649463a7ac7b5734145aa5338db581fe9befc0a66ca1745c3139b19b1"
+      "digest": "aed99dbdc3650b7fc5d37328efb88178d02495f6c5fcf9b88cac945823ef3944"
     },
     {
       "metric_id": "tamper.lookup-table-blowup",
@@ -585,7 +585,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "e5e4a1aa700d6e267a1a97d8dddf85e4a3dce129a357973b67de2e6be81b660d"
+      "digest": "0bcef311baf873fff0e86caf15e683db8cfc027889b4b6b00758549be07d9b97"
     },
     {
       "metric_id": "tamper.lookup-table-blowup.magnitude",
@@ -600,7 +600,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "38cfce00f345dd883d2e7d9975e45691d3e1da4faed1e2148548da11ebb8e622"
+      "digest": "1e4926e632d4e56bd241999f12e501a2f8f92b5a5d407749a626d677265c1e9a"
     },
     {
       "metric_id": "tamper.parse-error-delta",
@@ -615,7 +615,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "4935656b5d20ff410a7a7a04c4f19ba5e853b8894931785dcd4d0bef870d7236"
+      "digest": "750d4bef1c486f6b42125ba07b93ca5d961cfec3144c55dd2dbc70ca8388f184"
     },
     {
       "metric_id": "tamper.parse-error-delta.magnitude",
@@ -630,7 +630,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "addb08e920d87fcdc27c7ac2e77ff038cdcb3043d430cfb3f07644d4a2ecdbee"
+      "digest": "117105e5650f2f0f07b9b987e64f95b52d4c2a8a95d2c4a77341e23888e934f7"
     },
     {
       "metric_id": "tamper.suppression-density",
@@ -645,7 +645,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "c45610139f00195d1f6eec036d1ede1839d143beac2cb0e5db816a5077de5d97"
+      "digest": "5a91bd3232e5a8625769bb188119c61d3f7679dcdd365f6da5feed8d18342b61"
     },
     {
       "metric_id": "tamper.suppression-density.magnitude",
@@ -660,7 +660,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "e87f66589ba9bf0932fab459f06efef098615db143fdd385761bcf14c0487f74"
+      "digest": "bd96c57a3cf28012e378e97a32f3a6384ed0860f5bcee8446114f10cb522fda8"
     },
     {
       "metric_id": "tamper.test-removal",
@@ -675,7 +675,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "b848adb0da8852c7e223b5ab334debb5d511cd5adb518e8191dcbf9b672b7b5c"
+      "digest": "4c37992662d9731bd810412db081a44ed89f130f39efb372673feea3624a0509"
     },
     {
       "metric_id": "tamper.test-removal.magnitude",
@@ -690,7 +690,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "77051d81dfa937f61c72484bcca503afa45bfd5c6f22f547089571328590985f"
+      "digest": "88c27bbf041840e0f1c687ce2ebd1044a69f018ba3638a232e74fec15b3f4dc4"
     },
     {
       "metric_id": "tamper.threshold-config-edit",
@@ -705,7 +705,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "877ba52705763ceacf5134c9ff83663883043de6a39d2b761776934ed173643a"
+      "digest": "32e1b5d0e96b394ac93dfc8d860cbcea32607545e63eafd0f5ca0b7c8f6462f2"
     },
     {
       "metric_id": "tamper.threshold-config-edit.magnitude",
@@ -720,7 +720,7 @@
       "completeness": "complete",
       "metric_class": "diffactionable",
       "deterministic": true,
-      "digest": "5d59c3a61e912ba9f778dfaed3f8cfc7fb993a6a5769c64b55bf3979832c1e73"
+      "digest": "07e08d850a875317bd9e4df15a382332bc7b37fdc312caad46f65f40433a1495"
     }
   ]
 }
