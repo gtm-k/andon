@@ -84,24 +84,52 @@ fn install_stop_hook(path: &Path, self_measure: bool) -> Result<Step, String> {
         ));
     };
 
-    let already = stop.iter().any(|entry| {
-        entry["hooks"]
-            .as_array()
-            .is_some_and(|list| list.iter().any(|h| is_our_command(&h["command"])))
-    });
-    if already {
+    // Ours may already be here — with the flag this install asked for, or the
+    // other one. "Present" alone is not "unchanged": an install that answers
+    // `--self-measure` with the plain hook still on duty has silently ignored
+    // the flag, and the dogfood evidence that hook produces cannot be told
+    // apart from the real thing afterwards. So the variant is compared, and a
+    // mismatch is rewritten in place (as `cursor.rs` rewrites its marker-owned
+    // gate script), leaving foreign hooks in the same entry untouched.
+    let wanted = hook_command("claude-stop", self_measure);
+    let mut same_variant = false;
+    let mut rewrote_from = None;
+    for entry in stop.iter_mut() {
+        let Some(list) = entry.get_mut("hooks").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for hook in list.iter_mut() {
+            if !is_our_command(&hook["command"]) {
+                continue;
+            }
+            let current = hook["command"].as_str().unwrap_or_default().to_string();
+            if current == wanted {
+                same_variant = true;
+            } else {
+                hook["command"] = serde_json::Value::String(wanted.clone());
+                rewrote_from = Some(current);
+            }
+        }
+    }
+    if let Some(from) = rewrote_from {
+        super::write_json_object(path, &root)?;
+        return Ok(Step::Wrote(format!(
+            "{} — the andon Stop hook now runs `{wanted}` (it ran `{from}`; the flag changed)",
+            path.display()
+        )));
+    }
+    if same_variant {
         return Ok(Step::Already(format!(
-            "{} already runs the andon Stop hook",
+            "{} already runs `{wanted}`",
             path.display()
         )));
     }
     stop.push(stop_hook_entry(self_measure));
     super::write_json_object(path, &root)?;
     Ok(Step::Wrote(format!(
-        "{} — a Stop hook running `{}`: blocks the agent's stop on a `block` verdict and \
+        "{} — a Stop hook running `{wanted}`: blocks the agent's stop on a `block` verdict and \
          feeds it the findings",
-        path.display(),
-        hook_command("claude-stop", self_measure)
+        path.display()
     )))
 }
 

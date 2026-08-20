@@ -166,6 +166,87 @@ fn claude_install_is_additive_idempotent_and_removable() {
     );
 }
 
+/// The command strings the two Stop-hook variants install.
+const PLAIN_HOOK: &str = "andon hook claude-stop";
+const SELF_MEASURE_HOOK: &str = "andon hook claude-stop --self-measure";
+
+/// The one andon command in the Stop hooks of `.claude/settings.json`.
+fn installed_stop_command(repo: &Path) -> String {
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.join(".claude").join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    let ours: Vec<&str> = settings["hooks"]["Stop"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|entry| entry["hooks"].as_array().unwrap())
+        .filter_map(|h| h["command"].as_str())
+        .filter(|c| c.starts_with("andon "))
+        .collect();
+    assert_eq!(ours.len(), 1, "exactly one andon Stop hook: {ours:?}");
+    ours[0].to_string()
+}
+
+#[test]
+fn a_variant_change_rewrites_the_installed_stop_hook() {
+    let repo = scratch();
+    // A foreign Stop hook shares the settings file and must survive untouched.
+    let settings = repo.path().join(".claude").join("settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "somebody-elses-hook"}]}]}}"#,
+    )
+    .unwrap();
+    let installed = run_in(repo.path(), &["init", "--claude"]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    assert_eq!(installed_stop_command(repo.path()), PLAIN_HOOK);
+
+    // plain -> self-measure: the flag changed, so "unchanged" would be a
+    // report about a repository whose requested gate is not installed.
+    let raised = run_in(repo.path(), &["init", "--claude", "--self-measure"]);
+    assert!(raised.status.success(), "{}", stderr(&raised));
+    let report = stdout(&raised);
+    assert!(
+        !report.contains("already runs"),
+        "a variant change must not be reported as unchanged: {report}"
+    );
+    assert!(
+        report.contains(SELF_MEASURE_HOOK) && report.contains(&format!("it ran `{PLAIN_HOOK}`")),
+        "the report must name what it installed and what that replaced: {report}"
+    );
+    assert_eq!(installed_stop_command(repo.path()), SELF_MEASURE_HOOK);
+
+    // Same variant again: now it really is unchanged.
+    let again = run_in(repo.path(), &["init", "--claude", "--self-measure"]);
+    assert!(again.status.success(), "{}", stderr(&again));
+    assert!(
+        stdout(&again).contains(&format!("already runs `{SELF_MEASURE_HOOK}`"))
+            && stdout(&again).contains("unchanged"),
+        "{}",
+        stdout(&again)
+    );
+    assert_eq!(installed_stop_command(repo.path()), SELF_MEASURE_HOOK);
+
+    // self-measure -> plain: the rewrite works in both directions.
+    let lowered = run_in(repo.path(), &["init", "--claude"]);
+    assert!(lowered.status.success(), "{}", stderr(&lowered));
+    assert!(
+        stdout(&lowered).contains(&format!("it ran `{SELF_MEASURE_HOOK}`")),
+        "{}",
+        stdout(&lowered)
+    );
+    assert_eq!(installed_stop_command(repo.path()), PLAIN_HOOK);
+
+    // The foreign hook rode through every rewrite untouched.
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    let stop = after["hooks"]["Stop"].as_array().unwrap();
+    assert_eq!(stop.len(), 2, "theirs and ours: {stop:?}");
+    assert_eq!(stop[0]["hooks"][0]["command"], "somebody-elses-hook");
+}
+
 #[test]
 fn an_unparseable_settings_file_is_refused_never_clobbered() {
     let repo = scratch();
