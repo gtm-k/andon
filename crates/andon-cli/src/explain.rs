@@ -123,6 +123,35 @@ pub fn list() -> String {
     out
 }
 
+/// The whole `explain` question for one query, from a repository path to the
+/// rendered answer: load the policy in force, load the registry under it,
+/// resolve the query to a subject, and explain it beside the last measurement.
+///
+/// One function rather than a recipe in each caller, because the CLI and the
+/// MCP server both answer this question and two assemblies of the same steps
+/// is how two surfaces drift. Outside a repository the conservative defaults
+/// apply — which is what the binary would have measured under anyway — but a
+/// `.andon.toml` that exists and cannot be read is surfaced rather than
+/// defaulted, the same rule `measure` applies.
+pub fn run(
+    repo: &std::path::Path,
+    registry_dir: Option<&std::path::Path>,
+    query: &str,
+) -> Result<String, String> {
+    let git = andon_core::git::Git::open(repo).ok();
+    let policy = match &git {
+        Some(git) => measure::load_policy(git, &measure::PolicySource::Worktree)
+            .map_err(|e| e.to_string())?,
+        None => Policy::default(),
+    };
+    let as_of = Date::today_utc().map_err(|_| "the system clock could not be read".to_string())?;
+    let registry =
+        measure::load_registry(registry_dir, &policy, as_of).map_err(|e| e.to_string())?;
+    let subject = subject_of(query)?;
+    let record = git.as_ref().and_then(|git| crate::store::read_last(git).ok());
+    explain(&subject, &policy, &registry, record.as_ref())
+}
+
 /// Explain a subject against the registry this binary compiles in.
 pub fn explain(
     subject: &Subject,

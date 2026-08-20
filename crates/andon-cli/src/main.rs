@@ -39,7 +39,6 @@
 use std::process::ExitCode;
 
 use andon_core::git::Git;
-use andon_core::policy::Policy;
 use andon_core::schema::enums::{InvocationSource, Verdict};
 use andon_core::schema::payload::MeasurementRecord;
 
@@ -403,34 +402,15 @@ fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
         );
     };
 
-    // Policy shapes what a claim's tier is allowed to do, so it is loaded even
-    // when no measurement is taken. Outside a repository the conservative
-    // defaults apply, which is what the binary would have used anyway — but
-    // inside one, a `.andon.toml` that exists and cannot be read is surfaced
-    // rather than defaulted. `measure` treats that condition as an error, and
-    // two surfaces answering one question differently is how an operator ends
-    // up reading a ceiling computed under a policy that is not theirs.
-    let git = Git::open(&flags.path("repo", ".")).ok();
-    let policy = match &git {
-        Some(git) => measure::load_policy(git, &measure::PolicySource::Worktree)
-            .map_err(|e| e.to_string())?,
-        None => Policy::default(),
-    };
-
-    let as_of = andon_core::date::Date::today_utc()
-        .map_err(|_| "the system clock could not be read".to_string())?;
-    let registry = measure::load_registry(
-        flags.get("registry").map(std::path::Path::new),
-        &policy,
-        as_of,
-    )
-    .map_err(|e| e.to_string())?;
-
-    let subject = explain::subject_of(query)?;
-    let record = git.as_ref().and_then(|git| store::read_last(git).ok());
+    // One body with the MCP server's `explain_finding` (`explain::run`), so the
+    // two surfaces cannot answer one question differently.
     print!(
         "{}",
-        explain::explain(&subject, &policy, &registry, record.as_ref())?
+        explain::run(
+            &flags.path("repo", "."),
+            flags.get("registry").map(std::path::Path::new),
+            query,
+        )?
     );
     println!();
     Ok(ExitCode::SUCCESS)
