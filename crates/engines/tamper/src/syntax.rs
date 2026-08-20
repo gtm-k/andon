@@ -21,7 +21,40 @@ use tree_sitter::{Node, Parser, Tree};
 /// Version of the detector rule pack: the patterns, keys, and thresholds the
 /// seven detectors match on. Bumped whenever any of them changes, because a
 /// changed rule changes what fires.
-pub const RULE_PACK_VERSION: &str = "2";
+///
+/// `3` adds exclusion-breadth ranking to `coverage-exclusion-drift` and
+/// rule-option ranking to `threshold-config-edit`.
+///
+/// `4` changes what two rules mean and which files one of them opens:
+/// `threshold-config-edit` reads golangci-lint's and Clippy's key semantics
+/// through a per-tool table (`detectors::threshold_config_edit::Bound`), so
+/// golangci's zero sentinel and Clippy's `-threshold` suffix now rank in the
+/// direction their own tools give them; and `config::Match::Family` no longer
+/// reads a variant name segment in a syntax a runtime executes, so
+/// `eslint.config.spec.ts` is a module again rather than configuration.
+///
+/// That is the whole reason this constant exists, and the reason it is not
+/// optional. Regime equality is step 2 of the trust decision
+/// (`andon_core::compare`): equal regimes with disagreeing digests classify
+/// `divergent`, which is the first-class tamper **attestation**. It raises no
+/// tamper *signal* — `Classification::tamper_signals` is only ever
+/// `base-fabrication`, and a digest disagreement adds nothing to it — and that
+/// makes the outcome no gentler, because on this axis the attestation is the
+/// accusation.
+///
+/// Which is the counterfactual, and it is worth stating as one. *Without* the
+/// move to `4`, an agent measuring on this build and CI attesting on the last
+/// would meet at an equal regime carrying digests that disagree, and step 2
+/// would pass them through to the digest compare: a version skew wearing the
+/// shape of divergence. *With* it the regimes differ, `classify` returns
+/// `unwitnessed-version-skew` at step 2, and no digest is ever looked at. That
+/// is PREMORTEM S4, and the same failure the grammar pins below ride here to
+/// prevent.
+///
+/// `DETECTOR_SET_REVISION` is deliberately not bumped alongside either: there
+/// are still exactly seven detectors, and that constant answers which ones
+/// exist rather than what they match on.
+pub const RULE_PACK_VERSION: &str = "4";
 
 /// Revision of the detector *set* — which detectors exist at all.
 pub const DETECTOR_SET_REVISION: &str = "1";

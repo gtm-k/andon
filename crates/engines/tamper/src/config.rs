@@ -29,6 +29,253 @@
 //! whose names say they are configuration, so a `:` in a source file never
 //! reaches here.
 
+/// A tool whose configuration a detector reads, named by its stem rather than
+/// by a spelling of its file name.
+///
+/// # The list was the bug, so the list stopped being the answer
+///
+/// Both detectors used to hold an array of exact file names. `.nycrc` and
+/// `.nycrc.json` were in it and `.nycrc.yml` was not, so the identical edit
+/// fired in two spellings of one file and came back
+/// `{flag: false, magnitude: 0, completeness: "complete"}` in a third — nyc
+/// reads all of them. The same hole held `.eslintrc.cjs` beside `.eslintrc.js`,
+/// `.eslintrc.yaml` beside `.eslintrc.yml`, `eslint.config.cjs` beside three
+/// other flat-config spellings, `.golangci.toml` beside `.golangci.yml`, and
+/// `.c8rc` beside `.c8rc.json`. Every one of them was a confident zero on a
+/// format the detector would say it recognises.
+///
+/// A name can always be added, and there will always be another one. So what is
+/// matched is the *stem* — the file name with its syntax extension taken off —
+/// and the extension is then read against the syntaxes that tool actually
+/// reads. That is what closes the class rather than the cases: `.nycrc.json5`
+/// is nyc configuration before anybody writes one.
+///
+/// # And then the stem was the bug
+///
+/// Taking *any* extension off *any* stem is one step too wide, and the step
+/// lands on ordinary source. `pyproject` is configuration as `.toml` and a
+/// perfectly ordinary Python module as `.py`, so `src/pyproject.py` raising
+/// `max_warnings` from 10 to 100 came back as a tamper firing on somebody's
+/// honest code. `tarpaulin.rs`, `clippy.rs`, `mypy.py`, `ruff.py`, `biome.ts`
+/// and `codecov.py` are the same shape, and a tool that accuses honest work
+/// gets uninstalled (PREMORTEM A4) — which is a worse outcome than the missed
+/// detection the stem rule was widened to fix.
+///
+/// The line is drawn where it can be drawn without another list: a **dotfile
+/// stem cannot be ordinary source**, because nothing in these ecosystems
+/// compiles `.nycrc.ts` as a module. So [`Match::AnySyntax`] — the open class,
+/// the one that covers the syntax nobody has written yet — is reserved for
+/// stems beginning with a dot, and [`Tool::any`] refuses to construct anything
+/// else. Every other stem names the syntaxes its own tool reads.
+#[derive(Debug, Clone, Copy)]
+pub struct Tool {
+    /// The stem, lower-cased and without its syntax extension.
+    pub stem: &'static str,
+    /// How the stem is matched.
+    pub how: Match,
+}
+
+/// How a [`Tool`]'s stem is matched against a file name.
+#[derive(Debug, Clone, Copy)]
+pub enum Match {
+    /// This exact stem, in any syntax — including one nobody has written yet.
+    ///
+    /// Legal only for a dotfile stem, which is the condition under which "any
+    /// syntax" cannot reach ordinary source: `.nycrc`, `.golangci`, `.eslintrc`.
+    /// [`Tool::any`] enforces it.
+    AnySyntax,
+    /// This stem, or — in a syntax a runtime does not execute — one that
+    /// extends it with a further `.` segment, for the families that spell a
+    /// variant into the name itself: `tsconfig.base.json`,
+    /// `jest.config.ci.json`, `sonar-project.ci.properties`.
+    ///
+    /// # The variant segment stops at the syntaxes that are also source
+    ///
+    /// A further segment is an arbitrary word, and in `.ts` an arbitrary word
+    /// is what an ordinary module is called. `eslint.config.spec.ts` is a test
+    /// module that holds a config's expected values as literals, and it was
+    /// read as ESLint configuration and accused of loosening the very rule it
+    /// asserts — the [`Tool`] `pyproject.py` failure one level up, and the same
+    /// answer: a tool that accuses honest work gets uninstalled (PREMORTEM A4),
+    /// which is worse than the detection the breadth was there to buy.
+    ///
+    /// `.json`, `.jsonc` and `.properties` are not modules, so a variant
+    /// segment there cannot be somebody's source file and the open form stays.
+    /// What is given up is the executable spelling of a **non-default** config
+    /// — `jest.config.ci.js`, which a tool only loads when a script or a CLI
+    /// flag names it. That file is out of subject; the data spelling of the
+    /// same variant, `jest.config.ci.json`, is not.
+    Family(&'static [&'static str]),
+    /// This exact stem, and only in these syntaxes. For every stem an ordinary
+    /// file could carry: `setup.cfg` is configuration and `setup.ts` is code,
+    /// `pyproject.toml` is configuration and `pyproject.py` is code.
+    Syntaxes(&'static [&'static str]),
+}
+
+impl Tool {
+    /// A dotfile stem, in any syntax.
+    ///
+    /// # Why this asserts rather than documenting a rule
+    ///
+    /// The tool tables are `const`, so the assertion runs at compile time and a
+    /// non-dotfile stem is a build failure rather than a false positive
+    /// somebody's CI discovers. The alternative — a sentence in a doc comment
+    /// saying "only for stems nobody else could carry" — is exactly what stood
+    /// here when `pyproject` was declared with this constructor. A rule the
+    /// constructor does not enforce is a rule the next tool breaks.
+    pub const fn any(stem: &'static str) -> Tool {
+        assert!(
+            !stem.is_empty() && stem.as_bytes()[0] == b'.',
+            "Tool::any is the open class, and only a dotfile stem is safe in it: any \
+             other stem answers for every extension, including the one an ordinary \
+             source file carries. Use Tool::only with the syntaxes this tool reads."
+        );
+        Tool {
+            stem,
+            how: Match::AnySyntax,
+        }
+    }
+
+    /// A family of stems, matched by prefix, in these syntaxes.
+    pub const fn family(stem: &'static str, syntaxes: &'static [&'static str]) -> Tool {
+        Tool {
+            stem,
+            how: Match::Family(syntaxes),
+        }
+    }
+
+    /// One stem, in these syntaxes only.
+    pub const fn only(stem: &'static str, syntaxes: &'static [&'static str]) -> Tool {
+        Tool {
+            stem,
+            how: Match::Syntaxes(syntaxes),
+        }
+    }
+}
+
+/// The file names each tool writes its configuration under.
+///
+/// # Declared once, because the drift between two lists was the original defect
+///
+/// Nine of these are read by both [`crate::detectors::coverage_exclusion_drift`]
+/// and [`crate::detectors::threshold_config_edit`], and the defect that started
+/// all of this — `.nycrc.yml` answering a widening with silence while
+/// `.nycrc.json` fired — was one list holding a spelling the other did not. Two
+/// tables that each named their own syntaxes would have the same failure mode
+/// one level up: `codecov.yaml` added to one detector and forgotten in the
+/// other. So a tool's file names are a fact about the tool, stated here once,
+/// and a detector's table says only *which* tools it reads.
+pub mod tools {
+    use super::Tool;
+
+    /// The syntaxes a JavaScript-ecosystem config file is written in. A loader
+    /// that takes `.js` takes `.mjs`, and the TypeScript spellings are what
+    /// `eslint.config.mts` is.
+    const JS: &[&str] = &["js", "cjs", "mjs", "ts", "mts", "cts"];
+    /// The same, plus JSON, for the loaders that also accept a data file.
+    const JS_OR_JSON: &[&str] = &["js", "cjs", "mjs", "ts", "mts", "cts", "json"];
+    /// JSON, with comments allowed — TypeScript's and Biome's own spelling.
+    const JSONC: &[&str] = &["json", "jsonc"];
+
+    /// The syntaxes a language runtime executes, so a file carrying one is
+    /// something somebody could have written as a module. Read by
+    /// [`super::Match::Family`], which is where that distinction decides
+    /// whether an arbitrary name segment is a config variant or a source file.
+    pub(super) const EXECUTABLE: &[&str] = &["js", "cjs", "mjs", "ts", "mts", "cts"];
+
+    /// This tool's own policy file.
+    pub const ANDON: Tool = Tool::any(".andon");
+    /// TypeScript. `tsconfig.base.json` is the same file with a variant spelled
+    /// into the name, and `.json` is not a syntax anything executes, so the
+    /// variant form is safe here; `src/tsconfig.ts` is a module that reads one.
+    pub const TSCONFIG: Tool = Tool::family("tsconfig", JSONC);
+    /// ESLint's legacy rc file, in all six spellings and the next one.
+    pub const ESLINTRC: Tool = Tool::any(".eslintrc");
+    /// ESLint's flat config.
+    pub const ESLINT_FLAT: Tool = Tool::family("eslint.config", JS);
+    /// Biome. `biome.ts` is a module.
+    pub const BIOME: Tool = Tool::only("biome", JSONC);
+    /// flake8's dotfile.
+    pub const FLAKE8: Tool = Tool::any(".flake8");
+    /// Python's standard project file. `pyproject.py` is a Python module.
+    pub const PYPROJECT: Tool = Tool::only("pyproject", &["toml"]);
+    /// mypy. `mypy.py` is a Python module.
+    pub const MYPY: Tool = Tool::only("mypy", &["ini"]);
+    /// mypy's dotfile form.
+    pub const MYPY_DOT: Tool = Tool::any(".mypy");
+    /// Ruff. `ruff.py` is a Python module.
+    pub const RUFF: Tool = Tool::only("ruff", &["toml"]);
+    /// Ruff's dotfile form.
+    pub const RUFF_DOT: Tool = Tool::any(".ruff");
+    /// Clippy. `clippy.rs` is a Rust module.
+    pub const CLIPPY: Tool = Tool::only("clippy", &["toml"]);
+    /// golangci-lint.
+    pub const GOLANGCI: Tool = Tool::any(".golangci");
+    /// SonarQube's project descriptor.
+    pub const SONAR: Tool = Tool::family("sonar-project", &["properties"]);
+    /// Jest. Its loader also accepts a JSON file.
+    pub const JEST: Tool = Tool::family("jest.config", JS_OR_JSON);
+    /// Vitest.
+    pub const VITEST: Tool = Tool::family("vitest.config", JS);
+    /// nyc's JavaScript config form.
+    pub const NYC_CONFIG: Tool = Tool::family("nyc.config", JS);
+    /// coverage.py's dotfile.
+    pub const COVERAGERC: Tool = Tool::any(".coveragerc");
+    /// nyc's rc file.
+    pub const NYCRC: Tool = Tool::any(".nycrc");
+    /// c8's rc file.
+    pub const C8RC: Tool = Tool::any(".c8rc");
+    /// Codecov. `codecov.py` is the uploader's Python client.
+    pub const CODECOV: Tool = Tool::only("codecov", &["yml", "yaml"]);
+    /// Codecov's dotfile form.
+    pub const CODECOV_DOT: Tool = Tool::any(".codecov");
+    /// cargo-tarpaulin. `tarpaulin.rs` is a Rust module.
+    pub const TARPAULIN: Tool = Tool::only("tarpaulin", &["toml"]);
+    /// setuptools' config, which flake8 and coverage.py also read.
+    pub const SETUP_CFG: Tool = Tool::only("setup", &["cfg"]);
+    /// npm's manifest, which carries a `jest` block.
+    pub const PACKAGE_JSON: Tool = Tool::only("package", &["json"]);
+    /// tox, which coverage.py reads `[coverage:run]` out of.
+    pub const TOX_INI: Tool = Tool::only("tox", &["ini"]);
+}
+
+/// Whether `path` names one of `tools`.
+pub fn names_one_of(path: &str, tools: &[Tool]) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    let (stem, syntax) = stem_and_syntax(name);
+    tools.iter().any(|tool| match tool.how {
+        Match::AnySyntax => stem == tool.stem,
+        // A family spells its variant as a further name segment —
+        // `tsconfig.base`, `jest.config.ci` — and never as a suffix, or
+        // `tsconfig` claims `tsconfig-loader.ts` and a source file becomes
+        // threshold configuration. And the segment is only read in a syntax
+        // nothing executes, because there an arbitrary word cannot be a
+        // module's name: see [`Match::Family`].
+        Match::Family(syntaxes) => {
+            let variant = !tools::EXECUTABLE.contains(&syntax)
+                && stem
+                    .strip_prefix(tool.stem)
+                    .is_some_and(|rest| rest.starts_with('.'));
+            (stem == tool.stem || variant) && syntaxes.contains(&syntax)
+        }
+        Match::Syntaxes(syntaxes) => stem == tool.stem && syntaxes.contains(&syntax),
+    })
+}
+
+/// A file name split into its stem and its syntax extension.
+///
+/// The extension is what follows the *last* dot, so `eslint.config.cjs` is the
+/// flat-config stem in the CommonJS syntax rather than an `eslint` file with two
+/// extensions. A leading dot is part of the stem and never a separator:
+/// `.coveragerc` has no extension, and `.nycrc.yml` has one.
+pub fn stem_and_syntax(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(0) | None => (name, ""),
+        Some(at) => (&name[..at], &name[at + 1..]),
+    }
+}
+
 /// One `key = value` found on a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pair {
@@ -42,6 +289,92 @@ pub struct Pair {
 /// Characters that may appear in a key.
 fn is_key_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '*')
+}
+
+/// How many lines a value may run over before the scanner stops following it.
+///
+/// A rule's options and an exclusion list are a handful of lines; a bound is
+/// here because the input is somebody else's file and an unclosed bracket is a
+/// legal thing to write. Past the bound the value is left as the opening line
+/// wrote it, which is what the scanner did before it followed anything.
+const CONTINUATION_LINES: usize = 64;
+
+/// The brackets a line opens and does not close.
+///
+/// Counted rather than parsed, for the reason this whole module is a scanner:
+/// a `[` inside a string literal is rare in these files and being wrong about
+/// one costs a value left unjoined, which is where the scanner started.
+pub fn bracket_delta(line: &str) -> i32 {
+    line.chars().fold(0i32, |depth, c| match c {
+        '[' | '{' => depth + 1,
+        ']' | '}' => depth - 1,
+        _ => depth,
+    })
+}
+
+/// Every `key = value` on the line at `index`, with any value the line did not
+/// finish taken from the lines after it, and how many lines that consumed.
+///
+/// # A value split over lines is the same value
+///
+/// [`pairs`] reads `complexity: ["error", 10]` as one value and had nothing to
+/// say about
+///
+/// ```text
+/// "complexity": [
+///   "error",
+///   10
+/// ]
+/// ```
+///
+/// which is the same setting written the way a formatter writes it. The
+/// opening line's value came back empty and was dropped, the `10` line has no
+/// separator on it, and the whole rule was invisible: raising that 10 to 100
+/// returned `{flag: false, magnitude: 0, completeness: "complete"}` on a file
+/// the detector says it reads. The unfinished sibling is the same shape —
+/// `"complexity": ["error",` leaves a truncated value that is byte-identical
+/// before and after the edit.
+///
+/// Only the values already found on the line are completed. Keys that live
+/// inside the continuation are read when the scan reaches their own lines, so
+/// they keep their own line numbers rather than collapsing onto the opening
+/// one.
+pub fn pairs_continued(lines: &[&str], index: usize) -> (Vec<Pair>, usize) {
+    let mut own = pairs(lines[index]);
+    if own.is_empty() || bracket_delta(lines[index]) <= 0 {
+        return (own, 1);
+    }
+    let mut joined = lines[index].trim().to_string();
+    let mut depth = bracket_delta(lines[index]);
+    let mut spanned = 1usize;
+    for line in lines.iter().skip(index + 1).take(CONTINUATION_LINES) {
+        spanned += 1;
+        if is_noise(line) {
+            continue;
+        }
+        joined.push(' ');
+        joined.push_str(line.trim());
+        depth += bracket_delta(line);
+        if depth <= 0 {
+            break;
+        }
+    }
+    if depth > 0 {
+        // Never closed inside the bound. The opening line's own reading stands,
+        // and so does its line count: claiming to have consumed sixty-four
+        // lines this found nothing in would hide them from every other reader.
+        return (own, 1);
+    }
+    // The joined text begins with the opening line, so `pairs` finds that
+    // line's keys first and in the same order. Matching on the key rather than
+    // on position alone is what keeps a mismatch from writing one setting's
+    // value into another's.
+    for (slot, found) in own.iter_mut().zip(pairs(&joined)) {
+        if slot.key == found.key {
+            slot.value = found.value;
+        }
+    }
+    (own, spanned)
 }
 
 /// Every `key = value` on one line.
@@ -280,7 +613,243 @@ mod tests {
     }
 
     #[test]
+    fn a_value_a_file_split_over_lines_is_read_as_one_value() {
+        let lines = vec![
+            "{",
+            "  \"rules\": {",
+            "    \"complexity\": [",
+            "      \"error\",",
+            "      100",
+            "    ]",
+            "  }",
+            "}",
+        ];
+        let (found, spanned) = pairs_continued(&lines, 2);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key, "complexity");
+        assert_eq!(found[0].value, "[ \"error\", 100 ]");
+        assert_eq!(spanned, 4, "the key's line and the three it ran over");
+
+        // A line that finishes its own value costs nothing and spans one line.
+        let lines = vec!["fail_under = 85"];
+        let (found, spanned) = pairs_continued(&lines, 0);
+        assert_eq!(found[0].value, "85");
+        assert_eq!(spanned, 1);
+    }
+
+    #[test]
+    fn a_bracket_that_never_closes_leaves_the_line_as_it_was() {
+        // The input is somebody else's file and an unclosed bracket is a legal
+        // thing to write. Past the bound the opening line's own reading stands,
+        // and it claims to have consumed one line, not sixty-four.
+        let mut lines = vec!["exclude = ["];
+        lines.extend(std::iter::repeat_n("  \"a\",", 200));
+        let (found, spanned) = pairs_continued(&lines, 0);
+        assert_eq!(found[0].value, "");
+        assert_eq!(spanned, 1);
+    }
+
+    #[test]
     fn yaml_sequences_read_as_entries() {
         assert_eq!(entries("- vendor/**"), vec!["vendor/**"]);
     }
+
+    #[test]
+    fn a_name_splits_into_the_tool_and_the_syntax() {
+        assert_eq!(stem_and_syntax(".coveragerc"), (".coveragerc", ""));
+        assert_eq!(stem_and_syntax(".nycrc.yml"), (".nycrc", "yml"));
+        assert_eq!(stem_and_syntax("tox.ini"), ("tox", "ini"));
+        assert_eq!(
+            stem_and_syntax("eslint.config.cjs"),
+            ("eslint.config", "cjs")
+        );
+        assert_eq!(stem_and_syntax("Makefile"), ("Makefile", ""));
+    }
+
+    #[test]
+    fn a_dotfile_stem_answers_for_every_syntax() {
+        // Including one nobody has written yet, which is the whole point: the
+        // list of names was the defect, so the list is not the answer. Safe
+        // here and only here, because nothing compiles a dotfile as a module.
+        const TOOLS: &[Tool] = &[Tool::any(".nycrc")];
+        for name in [
+            ".nycrc",
+            ".nycrc.json",
+            ".nycrc.yml",
+            ".nycrc.yaml",
+            ".nycrc.json5",
+            "packages/app/.nycrc.toml",
+        ] {
+            assert!(names_one_of(name, TOOLS), "{name}");
+        }
+        assert!(!names_one_of("src/nycrc.ts", TOOLS));
+    }
+
+    #[test]
+    fn a_stem_an_ordinary_file_could_carry_answers_only_for_its_own_syntax() {
+        const TOOLS: &[Tool] = &[
+            Tool::only("setup", &["cfg"]),
+            Tool::only("pyproject", &["toml"]),
+        ];
+        assert!(names_one_of("setup.cfg", TOOLS));
+        assert!(!names_one_of("src/setup.ts", TOOLS));
+        assert!(!names_one_of("setup.py", TOOLS));
+        // The reported false positive: one stem, configuration in one syntax
+        // and a Python module in another.
+        assert!(names_one_of("pyproject.toml", TOOLS));
+        assert!(!names_one_of("src/pyproject.py", TOOLS));
+    }
+
+    #[test]
+    fn a_family_matches_the_variants_spelled_into_the_name() {
+        const TOOLS: &[Tool] = &[
+            Tool::family("tsconfig", &["json"]),
+            Tool::family("jest.config", &["mjs", "json"]),
+        ];
+        assert!(names_one_of("tsconfig.json", TOOLS));
+        assert!(names_one_of("tsconfig.base.json", TOOLS));
+        assert!(names_one_of("jest.config.mjs", TOOLS));
+        assert!(names_one_of("jest.config.ci.json", TOOLS));
+        assert!(!names_one_of("src/config.ts", TOOLS));
+        // A family names its variants as further segments, so a stem that
+        // merely begins with the same letters is not one of them.
+        assert!(!names_one_of("src/tsconfig-loader.ts", TOOLS));
+        assert!(!names_one_of("tsconfiguration.json", TOOLS));
+        // And a family is a stem an ordinary file can carry too, so it answers
+        // only for the syntaxes its own loader reads.
+        assert!(!names_one_of("src/tsconfig.ts", TOOLS));
+    }
+
+    #[test]
+    fn a_variant_segment_is_not_read_in_a_syntax_something_executes() {
+        // The reported false positive one level up from `pyproject.py`: in
+        // `.ts` a further name segment is what an ordinary module is called,
+        // and `eslint.config.spec.ts` — a test module holding a config's
+        // expected values as literals — was read as the configuration it
+        // asserts about and accused of loosening it.
+        for segment in [
+            "test",
+            "spec",
+            "fixture",
+            "fixtures",
+            "generated",
+            "types",
+            "d",
+            "mock",
+            "stories",
+            "bench",
+        ] {
+            for (stem, syntax) in [
+                ("eslint.config", "ts"),
+                ("eslint.config", "js"),
+                ("eslint.config", "mts"),
+                ("eslint.config", "cjs"),
+                ("jest.config", "ts"),
+                ("vitest.config", "ts"),
+                ("tsconfig", "ts"),
+            ] {
+                let name = format!("src/{stem}.{segment}.{syntax}");
+                assert!(
+                    !names_one_of(&name, ALL_TOOLS),
+                    "{name} is a module somebody wrote, not a config file"
+                );
+            }
+        }
+        // The default stem itself is untouched in every executable syntax it
+        // is written in — that is the file the tool actually loads.
+        for name in [
+            "eslint.config.js",
+            "eslint.config.cjs",
+            "eslint.config.mjs",
+            "eslint.config.ts",
+            "eslint.config.mts",
+            "eslint.config.cts",
+            "jest.config.js",
+            "vitest.config.ts",
+        ] {
+            assert!(names_one_of(name, ALL_TOOLS), "{name}");
+        }
+        // And the variant form is kept wherever the syntax is data rather than
+        // source, which is where it was bought in the first place.
+        for name in [
+            "tsconfig.base.json",
+            "tsconfig.spec.json",
+            "jest.config.ci.json",
+            "sonar-project.ci.properties",
+        ] {
+            assert!(names_one_of(name, ALL_TOOLS), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_open_class_is_reserved_for_stems_nothing_compiles() {
+        // `Tool::any` asserts this in a `const fn`, so the tables below cannot
+        // be built wrong — but a table is data and this is the property that
+        // data has to have, stated where a reader looking for it will find it.
+        for tool in ALL_TOOLS {
+            if matches!(tool.how, Match::AnySyntax) {
+                assert!(
+                    tool.stem.starts_with('.'),
+                    "{} answers for every extension and is a name an ordinary \
+                     source file can carry",
+                    tool.stem
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_declared_tool_claims_a_source_extension() {
+        // The other half, over the real tables rather than over a rule: every
+        // syntax any tool answers for, checked against the extensions these
+        // ecosystems compile. `.eslintrc.ts` reaching this list would be
+        // harmless — nothing imports it — and `pyproject.py` reaching it is the
+        // uninstall.
+        const COMPILED: &[&str] = &["py", "rs", "go", "rb", "java", "kt", "php"];
+        for tool in ALL_TOOLS {
+            let syntaxes = match tool.how {
+                Match::AnySyntax => continue,
+                Match::Family(s) | Match::Syntaxes(s) => s,
+            };
+            for syntax in syntaxes {
+                assert!(
+                    !COMPILED.contains(syntax),
+                    "{}.{syntax} is a source file in a language this repository \
+                     measures, and naming it configuration accuses honest code",
+                    tool.stem
+                );
+            }
+        }
+    }
+
+    /// Every tool either detector declares, so the properties above are stated
+    /// over what ships rather than over an example.
+    const ALL_TOOLS: &[Tool] = &[
+        tools::ANDON,
+        tools::TSCONFIG,
+        tools::ESLINTRC,
+        tools::ESLINT_FLAT,
+        tools::BIOME,
+        tools::FLAKE8,
+        tools::PYPROJECT,
+        tools::MYPY,
+        tools::MYPY_DOT,
+        tools::RUFF,
+        tools::RUFF_DOT,
+        tools::CLIPPY,
+        tools::GOLANGCI,
+        tools::SONAR,
+        tools::JEST,
+        tools::VITEST,
+        tools::NYC_CONFIG,
+        tools::COVERAGERC,
+        tools::NYCRC,
+        tools::C8RC,
+        tools::CODECOV,
+        tools::CODECOV_DOT,
+        tools::TARPAULIN,
+        tools::SETUP_CFG,
+        tools::PACKAGE_JSON,
+        tools::TOX_INI,
+    ];
 }

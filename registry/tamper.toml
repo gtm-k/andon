@@ -172,6 +172,19 @@ expiry = "2027-07-19"
 # No incomplete-parse caveat here either: both detectors read configuration
 # files as text, and a tree-sitter ERROR node in a source file is not something
 # a coverage config or a threshold setting can hide behind.
+#
+# What these two owe instead is the other honesty line. They decide for
+# themselves which files are their subject, and a subject test that is a list of
+# exact file names is a silent gap wearing a complete answer: `.nycrc.yml` and
+# `.nycrc.json` are one tool's configuration and only one of them was in the
+# list. Recognition is by the tool's stem read against the syntaxes that tool
+# reads: open-ended for a dotfile stem nothing compiles, and narrowed to the
+# default stem where the syntax is one a runtime executes and a further name
+# segment would be somebody's module. Which edits inside a recognised file come
+# back `partial` rather than as a number, and which shapes are still answered
+# with a quiet zero, are both enumerated in the claim's `does_not_predict` —
+# enumerated rather than promised, because the promise that stood here was
+# broader than the code and six case families contradicted it.
 
 [[metric]]
 metric_id = "tamper.coverage-exclusion-drift"
@@ -211,7 +224,10 @@ does_not_predict = [
     "that the loosening was unjustified — most are deliberate, which is why this outcome is reported advisory rather than blocking (round-1 B6)",
     "the effect of either edit on any downstream number",
     "defect density",
-    "settings, formats, or keys these detectors do not recognise — including a rule deleted rather than downgraded, a known gap kept visible in the corpus recall column",
+    "settings, formats, or keys these detectors do not recognise. What they recognise is the tool rather than the spelling — every syntax of a known tool's configuration file, and every key whose own name says it excludes — so the gap left is an unknown tool, not an unlisted extension of a known one. One narrowing is deliberate: a non-default config written in a JavaScript or TypeScript spelling a runtime executes (`jest.config.ci.ts`, `eslint.config.ci.mts`) is outside the subject, because in those syntaxes a further name segment is what an ordinary module is called and reading it accused test modules of the settings they assert about. The data spellings of the same variant — `jest.config.ci.json`, `tsconfig.ci.json`, `sonar-project.ci.properties` — are read",
+    "a ranked answer for every edit inside a file they do read. The rule behind that is one sentence with one gate under it: where a detector reads a change inside its own subject and cannot decide it, both of its results come back `completeness: partial` instead. Five shapes reach that gate — a rule option that moved while its severity held; a setting these detectors model deleted rather than changed; a rule option written as a name that nothing in the file binds; a changed line the scanner took no setting from that carries a value of the kind they rank; and a coverage exclusion replaced by a pattern neither anchored above the other. A rule deleted rather than downgraded is the second of the five, and it stays a miss in the corpus recall column because unranked is not a firing",
+    "a description of every undecided change, where one change leaves more than one. The caveat says how many went undecided and locates each as `file` or `file:line`, then quotes only the first in the detector's own words: the key and both values for an option that moved or that went behind a name, the key and the value it had for a deletion, the line's own text for an unread line — which carries no key to name, and is undecidable for that reason — and the replacing pattern alone for an exclusion replacement, never the pattern it replaced. The rest are located and not described",
+    "four further shapes, which are read and answered `flag: false, magnitude: 0, completeness: complete` — a quiet zero and not a caveat. Each is measured on the shipped binary: a `.properties` value is read only as far as its first comma, so `sonar.coverage.exclusions` gaining entries after the first is invisible; an exclusion added in one file and an unrelated one removed in another net to zero across the change; a re-inclusion deleted from an exclusion list (`!src/api/**` dropped from `exclude`) puts that path back under exclusion; and a positive `collectCoverageFrom` inclusion narrowed (`src/**` to `src/core/**`) takes code out of coverage. Adding a negation, widening one, and widening an ordinary exclusion all do fire",
 ]
 owner = "gtm-k"
 expiry = "2027-08-16"
