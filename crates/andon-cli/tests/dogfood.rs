@@ -49,6 +49,29 @@ fn workspace() -> PathBuf {
         .join("..")
 }
 
+// What this test needs to be in the changed set, stated by the test rather
+// than read from `.andon.toml`: taking the premise from the same file the
+// product reads would let one edit move the claim and its check together.
+//
+// Stating it separately is only safe if the drift is loud, and it was not:
+// this list shipped missing `crates/andon-registry-lint/tests/fixtures/**`
+// while its comment claimed to be the policy's own set. Harmless in that
+// direction — a missing entry can only narrow the search. The dangerous
+// direction is a policy REMOVAL that orphans an entry here: the base would
+// be chosen from a commit touching a path no longer excluded, the run would
+// withhold nothing, and the assertion would fail claiming a premise that is
+// no longer true — this test's own defect, reintroduced. So
+// `the_premise_this_test_states_is_one_the_policy_still_holds` asserts every
+// entry below is still declared, and drift fails there instead of here.
+const WITHHELD: &[&str] = &[
+    "fixtures/gamed",
+    "fixtures/adversarial",
+    "fixtures/honest/corpus",
+    "fixtures/matrix",
+    "fixtures/golden",
+    "crates/andon-registry-lint/tests/fixtures",
+];
+
 /// A base whose range to `HEAD` provably contains a path the policy withholds.
 ///
 /// Asked of git rather than assumed. A test that needs a withheld path in the
@@ -62,17 +85,6 @@ fn workspace() -> PathBuf {
 /// which is a different situation from "the last commit did not" and is
 /// reported as one rather than skipped silently.
 fn base_whose_range_withholds() -> Option<String> {
-    // The subtrees `.andon.toml` declares under `[self_measure] excluded_paths`.
-    // Named here rather than read from that file: this is the premise the test
-    // needs, and taking it from the same source the product reads would let one
-    // edit move the claim and its check together.
-    const WITHHELD: &[&str] = &[
-        "fixtures/gamed",
-        "fixtures/adversarial",
-        "fixtures/honest/corpus",
-        "fixtures/matrix",
-        "fixtures/golden",
-    ];
     let mut args = vec![
         "log".to_string(),
         "--format=%H".to_string(),
@@ -81,27 +93,97 @@ fn base_whose_range_withholds() -> Option<String> {
         "--".to_string(),
     ];
     args.extend(WITHHELD.iter().map(|p| (*p).to_string()));
-    let out = Command::new("git")
-        .current_dir(workspace())
-        .args(&args)
-        .output()
-        .ok()?;
-    let newest = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // Through the wrapper rather than a hand-rolled `Command`: `Git::cmd` is
+    // what carries pinned config and a swept environment, and its own doc says
+    // that is more than a bare `Command` in a test file would. Without it,
+    // `GIT_DIR` in the environment silently redirects these two calls at another
+    // repository and this function reports "no such commit" about the wrong one.
+    let git = andon_core::git::Git::open(&workspace()).ok()?;
+    // `rev-list` rather than `log`: plumbing, so no `log.*` formatting setting
+    // can prepend anything to the hash this parses.
+    let mut args: Vec<String> = vec!["rev-list".into(), "-1".into(), "HEAD".into(), "--".into()];
+    args.extend(WITHHELD.iter().map(|p| (*p).to_string()));
+    let newest = match git.cmd(&args).succeeds_with_output() {
+        Ok(Some(out)) => String::from_utf8_lossy(out.as_bytes()).trim().to_string(),
+        _ => {
+            eprintln!(
+                "dogfood: git could not be asked which commit last touched an excluded path; \
+                 this test cannot establish its premise and did not run"
+            );
+            return None;
+        }
+    };
     if newest.is_empty() {
+        eprintln!(
+            "dogfood: no commit reachable from HEAD touches a path `[self_measure] \
+             excluded_paths` withholds, so there is no run of the kind this test describes; \
+             it did not run"
+        );
         return None;
     }
     // Its parent, so that `base..HEAD` contains that commit's changes rather
     // than starting after them.
-    let out = Command::new("git")
-        .current_dir(workspace())
-        .args(["rev-parse", &format!("{newest}^")])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        // A root commit has no parent, so no range can be formed from it.
-        return None;
+    match git
+        .cmd(["rev-parse", &format!("{newest}^")])
+        .succeeds_with_output()
+    {
+        Ok(Some(out)) => Some(String::from_utf8_lossy(out.as_bytes()).trim().to_string()),
+        _ => {
+            // A root commit has no parent — and so does the boundary commit of a
+            // shallow clone, which is the reachable case: a shallow boundary
+            // appears to add the whole tree, so it is selected above and then has
+            // no parent to form a range from. `measurable()` does not catch this,
+            // because HEAD~1 exists at depth 2 while the boundary's parent does
+            // not.
+            eprintln!(
+                "dogfood: {newest} has no parent (a shallow clone's boundary commit?), so no \
+                 base..HEAD range contains it; this test did not run"
+            );
+            None
+        }
     }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Every path `base_whose_range_withholds` searches is one the policy still
+/// withholds.
+///
+/// The list is stated in this file on purpose — see the comment on `WITHHELD` —
+/// and a statement kept by hand drifts from what it describes. It already had:
+/// the list shipped one entry short of the policy while claiming to be it. This
+/// asserts the containment that matters, so an orphaned entry fails here, where
+/// the message can say what happened, rather than inside the test it would
+/// otherwise make fail for a reason that is not the contributor's.
+#[test]
+fn the_premise_this_test_states_is_one_the_policy_still_holds() {
+    let toml = std::fs::read_to_string(workspace().join(".andon.toml")).expect("the policy reads");
+    let declared: Vec<&str> = {
+        let start = toml
+            .find("excluded_paths = [")
+            .expect("the policy declares exclusions");
+        let end = start + toml[start..].find(']').expect("a closed list");
+        toml[start..end]
+            .match_indices('"')
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>()
+            .chunks(2)
+            .filter(|c| c.len() == 2)
+            .map(|c| &toml[start + c[0] + 1..start + c[1]])
+            .collect()
+    };
+    assert!(
+        !declared.is_empty(),
+        "no exclusions parsed out of .andon.toml; the premise cannot be checked"
+    );
+    for stated in WITHHELD {
+        assert!(
+            declared
+                .iter()
+                .any(|d| d.trim_end_matches("/**") == *stated),
+            "this file searches `{stated}` for the premise it needs, and `[self_measure] \
+             excluded_paths` no longer declares it. Either the policy dropped it — in which \
+             case drop it here too — or it was renamed. Declared: {declared:?}"
+        );
+    }
 }
 
 /// Measure this repository over an explicit base.
