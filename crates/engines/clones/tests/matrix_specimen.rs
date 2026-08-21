@@ -106,7 +106,7 @@ fn the_specimen_produces_the_result_count_the_matrix_patch_asserts() {
             },
             policy: Policy::default(),
             changed_paths: Vec::new(),
-            sandbox_available: false,
+            sandbox: None,
         },
     )
     .expect("measures");

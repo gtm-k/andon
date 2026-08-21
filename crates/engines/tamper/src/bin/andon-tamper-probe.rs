@@ -97,7 +97,7 @@ fn run() -> Result<(), String> {
         compare_context: compare_context.clone(),
         policy: Policy::default(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     let results = run_engine(&engine, &context).map_err(|e| e.to_string())?;
 

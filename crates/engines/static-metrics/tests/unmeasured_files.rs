@@ -33,7 +33,7 @@ fn measure(repo: &common::Repo, base: &str, head: Revision) -> Vec<MeasurementRe
         compare_context: andon_core::testing::sample_compare_context(),
         policy: Policy::default(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     run_engine(&engine, &ctx).expect("the engine measures")
 }

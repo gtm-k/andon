@@ -328,6 +328,11 @@ pub fn regime_label(regime: &MeasurementRegime) -> String {
             "artifacts v{engine_version} parsers [{}]",
             map(parser_versions)
         ),
+        MeasurementRegime::Tests {
+            engine_version,
+            command,
+            sandbox,
+        } => format!("tests v{engine_version} command {command:?} sandbox {sandbox}"),
     }
 }
 

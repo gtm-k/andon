@@ -52,7 +52,7 @@ fn measure_worktree(repo: &common::Repo, base: &str) -> Vec<MeasurementResult> {
         compare_context: andon_core::testing::sample_compare_context(),
         policy: Policy::default(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     run_engine(&engine, &ctx).expect("the engine measures")
 }

@@ -18,7 +18,7 @@
     "static-metrics",
     "tamper"
   ],
-  "policy_hash": "a96a69095a9ab1d482b9a05ab906a6cdaf7e88e7498b31761c54bbc257985a58",
+  "policy_hash": "022bdfb21725aeac9427fdeda9fcbed30c7061bf89fc63560651c3cfff163d31",
   "results": [
     {
       "metric_id": "artifacts.uncovered-changed-lines",

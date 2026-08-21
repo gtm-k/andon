@@ -81,11 +81,30 @@
 
 use crate::parse_health;
 use crate::policy::{Policy, SeverityPolicy};
-use crate::schema::enums::{EvidenceTier, MetricClass, Severity, TamperSignal};
+use crate::schema::enums::{EngineFamily, EvidenceTier, MetricClass, Severity, TamperSignal};
 use crate::schema::payload::{MeasurementResult, MetricValue};
 
 use crate::payload::tamper_signals;
 use crate::verdict::VerdictContext;
+
+/// The tests engine's failure flag — the result `block_on_test_failure` keys
+/// on. Declared beside the rule that reads it and re-exported by the engine
+/// that emits it (`andon-sandbox`), so the two spell it once.
+pub const SUITE_FAILURE_METRIC: &str = "tests.suite-failure";
+
+/// The sentence result the tests engine emits beside the flag, read here only
+/// to say *how* the suite failed in the verdict reason.
+pub const SUITE_OUTCOME_METRIC: &str = "tests.suite-outcome";
+
+/// The fired test-failure flag, if this result is one.
+///
+/// Keyed on family, metric id, and a `true` flag together — a `tests.*` metric
+/// from another family, or the flag unfired, is nobody's failure.
+pub fn fired_suite_failure(result: &MeasurementResult) -> bool {
+    result.family == EngineFamily::Tests
+        && result.metric_id == SUITE_FAILURE_METRIC
+        && result.value == MetricValue::Flag(true)
+}
 
 /// The strongest severity policy allows this result to reach.
 ///
@@ -129,23 +148,33 @@ pub fn apply(results: &mut [MeasurementResult], policy: &Policy) {
 
 /// Whether this result, on its own, stops the line.
 ///
-/// Two disjoint routes, and the first does not consult `severity`:
+/// Three disjoint routes, and only the last consults `severity`:
 ///
 /// 1. **A fired tamper flag**, when policy blocks on tamper — with
 ///    `threshold-config-edit` conditional on a verified justification, per the
 ///    module documentation. Keyed on the flag so that a completeness demotion
 ///    cannot muzzle the suite.
-/// 2. **A MED+ finding**, after the ceilings above. Under the conservative
+/// 2. **A fired test-failure flag**, when policy blocks on test failure. The
+///    same construction for the same reason: both tests-lane claims are tier
+///    N, so the tier ceiling caps every suite result at `Low` and a
+///    severity-keyed rule would never stop the line for a failed suite at
+///    all. The knob spent its first six phases declared and unread — no
+///    engine could produce a test result until the sandbox existed (P7) —
+///    and this is the disposition its declaration note reserved for P7.
+/// 3. **A MED+ finding**, after the ceilings above. Under the conservative
 ///    default that also requires a diff-actionable metric, which
 ///    [`ceiling`] has already enforced by capping everything else at `Low`.
 ///
 /// Takes the whole [`VerdictContext`] rather than the severity policy alone
-/// because the first route now has a question policy cannot answer: whether this
+/// because the first route has a question policy cannot answer: whether this
 /// *change* carries a justification. One implementation, read by the verdict and
 /// by the iteration counter alike.
 pub fn stops_the_line(result: &MeasurementResult, ctx: &VerdictContext) -> bool {
     if let Some(signal) = fired_signal(result) {
         return ctx.policy.severity.block_on_tamper && signal_stops_the_line(signal, ctx);
+    }
+    if fired_suite_failure(result) {
+        return ctx.policy.severity.block_on_test_failure;
     }
     result.severity.is_med_plus()
 }
@@ -427,6 +456,71 @@ mod tests {
                 "{metric_id} took an exemption that is not its"
             );
         }
+    }
+
+    /// The tests engine's failure flag, as `run_engine` would deliver it: tier
+    /// N evidence, severity already capped by `apply`.
+    fn suite_flag(fired: bool) -> MeasurementResult {
+        let mut result = sample_result();
+        result.metric_id = SUITE_FAILURE_METRIC.to_string();
+        result.engine_id = "tests".to_string();
+        result.family = EngineFamily::Tests;
+        result.metric_class = MetricClass::DiffActionable;
+        result.evidence.tier = EvidenceTier::N;
+        result.value = MetricValue::Flag(fired);
+        result.delta = None;
+        result.severity = Severity::Critical;
+        result
+    }
+
+    #[test]
+    fn a_failed_suite_is_tier_capped_and_still_stops_the_line() {
+        // The knob's first reader, in the same construction as the tamper
+        // rule: tier N is not in the default MED+ band, so `apply` caps the
+        // reported severity at Low — and a severity-keyed rule would
+        // therefore never stop the line for a failed suite at all. The flag
+        // decides; the capped severity stays honest.
+        let mut result = suite_flag(true);
+        let policy = Policy::default();
+        assert!(policy.severity.block_on_test_failure, "the premise");
+        apply(std::slice::from_mut(&mut result), &policy);
+        assert_eq!(result.severity, Severity::Low, "capped by tier");
+        assert!(stops_the_line(&result, &ctx(&policy)));
+        assert!(counts_toward_iteration(&result, &ctx(&policy)));
+    }
+
+    #[test]
+    fn policy_can_switch_test_failure_blocking_off() {
+        // The knob, read in both directions — the pin that once asserted it
+        // was unread now has a live counterpart.
+        let result = suite_flag(true);
+        let permissive = Policy {
+            severity: SeverityPolicy {
+                block_on_test_failure: false,
+                ..SeverityPolicy::default()
+            },
+            ..Policy::default()
+        };
+        assert!(!stops_the_line(&result, &ctx(&permissive)));
+        assert!(stops_the_line(&result, &ctx(&Policy::default())));
+    }
+
+    #[test]
+    fn a_passing_suite_stops_nothing() {
+        let mut result = suite_flag(false);
+        apply(std::slice::from_mut(&mut result), &Policy::default());
+        assert!(!stops_the_line(&result, &ctx(&Policy::default())));
+    }
+
+    #[test]
+    fn a_suite_flag_from_another_family_is_not_a_suite_flag() {
+        // The rule keys on family AND metric id together, so a hostile or
+        // buggy engine spelling `tests.suite-failure` in another family does
+        // not reach the test-failure route (assembly refuses the mis-stamp
+        // long before, but this rule must not be the layer that trusts it).
+        let mut result = suite_flag(true);
+        result.family = EngineFamily::Static;
+        assert!(!fired_suite_failure(&result));
     }
 
     #[test]

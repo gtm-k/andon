@@ -52,7 +52,7 @@ andon — measurement that carries its evidence.
   andon measure       measure a change and reach a verdict
   andon report        render the last measurement again, or one from a file
   andon explain       the claim a number stands on, and what it does not predict
-  andon wait          what the async lane still owes this measurement
+  andon wait          run anything the async lane still owes, and report it
   andon ledger        the recorded measurements: list, stats, sync, migrate
   andon attest-stub   recompute a change as the verifier would, and compare
   andon init          install a gate-shaped hook for a harness, removably
@@ -434,8 +434,13 @@ fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
 fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
     if flags.on("help") {
         println!(
-            "andon wait [--repo <PATH>] [--input <FILE>]\n\n  \
-             Reports what the async lane still owes the last measurement."
+            "andon wait [--repo <PATH>] [--input <FILE>] [--record]\n\n  \
+             Completes the last measurement — work the fast lane deferred to the async lane\n  \
+             (the user test command, or engines spilled at the cold cap) is executed HERE,\n  \
+             in the foreground, and merged into the record — then reports what the lane\n  \
+             still owes. --record appends the merged record to refs/notes/andon-measure.\n  \
+             With --input the record is only rendered: a file is not this checkout's\n  \
+             measurement, and there is no job of it to run."
         );
         return Ok(ExitCode::SUCCESS);
     }
@@ -443,8 +448,25 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
     let record = match flags.get("input") {
         Some(path) => store::read_record(std::path::Path::new(path))?,
         None => {
-            let git = Git::open(&flags.path("repo", ".")).map_err(|e| e.to_string())?;
-            store::read_last(&git)?
+            let repo = flags.path("repo", ".");
+            // Execute anything pending before rendering, so the report below
+            // is about the completed measurement rather than a stale half.
+            let completed = andon_cli::jobs::complete(&repo)?;
+            let git = Git::open(&repo).map_err(|e| e.to_string())?;
+            match completed {
+                None => store::read_last(&git)?,
+                Some(completion) => {
+                    for notice in &completion.notices {
+                        eprintln!("andon: {notice}");
+                    }
+                    if flags.on("record") {
+                        let note =
+                            ledger::record(&git, &completion.record, &completion.ledger_anchor)?;
+                        eprintln!("andon: {note}");
+                    }
+                    completion.record
+                }
+            }
         }
     };
     print!("{}", lanes::wait(&record));

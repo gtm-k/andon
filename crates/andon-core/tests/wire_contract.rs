@@ -136,6 +136,7 @@ fn every_engine_family_is_present() {
         (EngineFamily::Tamper, "tamper"),
         (EngineFamily::Process, "process"),
         (EngineFamily::Artifacts, "artifacts"),
+        (EngineFamily::Tests, "tests"),
     ] {
         assert_eq!(wire(&family), spelling);
     }

@@ -22,6 +22,7 @@ dependencies = [
  "andon-engine-tamper",
  "andon-ledger",
  "andon-ledger-min",
+ "andon-sandbox",
  "andon-static-metrics",
  "serde",
  "serde_json",
@@ -143,6 +144,18 @@ name = "andon-registry-lint"
 version = "0.1.0"
 dependencies = [
  "andon-core",
+]
+
+[[package]]
+name = "andon-sandbox"
+version = "0.1.0"
+dependencies = [
+ "andon-core",
+ "libc",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "windows-sys",
 ]
 
 [[package]]

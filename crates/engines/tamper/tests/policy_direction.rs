@@ -198,7 +198,7 @@ mod eslint_probe {
             compare_context: andon_core::testing::sample_compare_context(),
             policy: Policy::default(),
             changed_paths: vec![".eslintrc.json".to_string()],
-            sandbox_available: false,
+            sandbox: None,
         };
         andon_core::engine::run_engine(&engine, &ctx).expect("the suite measures")
     }
@@ -306,7 +306,7 @@ mod eslint_probe {
             compare_context: andon_core::testing::sample_compare_context(),
             policy: Policy::default(),
             changed_paths: vec![".eslintrc.json".to_string()],
-            sandbox_available: false,
+            sandbox: None,
         };
         let results = andon_core::engine::run_engine(&engine, &ctx).expect("measures");
         let policy = Policy::default();

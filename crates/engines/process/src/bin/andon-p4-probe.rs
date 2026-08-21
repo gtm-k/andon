@@ -129,7 +129,7 @@ fn measure(args: Vec<String>) -> Result<(), String> {
         compare_context: compare_context.clone(),
         policy,
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     let results = run_engine(&engine, &ctx).map_err(|e| e.to_string())?;
 

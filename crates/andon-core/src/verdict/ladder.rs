@@ -18,7 +18,7 @@
 //!
 //! # Declared once per metric, applied at one boundary
 //!
-//! The risk in "engines assign" is five engines drifting into five different
+//! The risk in "engines assign" is every engine drifting into its own
 //! ideas of what a severity means. It is bounded here by construction rather
 //! than by discipline:
 //!

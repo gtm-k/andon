@@ -292,16 +292,33 @@ fn andon_measures_andon_and_the_record_is_not_empty() {
     );
 }
 
-/// The engine roster this build ships.
+/// The engine roster this repository's own measurement answers to.
 ///
 /// Read from `andon_cli::shipped::SHIPPED`, which is the same roster the binary
 /// measured with and is itself asserted equal to the `engine =` headers of the
-/// registry files the engine crates compile in. Writing a list of five here
-/// instead would be a second roster to keep in sync by hand — the entry note P5a
+/// registry files the engine crates compile in. Writing a list here instead
+/// would be a second roster to keep in sync by hand — the entry note P5a
 /// handed this phase, recreated by the test meant to guard against it.
+///
+/// Filtered by the policy in force, exactly as `payload::expected_engines`
+/// filters assembly: the `tests` family — the code-exec lane — joins a
+/// measurement only where `.andon.toml` enables the lane and declares a
+/// command. Read from this repository's own policy rather than assumed off, so
+/// the day the dogfood repo opts in, this test expects the suite rather than
+/// quietly tolerating its absence.
 fn andon_cli_roster() -> BTreeSet<&'static str> {
+    let policy_text = std::fs::read_to_string(workspace().join(".andon.toml"))
+        .expect("this repository declares a policy");
+    let policy = Policy::from_toml(&policy_text).expect("and it parses");
+    let lane_on = policy.sandbox.enabled && policy.sandbox.test_command.is_some();
     andon_cli::shipped::SHIPPED
         .iter()
+        .filter(|engine| {
+            lane_on
+                || (engine.registry_file)()
+                    .map(|file| file.family != andon_core::schema::enums::EngineFamily::Tests)
+                    .unwrap_or(true)
+        })
         .map(|engine| engine.engine_id)
         .collect()
 }

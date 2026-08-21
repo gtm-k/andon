@@ -78,7 +78,7 @@ use serde_json::Value;
 use crate::policy::{Policy, PolicyError};
 
 /// Which way an edit moved the gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     /// The gate got easier to pass. The only direction that can block.
     Loosening,
@@ -91,7 +91,7 @@ pub enum Direction {
 }
 
 /// One field that moved.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PolicyDelta {
     /// Dotted path, spelled as the TOML file spells it, e.g.
     /// `severity.block_on_tamper`.
@@ -129,7 +129,7 @@ impl PolicyDelta {
 /// Carried rather than reduced to a boolean so that the finding can say *what*
 /// was cited and *whether anyone checked it* — both of which a boolean throws
 /// away, and the second of which is the part that decides the verdict.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Justification {
     /// Supplied by the caller and checked against nothing.
     ///
@@ -207,7 +207,7 @@ impl Justification {
 /// mypy, coverage and tsconfig too, and a loosening there needs the same exit
 /// this module gives an `.andon.toml` loosening or it has none at all
 /// ([`super::severity::signal_stops_the_line`]).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct PolicyChange {
     /// Every field that moved, in path order.
     pub deltas: Vec<PolicyDelta>,
@@ -367,6 +367,15 @@ enum Knob {
     RelaxesWhenTrue,
     /// A number where raising it relaxes a limit.
     Ceiling,
+    /// A number where *lowering* it weakens a gate — the inverse of `Ceiling`.
+    /// The test-command timeout is one: shorten it far enough and the suite
+    /// always dies before it can fail anything.
+    Floor,
+    /// An optional value whose presence is the gate. Setting it tightens,
+    /// unsetting it loosens, and changing one value to another is
+    /// `Unclassified` — this table cannot rank two commands against each
+    /// other, and guessing would rank `true` as a test suite.
+    PresenceTightens,
     /// Named values, **strictest first**. Moving later in the list relaxes.
     Ordered(&'static [&'static str]),
     /// A set where adding an entry relaxes.
@@ -419,6 +428,21 @@ fn knob(field: &str) -> Option<Knob> {
 
         "registry.claim_budget" | "registry.max_claims_expiring_per_month" => Knob::Ceiling,
 
+        // Turning the code-exec lane off removes the test gate (and the spill)
+        // from every measurement after the edit.
+        "sandbox.enabled" => Knob::RelaxesWhenFalse,
+        // The command's presence is the gate; its content is beyond ranking.
+        "sandbox.test_command" => Knob::PresenceTightens,
+        // Inverted on purpose: a shorter timeout kills the suite before it can
+        // fail anything, and a timeout is never a test failure.
+        "sandbox.test_timeout_ms" => Knob::Floor,
+        // Every name added is one more variable from the invoking environment
+        // that reaches repository code.
+        "sandbox.env_allow" => Knob::GrowRelaxes,
+        // Raising a memory cap relaxes a limit; null transitions are
+        // unclassified, which the delta still reports.
+        "sandbox.memory_limit_mb" => Knob::Ceiling,
+
         // Strictest first: the rule, then the bootstrap exception.
         "self_measure.binary" => Knob::Ordered(&["last-attested-release", "current-build"]),
         // More paths excluded from self-measurement is less of Andon measured.
@@ -449,6 +473,16 @@ pub fn direction_of(field: &str, before: &Value, after: &Value) -> Direction {
         Knob::Ceiling => match (before.as_f64(), after.as_f64()) {
             (Some(b), Some(a)) if a > b => Direction::Loosening,
             (Some(b), Some(a)) if a < b => Direction::Tightening,
+            _ => Direction::Unclassified,
+        },
+        Knob::Floor => match (before.as_f64(), after.as_f64()) {
+            (Some(b), Some(a)) if a < b => Direction::Loosening,
+            (Some(b), Some(a)) if a > b => Direction::Tightening,
+            _ => Direction::Unclassified,
+        },
+        Knob::PresenceTightens => match (before.is_null(), after.is_null()) {
+            (true, false) => Direction::Tightening,
+            (false, true) => Direction::Loosening,
             _ => Direction::Unclassified,
         },
         Knob::Ordered(ladder) => {

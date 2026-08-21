@@ -32,6 +32,7 @@ path = "src/main.rs"
 
 [dependencies]
 andon-core.workspace = true
+andon-sandbox = { path = "../andon-sandbox" }
 andon-engine-artifacts = { path = "../engines/artifacts" }
 andon-engine-clones = { path = "../engines/clones" }
 andon-engine-process = { path = "../engines/process" }

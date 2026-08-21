@@ -31,7 +31,7 @@ const RAW_DIFF_ARGV: &str = "diff-tree --raw";
 pub const GITLINK_MODE: &str = "160000";
 
 /// What happened to one path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChangeStatus {
     /// Added.
     Added,
@@ -70,7 +70,13 @@ impl ChangeStatus {
 }
 
 /// One changed path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serde-derived so the async lane's job file (P7) can carry the enumerated
+/// change across processes: a spilled engine at `andon wait` time must measure
+/// exactly the set the fast lane enumerated, and an uncommitted head cannot be
+/// re-enumerated later — the operator's tree has moved on. Not a wire schema:
+/// nothing here is a published contract, and no `JsonSchema` is derived.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangedEntry {
     /// Destination path, repository-relative with forward slashes. For a
     /// deletion, the path that was deleted.
@@ -117,7 +123,7 @@ impl ChangedEntry {
 }
 
 /// Every changed path between two endpoints.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangedSet {
     /// Sorted by path. See the module docs on why the order is ours.
     pub entries: Vec<ChangedEntry>,

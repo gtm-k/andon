@@ -76,7 +76,7 @@ fn measure_with(
         compare_context: range.compare_context().expect("a commit range"),
         policy,
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     run_engine(&engine, &ctx).expect("the engine measures")
 }
@@ -305,7 +305,7 @@ fn a_shallow_clone_emits_change_scoped_markers_and_no_per_file_results() {
         compare_context: andon_core::testing::sample_compare_context(),
         policy: Policy::default(),
         changed_paths: Vec::new(),
-        sandbox_available: false,
+        sandbox: None,
     };
     let results = run_engine(&engine, &ctx).expect("the engine measures");
 
