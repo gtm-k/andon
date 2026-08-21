@@ -85,8 +85,12 @@ block | escalate_to_human — on `block`, fix what the findings name and measure
 again; on `escalate_to_human`, stop and hand the change to a person. Call \
 `explain_finding` with a `metric_id` or `claim_id` to see the evidence behind \
 a number and what it does NOT predict. `get_results` re-reads the last \
-measurement without measuring; `await_results` also reports what the async \
-lane still owes it. `get_ledger` lists measurements recorded in the commits.";
+measurement without measuring. When a measurement reports it deferred work to \
+the async lane (an `engine-spilled-async` reason, or `completeness: partial` \
+with a declared test command), call `await_results`: it RUNS the deferred work \
+— including the repository's test suite, so it can take as long as the suite \
+does — merges the results, and returns the completed verdict. `get_ledger` \
+lists measurements recorded in the commits.";
 
 /// Parameters accepted by every tool: where the repository is.
 #[derive(Deserialize, rmcp::schemars::JsonSchema)]
