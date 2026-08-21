@@ -21,13 +21,18 @@
 //!
 //! # Why the forgery is performed by a different program
 //!
-//! `andon` cannot forge a record, and that is enforced rather than promised:
-//! every line that alters a sealed record lives in the adversary binary, and
-//! `andon-ledger-min`'s `binary_separation` test fails the build if any of it
-//! leaks into code the measuring binary links. So this demo does what a real
-//! attacker does — a different program writes a different note — and when the
-//! adversary binary is not present the demo refuses and says why, rather than
-//! growing a forging code path of its own to be more convenient.
+//! `andon` performs no forgery of its own, and the boundary is stated
+//! precisely because prose about a mechanism must not outrun it: every line
+//! of forging logic lives in one file compiled only into the adversary
+//! binary, and `andon-ledger-min`'s `binary_separation` test fails the build
+//! if any of it leaks into that crate's own library. The scan reaches no
+//! further — the rest of the workspace this binary links (`andon-core` with
+//! its public `seal()`, the engines, this crate) is kept clean by review,
+//! and was verified clean at this phase's review, not enforced by a guard.
+//! So this demo does what a real attacker does — a different program writes
+//! a different note — and when the adversary binary is not present the demo
+//! refuses and says why, rather than growing a forging code path of its own
+//! to be more convenient.
 //!
 //! # The outcomes are asserted, not narrated
 //!
@@ -63,9 +68,10 @@ andon demo tamper [--keep]
   --keep     leave the theater repository on disk and print its path
 
   Needs `andon-spike-forge` beside this binary (`cargo build --workspace`
-  provides it). The demo cannot forge the note itself: nothing the measuring
-  binary links can alter a sealed record, and that separation is enforced by a
-  build-failing test, not by intent.";
+  provides it). The demo performs no forgery itself: the forging logic lives
+  in one file compiled only into the adversary binary, a build-failing test
+  guards that file's crate, and the rest of the workspace this binary links
+  is kept clean by review, not by the scan.";
 
 /// `andon demo <story>`.
 pub fn cmd_demo(flags: &Flags) -> Result<u8, String> {
@@ -192,13 +198,21 @@ fn run_tamper(keep: bool) -> Result<String, String> {
     );
     say(
         &mut out,
-        "  inspection of the record alone can catch it. (`andon` itself cannot write",
+        "  inspection of the record alone can catch it. (`andon` ships no forging",
     );
     say(
         &mut out,
-        "  this note: nothing the measuring binary links can alter a sealed record —",
+        "  path of its own: the forging logic lives in one file compiled only into",
     );
-    let _ = writeln!(out, "  an enforced separation, not a promise.)\n");
+    say(
+        &mut out,
+        "  the adversary, a build-failing test guards that file's crate, and the",
+    );
+    let _ = writeln!(
+        out,
+        "  rest of the workspace this binary links is kept clean by review, not by \
+         the scan.)\n"
+    );
     let _ = writeln!(out, "    adversary: {}\n", forged_line.trim());
     say(&mut out, "  The same verifier, on the forged report:");
     let gamed_attested = attest::attest(&attest::Request {
@@ -309,10 +323,10 @@ fn forge_binary() -> Result<PathBuf, String> {
     }
     Err(format!(
         "the demo needs the adversary binary `{name}` and did not find it (tried: {}).\n\
-         The forgery is deliberately not something `andon` can perform: every line that \
-         alters a sealed record lives in the adversary, and a build-failing test keeps it \
-         there. Build it with `cargo build --workspace` in the Andon checkout, or point \
-         ANDON_SPIKE_FORGE_BIN at it.",
+         The forging logic deliberately lives in one file compiled only into the \
+         adversary, guarded there by a build-failing test, and this demo does not grow \
+         a forging path of its own. Build it with `cargo build --workspace` in the \
+         Andon checkout, or point ANDON_SPIKE_FORGE_BIN at it.",
         tried.join(", ")
     ))
 }

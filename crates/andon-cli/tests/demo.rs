@@ -110,11 +110,18 @@ fn one_command_tells_the_whole_story_and_cleans_up() {
     // something did.
     assert!(text.contains("disagreed: static.sloc"), "{text}");
 
-    // The forgery is attributed to the adversary binary, and the stub says
-    // what it did not check — the two honesty lines this surface must never
-    // lose.
+    // The forgery is attributed to the adversary binary, the stub says what
+    // it did not check, and the separation claim states its enforced boundary
+    // (the binary_separation scan covers one crate; the rest of the linked
+    // workspace is review-kept) — the three honesty lines this surface must
+    // never lose. The third is pinned because its unpinned predecessor
+    // drifted into claiming workspace-wide enforcement.
     assert!(text.contains("adversary: forged 1 record(s)"), "{text}");
     assert!(text.contains("THIS IS A STUB."), "{text}");
+    assert!(
+        text.contains("kept clean by review, not by the scan"),
+        "{text}"
+    );
 
     // Zero CI, zero litter: the theater it named is gone.
     let theater = theater_path(&text);
