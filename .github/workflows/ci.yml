@@ -60,8 +60,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # `--no-fail-fast` so one red suite cannot abort the run and hide every
+      # suite after it. This job is often the only Linux run a change gets, and
+      # a suite that never executed is a silent failure for whoever needed its
+      # answer; the job still fails on any red, it just reports all of them.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
   registry-lint:
     name: evidence registry
