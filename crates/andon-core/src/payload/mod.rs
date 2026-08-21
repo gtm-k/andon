@@ -28,12 +28,13 @@
 //!   `(metric_id, scope)`; two results sharing one pair make the pairing
 //!   ambiguous, and an ambiguous pairing is a place a forged result can shadow
 //!   an honest one.
-//! - **Every engine the registry declares is accounted for.** Each appears
+//! - **Every engine the measurement expects is accounted for.** Each appears
 //!   exactly once, as an output or as a named failure, and nothing appears that
-//!   no registry file declares ([`account_for_every_engine`]). "Assembly from
-//!   all engines" is the phase's own acceptance criterion, and until this check
-//!   existed nothing held it: a payload assembled from no engines at all came
-//!   out `complete` and `pass`.
+//!   the measurement does not expect ([`account_for_every_engine`], over the
+//!   roster [`expected_engines`] derives from the registry and the policy in
+//!   force). "Assembly from all engines" is the phase's own acceptance
+//!   criterion, and until this check existed nothing held it: a payload
+//!   assembled from no engines at all came out `complete` and `pass`.
 //!
 //! # Grouped by engine, never by family
 //!
@@ -295,7 +296,9 @@ pub struct AssembleRequest<'a> {
     pub registry: &'a LoadedRegistry,
     /// Every engine that produced results.
     pub engines: Vec<EngineOutput>,
-    /// Every engine that was asked and could not.
+    /// Every engine that contributed no results: the ones that were asked and
+    /// could not, and the ones whose work was deferred to the async lane
+    /// (split by [`EngineFailure::spilled`]).
     pub engine_failures: Vec<EngineFailure>,
     /// The `.andon.toml` edit inside this change, if any.
     pub policy_change: Option<PolicyChange>,

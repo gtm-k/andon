@@ -102,7 +102,7 @@
       "properties": {
         "fast_lane_cold_cap_ms": {
           "default": 10000,
-          "description": "Hard cold cap; past it the fast lane spills to async with `completeness: partial` (APPROACH graft 4).",
+          "description": "Cold cap on when a content engine may start (APPROACH graft 4). Enforced while `[sandbox] enabled` switches the async lane on: past the cap the remaining content engines spill to that lane and the record says so. With the lane off — the default — the cap is unenforced, which is the pre-P7 behaviour and the rollback path.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"

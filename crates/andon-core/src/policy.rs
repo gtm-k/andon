@@ -187,8 +187,11 @@ pub struct PerfPolicy {
     /// policy edit; the gap between them is the cost of not having a daemon, and
     /// it is meant to be visible.
     pub fast_lane_warm_fallback_p95_ms: u32,
-    /// Hard cold cap; past it the fast lane spills to async with
-    /// `completeness: partial` (APPROACH graft 4).
+    /// Cold cap on when a content engine may start (APPROACH graft 4).
+    /// Enforced while `[sandbox] enabled` switches the async lane on: past the
+    /// cap the remaining content engines spill to that lane and the record
+    /// says so. With the lane off — the default — the cap is unenforced,
+    /// which is the pre-P7 behaviour and the rollback path.
     pub fast_lane_cold_cap_ms: u32,
     /// Asserted, not observed: a regression that doubles git spawns shows up
     /// here before it shows up as latency on someone else's machine.
