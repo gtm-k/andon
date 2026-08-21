@@ -57,6 +57,7 @@ andon — measurement that carries its evidence.
   andon attest-stub   recompute a change as the verifier would, and compare
   andon init          install a gate-shaped hook for a harness, removably
   andon hook          what an installed hook runs (see `andon init`)
+  andon demo          watch a forged self-report get caught, locally, in a minute
 
 Run `andon <command> --help` for one command's options.
 
@@ -126,6 +127,7 @@ const SWITCHES: &[&str] = &[
     "distribution",
     "across-regimes",
     "check",
+    "keep",
 ];
 
 fn run() -> Result<ExitCode, String> {
@@ -157,6 +159,7 @@ fn run() -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         "hook" => Ok(ExitCode::from(andon_cli::init::hook::cmd_hook(&flags)?)),
+        "demo" => Ok(ExitCode::from(andon_cli::demo::cmd_demo(&flags)?)),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
 }
