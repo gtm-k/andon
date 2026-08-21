@@ -30,6 +30,9 @@
 //!   aggregation refusal (PREMORTEM S4).
 //! - [`worst`] — the durable worst-of consumption rule: several records on one
 //!   head are read worst-first, never latest-wins (decision log, P1.5 (a)).
+//! - [`fp_window`] — the S6 false-positive budget window, measured: changes,
+//!   MED+ rate with the P2 cognitive/cyclomatic split, escalation rate. It
+//!   reports quantities; the budget comparison belongs to the P10b entry gate.
 //!
 //! ## Every record read goes through the guarded readers
 //!
@@ -45,6 +48,7 @@
 #![deny(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod fp_window;
 pub mod migrate;
 pub mod stats;
 pub mod sync;

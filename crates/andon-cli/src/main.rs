@@ -57,6 +57,7 @@ andon — measurement that carries its evidence.
   andon attest-stub   recompute a change as the verifier would, and compare
   andon init          install a gate-shaped hook for a harness, removably
   andon hook          what an installed hook runs (see `andon init`)
+  andon demo          watch a forged self-report get caught, locally, in a minute
 
 Run `andon <command> --help` for one command's options.
 
@@ -126,6 +127,7 @@ const SWITCHES: &[&str] = &[
     "distribution",
     "across-regimes",
     "check",
+    "keep",
 ];
 
 fn run() -> Result<ExitCode, String> {
@@ -157,6 +159,7 @@ fn run() -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         "hook" => Ok(ExitCode::from(andon_cli::init::hook::cmd_hook(&flags)?)),
+        "demo" => Ok(ExitCode::from(andon_cli::demo::cmd_demo(&flags)?)),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
 }
@@ -496,6 +499,13 @@ andon ledger <list|show|ack|stats|sync|migrate|trailer> [--repo <PATH>]
     --check             exit 2 when any clustering warning fires, so a CI job
                         goes red on the finding rather than on a log grep
     --ref <NAME>        which ledger to read: measure (default) or attest
+  fp-window         the S6 false-positive budget, measured (PLAN P9b): changes,
+                    MED+ rate with the cognitive/cyclomatic split (P2 rider),
+                    escalation rate, policy hashes, and the policy-in-force diff
+                    against the conservative defaults (round-1 B8). Reports the
+                    quantities; the P10b entry gate does the comparing
+    --since <STAMP>     window start, YYYY-MM-DDTHH:MM:SSZ, inclusive (required)
+    --until <STAMP>     window end, same shape (default: now)
   sync              fetch both ledger refs, merge with cat_sort_uniq, and push —
                     retrying with backoff. Exhausted retries fail red: the
                     records stay safe locally and the failure says what to do
@@ -511,7 +521,8 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&[
-        "repo", "branch", "by", "filter", "ref", "remote", "attempts", "from", "to",
+        "repo", "branch", "by", "filter", "ref", "remote", "attempts", "from", "to", "since",
+        "until",
     ])?;
     let git = Git::open(&flags.path("repo", ".")).map_err(|e| e.to_string())?;
 
@@ -584,6 +595,13 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
             if clustered && flags.on("check") {
                 return Ok(ExitCode::from(2));
             }
+        }
+        "fp-window" => {
+            let since = flags.get("since").ok_or(
+                "fp-window needs --since <STAMP>, the ledgered window start \
+                 (YYYY-MM-DDTHH:MM:SSZ)",
+            )?;
+            print!("{}", ledger::fp_report(&git, since, flags.get("until"))?);
         }
         "sync" => {
             let attempts = match flags.get("attempts") {

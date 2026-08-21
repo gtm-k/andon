@@ -6,6 +6,10 @@
 //! and the notes machinery must work there; identity is attached only at the
 //! fixture's own commit-writing spawns.
 
+// Shared across several test targets, none of which uses every helper — the
+// same shape as `andon-cli/tests/common/mod.rs`.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 use andon_core::git::{Git, GitCommand, Revision};

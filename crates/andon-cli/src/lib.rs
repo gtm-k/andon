@@ -25,6 +25,7 @@
 //! - [`explain`] — the claim behind a number, and what it does not predict.
 //! - [`lanes`] — what the async lane still owes a measurement.
 //! - [`init`] — gate-shaped hooks installed, said aloud, and removable.
+//! - [`demo`] — the trust story staged locally: a forged self-report, caught.
 //! - [`ledger`] — records in the commit.
 //! - [`attest`] — the verifier's shape, and nothing hardened.
 //! - [`store`] — where the tool keeps its own state, which is never the working
@@ -36,6 +37,7 @@
 
 pub mod args;
 pub mod attest;
+pub mod demo;
 pub mod explain;
 pub mod init;
 pub mod jobs;
