@@ -114,10 +114,16 @@ time (notes-history committer date) of the first record after the
 instrumentation went live, recorded in the project ledger by the
 orchestrator. At window end, the same command's output — quantities plus the
 B8 policy diff — is the artifact the P10b entry gate checks. Records carry
-no wall-clock field by design (the ledger's note carries when a record
-landed), so the window is "what entered this repository's ledger in the
-interval"; `fp-window`'s own output counts anything it could not date rather
-than dropping it.
+no wall-clock field by design, so `fp-window` dates each record by the
+earliest committer timestamp among the notes commits whose trees contain it,
+**across every history merged into the ref**: a `cat_sort_uniq` merge adopts
+remote notes commits with their original committer times, so a record
+written on another machine keeps that machine's clock — a wrong clock there
+can move a record across a window boundary in either direction. What keeps
+the reading sound for this window is the ledgered single-machine protocol:
+its records accrue from this machine's own hook and recipe runs, so the only
+participating clock is the local one. `fp-window`'s own output counts
+anything it could not date rather than dropping it.
 
 ## The cross-harness ledger
 

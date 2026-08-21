@@ -45,12 +45,18 @@
 //! wall-clock times (the artifacts engine is the precedent); the ledger's note
 //! carries when the record landed."* So this module reads the time from where
 //! the design put it: [`landing_times`] walks the notes ref's own commit
-//! history and dates each record line by the earliest notes commit whose tree
-//! contains it. That choice has a consequence worth stating: a record synced
-//! in from another machine lands here when the sync ran, so the window is
-//! "what entered this repository's ledger in the interval" — which is the
-//! honest reading for a single-repo dogfood window, and says so here rather
-//! than pretending to a measurement-instant precision no mechanism provides.
+//! history and dates each record line by the **earliest committer timestamp
+//! among all notes commits whose trees contain it — across every history
+//! merged into the ref**. That fold has a consequence worth stating
+//! precisely: a `cat_sort_uniq` merge adopts remote notes commits *with
+//! their original committer times*, so a record written on another machine
+//! keeps that machine's clock, not the time the sync ran here — and a wrong
+//! or hostile remote clock can therefore move a record across a window
+//! boundary in either direction, backdating included. What makes the reading
+//! sound for THIS window is the ledgered single-machine protocol (E54): the
+//! window's records accrue from this machine's own installs and recipe runs,
+//! so the only clock that participates is the local one. A multi-machine
+//! window would need a design decision here first, not a bigger claim.
 //!
 //! # Nothing is silently dropped
 //!
@@ -140,10 +146,13 @@ impl FpWindow {
 /// The map is keyed by the record's canonical serialization — the note's own
 /// line discipline (one canonical JSON document per line) — and the value is
 /// the committer date, in epoch seconds, of the **earliest** notes commit
-/// whose tree contains that line. Earliest is the right fold because the
-/// notes machinery only ever unions (`append`, `cat_sort_uniq`, migrate-union):
-/// once a line is in the ledger it stays, so the first tree that holds it is
-/// when it landed, whatever merges re-sorted it later.
+/// whose tree contains that line, whichever history that commit came from.
+/// Earliest is the right fold because the notes machinery only ever unions
+/// (`append`, `cat_sort_uniq`, migrate-union): once a line is in the ledger
+/// it stays, whatever merges re-sort it later. See the module docs for what
+/// that timestamp means once remote histories are merged in — remote
+/// committer clocks participate, so "when it landed here" is only the sound
+/// reading under the single-machine window protocol.
 ///
 /// One `log` plus one `ls-tree` and one `show` per notes commit and blob —
 /// the same order of spawn cost as the stats loader's per-commit reads, over
