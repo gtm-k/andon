@@ -283,10 +283,7 @@ pub fn window(
             continue;
         }
         report.med_plus_changes += 1;
-        if fired
-            .iter()
-            .any(|id| RIDER_PREFIXES.iter().any(|p| id.starts_with(p)))
-        {
+        if fired.iter().any(|id| rider_metric(id)) {
             report.rider_changes += 1;
         }
         for id in fired {
@@ -298,6 +295,19 @@ pub fn window(
     }
 
     Ok(report)
+}
+
+/// Whether a metric id belongs to the P2 rider's families.
+///
+/// A prefix match anchored at a segment boundary: after the prefix the id
+/// must end or continue with `.` (the language suffix). Bare `starts_with`
+/// would also claim a future `static.cognitive-complexity-v2.rust` for the
+/// rider, silently inflating the split the Tier-B ruling is checked against.
+fn rider_metric(id: &str) -> bool {
+    RIDER_PREFIXES.iter().any(|prefix| {
+        id.strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    })
 }
 
 /// When a record landed: its canonical line, looked up in the notes history.
@@ -519,14 +529,28 @@ mod tests {
         clones.results[0].metric_id = "clones.duplicated-tokens".to_string();
         let landing = landed_at(&[&cognitive, &cyclomatic, &clones], IN);
 
+        // Exactly the false match a bare starts_with would make: a rider-like
+        // prefix that is not a segment boundary. MED+ counts it; the rider
+        // must not.
+        let mut lookalike = record_on('d');
+        lookalike.results[0].severity = Severity::Medium;
+        lookalike.results[0].metric_id = "static.cognitive-complexity-v2.rust".to_string();
+        let mut landing = landing;
+        landing.extend(landed_at(&[&lookalike], IN));
+
         let report = window(
-            &[entry(cognitive), entry(cyclomatic), entry(clones)],
+            &[
+                entry(cognitive),
+                entry(cyclomatic),
+                entry(clones),
+                entry(lookalike),
+            ],
             &landing,
             SINCE,
             UNTIL,
         )
         .expect("window");
-        assert_eq!(report.med_plus_changes, 3);
+        assert_eq!(report.med_plus_changes, 4);
         assert_eq!(report.rider_changes, 2);
         assert_eq!(
             report
