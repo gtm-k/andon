@@ -591,7 +591,8 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
     let mut engines = engines;
     engines.sort_by(|a, b| a.descriptor.engine_id.cmp(&b.descriptor.engine_id));
 
-    account_for_every_engine(&engines, &engine_failures, &registry.expected_engines)?;
+    let expected = expected_engines(registry, policy, record_kind);
+    account_for_every_engine(&engines, &engine_failures, &expected)?;
 
     // The binary under measurement cannot mark its own excuse as checked. A
     // self-report that could would be a record that passes itself — the same
@@ -693,6 +694,56 @@ pub fn prepare(request: AssembleRequest<'_>) -> Result<Prepared, AssemblyError> 
         unreadable_paths,
         self_measure,
     })
+}
+
+/// The engines this particular measurement is held to.
+///
+/// The registry declares every engine the deployment *carries*; this decides
+/// which of them the payload must account for, and it is where the code-exec
+/// lane's feature flag reaches assembly:
+///
+/// - Every static-safe family is expected unconditionally — carrying the
+///   engine is running it.
+/// - The `tests` family — the code-exec lane — is expected only where the
+///   policy in force switches the lane on AND declares a command, and only on
+///   a **self-report**. A repository that never opted in gets a payload
+///   identical to one from a build with no sandbox at all, and a supplied
+///   tests output under a policy that never sanctioned one is refused as an
+///   unknown engine: running repository code without the policy grant is the
+///   violation, not a roster bookkeeping error.
+/// - An **attestation** never expects the code-exec lane in v1. The stub
+///   verifier executes nothing (its output says what it did not check), suite
+///   results are non-deterministic and so never digest-compared, and CI-side
+///   execution is P9's composite-action design to own.
+///
+/// Keyed on the policy *passed to this assembly* — the verifier hands in the
+/// base commit's policy, and the async completion path hands in the policy
+/// snapshot taken when the measurement began — so the roster and the record
+/// always answer to the same policy the `policy_hash` names.
+///
+/// Public because the answer is needed twice: [`prepare`] holds every payload
+/// to it here, and the roster guards in `tests/shipped_severity_band.rs` pin
+/// the gate itself — that the lane's engine is declared, off by default, on
+/// under the policy that declares a command, and never expected of an
+/// attestation.
+pub fn expected_engines(
+    registry: &LoadedRegistry,
+    policy: &Policy,
+    record_kind: RecordKind,
+) -> BTreeSet<String> {
+    let lane_on = record_kind == RecordKind::SelfReport
+        && policy.sandbox.enabled
+        && policy.sandbox.test_command.is_some();
+    registry
+        .expected_engines
+        .iter()
+        .filter(|engine_id| {
+            lane_on
+                || registry.engine_families.get(*engine_id)
+                    != Some(&crate::schema::enums::EngineFamily::Tests)
+        })
+        .cloned()
+        .collect()
 }
 
 /// Every engine the registry declares appears exactly once, and nothing else

@@ -290,7 +290,10 @@ fn request<'a>(
         .iter()
         .map(|e| e.descriptor.engine_id.clone())
         .collect();
-    for engine_id in &registry.expected_engines {
+    // Padded to the same roster `prepare` will hold the payload to — the
+    // policy-filtered one, so a policy that leaves the code-exec lane off
+    // (every default-policy test here) pads no `tests` engine in.
+    for engine_id in &super::expected_engines(registry, policy, RecordKind::SelfReport) {
         if !supplied.contains(engine_id) {
             engines.push(output(engine_id, family_of(engine_id), Vec::new()));
         }
@@ -306,6 +309,7 @@ fn family_of(engine_id: &str) -> EngineFamily {
         "tamper" => EngineFamily::Tamper,
         "process" => EngineFamily::Process,
         "artifacts" => EngineFamily::Artifacts,
+        "tests" => EngineFamily::Tests,
         other => panic!("no family known for engine '{other}'"),
     }
 }
@@ -791,11 +795,23 @@ fn an_empty_success_set_cannot_be_complete_or_pass() {
 fn every_declared_engine_must_appear_exactly_once() {
     let policy = Policy::default();
     let registry = shipped_registry();
+    let declared: Vec<&str> = registry
+        .expected_engines
+        .iter()
+        .map(String::as_str)
+        .collect();
     assert_eq!(
-        registry.expected_engines.len(),
-        5,
-        "the shipped registry declares five engines: {:?}",
-        registry.expected_engines
+        declared,
+        vec![
+            "artifacts",
+            "clones",
+            "process",
+            "static-metrics",
+            "tamper",
+            "tests"
+        ],
+        "the engines the registry directory declares, by id — a new registry \
+         file joins this list or fails here"
     );
 
     // Four of five, and the fifth neither ran nor was reported as unavailable.
@@ -912,13 +928,17 @@ fn five_engines_that_found_nothing_still_pass() {
     // different records, and only the first is a bug.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let quiet: Vec<EngineOutput> = registry
-        .expected_engines
-        .iter()
-        .map(|id| output(id, family_of(id), Vec::new()))
-        .collect();
+    // The policy-filtered roster, not the declared one: under the default
+    // policy the code-exec lane is off, and supplying a `tests` output a
+    // policy never sanctioned is refused as unknown — running repository code
+    // without the grant is the violation the refusal is about.
+    let quiet: Vec<EngineOutput> =
+        super::expected_engines(&registry, &policy, RecordKind::SelfReport)
+            .iter()
+            .map(|id| output(id, family_of(id), Vec::new()))
+            .collect();
     let record = prepare(bare_request(&policy, &registry, quiet))
-        .expect("five engines with nothing to report is a measurement")
+        .expect("engines with nothing to report are still a measurement")
         .finish(advance(0, 3));
     assert!(record.results.is_empty());
     assert_eq!(record.completeness, Completeness::Complete);

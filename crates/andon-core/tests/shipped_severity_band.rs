@@ -290,7 +290,8 @@ fn measure_everything() -> Measured {
     }
 }
 
-/// The five engines' outputs, assembled the way a measurement assembles them.
+/// The measured engines' outputs, assembled the way a measurement assembles
+/// them.
 ///
 /// Through `payload::prepare`, not through a hand call to `severity::apply`.
 /// That distinction is the whole point of `the_assembly_path_applies_the_ceilings`
@@ -313,8 +314,14 @@ fn assemble(measured: &Measured) -> andon_core::schema::payload::MeasurementReco
     )
     .expect("the shipped registry loads");
 
-    let engines: Vec<EngineOutput> = registry
-        .expected_engines
+    // The roster this record answers to — the policy-filtered one, which under
+    // the default policy is the static-safe set this file measured.
+    let expected = andon_core::payload::expected_engines(
+        &registry,
+        &Policy::default(),
+        RecordKind::SelfReport,
+    );
+    let engines: Vec<EngineOutput> = expected
         .iter()
         .map(|engine_id| {
             let results: Vec<_> = measured
@@ -482,14 +489,50 @@ fn the_roster_is_the_registry_this_repository_ships() {
     // drift apart in silence. `expected_engines` is what `payload::prepare`
     // holds a payload to, so this binds these assertions to the same fact the
     // assembly boundary enforces.
+    //
+    // Since P7 the registry declares one engine beyond this file's roster: the
+    // `tests` family, the code-exec lane, which joins a measurement's expected
+    // set only where the policy in force switches it on. This file measures
+    // the static-safe roster — the tests engine's real runs live beside its
+    // own mechanism in `andon-sandbox`'s suite, because exercising it means
+    // spawning real processes in a real sandbox — so what is pinned here is
+    // the GATE, in all three directions, against the same function `prepare`
+    // reads.
+    use andon_core::payload::expected_engines;
+    use andon_core::schema::enums::RecordKind;
+
     let listed: BTreeSet<String> = SHIPPED
         .iter()
         .map(|engine| engine.engine_id.to_string())
         .collect();
+    let registry = shipped_registry();
+
+    let default_roster = expected_engines(&registry, &Policy::default(), RecordKind::SelfReport);
     assert_eq!(
+        listed, default_roster,
+        "under the default policy, the roster in this file IS the expected set"
+    );
+
+    let mut lane_on = Policy::default();
+    lane_on.sandbox.enabled = true;
+    lane_on.sandbox.test_command = Some("exit 0".to_string());
+    let with_lane = expected_engines(&registry, &lane_on, RecordKind::SelfReport);
+    let beyond: BTreeSet<&str> = with_lane
+        .iter()
+        .filter(|id| !listed.contains(*id))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        beyond,
+        BTreeSet::from(["tests"]),
+        "the one declared engine beyond this roster is the policy-gated code-exec lane; \
+         anything else here is an engine that joined no roster"
+    );
+
+    assert_eq!(
+        expected_engines(&registry, &lane_on, RecordKind::Attestation),
         listed,
-        shipped_registry().expected_engines,
-        "the roster in this file and the registry this repository ships disagree"
+        "an attestation never expects the code-exec lane in v1"
     );
 }
 

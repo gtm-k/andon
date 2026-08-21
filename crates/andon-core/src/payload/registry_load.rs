@@ -105,6 +105,12 @@ pub struct LoadedRegistry {
     /// carrying four registry files expects four engines rather than failing
     /// against a constant nobody updated.
     pub expected_engines: BTreeSet<String>,
+    /// The family each declared engine's file states, keyed by engine id.
+    ///
+    /// Read by [`crate::payload::prepare`] to decide which declared engines a
+    /// given measurement expects: the `tests` family is the code-exec lane,
+    /// which joins a roster only where the policy in force switches it on.
+    pub engine_families: std::collections::BTreeMap<String, crate::schema::enums::EngineFamily>,
     /// Non-fatal findings — stale claims, uncited claims. Carried rather than
     /// dropped so a surface can show them; a demotion nobody renders is a
     /// demotion that did not happen.
@@ -181,6 +187,10 @@ pub fn load_files(
     Ok(LoadedRegistry {
         registry,
         expected_engines: files.iter().map(|(_, file)| file.engine.clone()).collect(),
+        engine_families: files
+            .iter()
+            .map(|(_, file)| (file.engine.clone(), file.family))
+            .collect(),
         notices,
         as_of,
     })
