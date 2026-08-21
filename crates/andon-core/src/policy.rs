@@ -34,6 +34,10 @@ pub const DEFAULT_CLAIM_BUDGET: u32 = 24;
 /// At the budget of 24 a year, two a month is the even spread; three leaves
 /// slack without allowing a cliff.
 pub const DEFAULT_MAX_CLAIMS_EXPIRING_PER_MONTH: u32 = 3;
+/// Default wall-clock cap on the user test command. Generous on purpose: the
+/// sandbox is a fresh temporary worktree, so a compiled suite pays a cold
+/// build before its first test runs.
+pub const DEFAULT_TEST_TIMEOUT_MS: u32 = 600_000;
 
 /// The whole of `.andon.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -56,6 +60,9 @@ pub struct Policy {
     pub registry: RegistryPolicy,
     /// Rules for Andon measuring itself.
     pub self_measure: SelfMeasurePolicy,
+    /// The code-exec lane: the async feature flag, the sandbox limits, and the
+    /// user test command (P7).
+    pub sandbox: SandboxPolicy,
 }
 
 impl Default for Policy {
@@ -69,6 +76,7 @@ impl Default for Policy {
             history: HistoryPolicy::default(),
             registry: RegistryPolicy::default(),
             self_measure: SelfMeasurePolicy::default(),
+            sandbox: SandboxPolicy::default(),
         }
     }
 }
@@ -273,6 +281,59 @@ impl Default for SelfMeasurePolicy {
                 "crates/andon-registry-lint/tests/fixtures/**".to_string(),
             ],
             exclusion_drift_signal: true,
+        }
+    }
+}
+
+/// The code-exec lane (PLAN P7, Codex #19).
+///
+/// Everything here is off or empty by default: the async lane is feature-flagged
+/// (`enabled` is the flag, and the P7 rollback path), and the only v1 code-exec
+/// occupant — the user's own test command — exists only where an operator
+/// declares one. A repository that never touches this section measures exactly
+/// as it did before the lane existed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct SandboxPolicy {
+    /// The async lane's feature flag. While `false`, no code-exec engine joins
+    /// a measurement and the fast lane never spills work to the async lane —
+    /// `perf.fast_lane_cold_cap_ms` goes back to being unenforced, which is the
+    /// pre-P7 behaviour and the rollback path.
+    pub enabled: bool,
+    /// The user's test command, run by the tests engine inside the sandbox
+    /// through the platform shell (`sh -c` / `cmd /C`). `None` means this
+    /// deployment ships no code-exec engine at all: the tests engine is absent
+    /// from the expected-engine roster, not present-and-failing.
+    ///
+    /// Declared here rather than taken as a flag so that the command is policy:
+    /// the verifier reads it from the base commit, and editing it inside the
+    /// change under measurement surfaces as a `policy-change` finding (the
+    /// trusted-command half of Codex #19).
+    pub test_command: Option<String>,
+    /// Wall-clock cap on the test command, in milliseconds. At the cap the
+    /// whole process tree is killed and the engine reports a timeout — which is
+    /// an unanswered question (`engine-unavailable`), never a test failure.
+    pub test_timeout_ms: u32,
+    /// Environment variable names passed through to the suite beyond the base
+    /// allowlist (`andon-sandbox` documents the base list). Default-deny is the
+    /// rule: nothing else crosses, so secrets in the invoking environment never
+    /// reach repository code.
+    pub env_allow: Vec<String>,
+    /// Best-effort memory cap for the suite's process tree, in MiB. `None`
+    /// means no cap. Best-effort by name because the mechanisms differ per OS
+    /// (job-object limit on Windows, address-space rlimit elsewhere) and
+    /// neither is a security boundary.
+    pub memory_limit_mb: Option<u64>,
+}
+
+impl Default for SandboxPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            test_command: None,
+            test_timeout_ms: DEFAULT_TEST_TIMEOUT_MS,
+            env_allow: Vec::new(),
+            memory_limit_mb: None,
         }
     }
 }

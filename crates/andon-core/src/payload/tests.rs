@@ -100,6 +100,11 @@ fn regime(family: EngineFamily) -> MeasurementRegime {
             engine_version: "0.1.0".to_string(),
             parser_versions: BTreeMap::from([("lcov".to_string(), "1.0".to_string())]),
         },
+        EngineFamily::Tests => MeasurementRegime::Tests {
+            engine_version: "0.1.0".to_string(),
+            command: "true".to_string(),
+            sandbox: "no-net-isolation".to_string(),
+        },
     }
 }
 

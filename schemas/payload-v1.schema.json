@@ -268,7 +268,7 @@
       ]
     },
     "EngineFamily": {
-      "description": "The five engine families. Fixed in v1: every `MeasurementRegime` variant and every registry file maps onto exactly one.",
+      "description": "The engine families. Every `MeasurementRegime` variant and every registry file maps onto exactly one.",
       "oneOf": [
         {
           "description": "tree-sitter size and complexity metrics (P2).",
@@ -302,6 +302,13 @@
           "description": "Coverage-report parsing, negative signal only (P4).",
           "enum": [
             "artifacts"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The user's own test command, run in the sandbox (P7). The only family whose engine is `code-exec`; it joins a measurement only when `[sandbox]` policy declares a command, so a deployment that never opted in never sees it.",
+          "enum": [
+            "tests"
           ],
           "type": "string"
         }
@@ -764,6 +771,36 @@
             "engine_version",
             "family",
             "parser_versions"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The user test-command engine (P7) — the one `code-exec` regime.",
+          "properties": {
+            "command": {
+              "description": "The command run, verbatim from `[sandbox] test_command`. Part of the regime because two runs are comparable only when they ran the same command.",
+              "type": "string"
+            },
+            "engine_version": {
+              "description": "Version of the tests engine.",
+              "type": "string"
+            },
+            "family": {
+              "enum": [
+                "tests"
+              ],
+              "type": "string"
+            },
+            "sandbox": {
+              "description": "The isolation class the sandbox provided. `no-net-isolation` in v1: the suite runs in a temporary worktree with a default-deny environment and a process-tree kill, and with **no** network isolation — the disclosed limitation (VISION §5, Codex #19). Carried in the payload so the disclosure survives serialization.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "command",
+            "engine_version",
+            "family",
+            "sandbox"
           ],
           "type": "object"
         }
