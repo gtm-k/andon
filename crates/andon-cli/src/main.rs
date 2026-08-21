@@ -499,6 +499,13 @@ andon ledger <list|show|ack|stats|sync|migrate|trailer> [--repo <PATH>]
     --check             exit 2 when any clustering warning fires, so a CI job
                         goes red on the finding rather than on a log grep
     --ref <NAME>        which ledger to read: measure (default) or attest
+  fp-window         the S6 false-positive budget, measured (PLAN P9b): changes,
+                    MED+ rate with the cognitive/cyclomatic split (P2 rider),
+                    escalation rate, policy hashes, and the policy-in-force diff
+                    against the conservative defaults (round-1 B8). Reports the
+                    quantities; the P10b entry gate does the comparing
+    --since <STAMP>     window start, YYYY-MM-DDTHH:MM:SSZ, inclusive (required)
+    --until <STAMP>     window end, same shape (default: now)
   sync              fetch both ledger refs, merge with cat_sort_uniq, and push —
                     retrying with backoff. Exhausted retries fail red: the
                     records stay safe locally and the failure says what to do
@@ -514,7 +521,8 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&[
-        "repo", "branch", "by", "filter", "ref", "remote", "attempts", "from", "to",
+        "repo", "branch", "by", "filter", "ref", "remote", "attempts", "from", "to", "since",
+        "until",
     ])?;
     let git = Git::open(&flags.path("repo", ".")).map_err(|e| e.to_string())?;
 
@@ -587,6 +595,13 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
             if clustered && flags.on("check") {
                 return Ok(ExitCode::from(2));
             }
+        }
+        "fp-window" => {
+            let since = flags.get("since").ok_or(
+                "fp-window needs --since <STAMP>, the ledgered window start \
+                 (YYYY-MM-DDTHH:MM:SSZ)",
+            )?;
+            print!("{}", ledger::fp_report(&git, since, flags.get("until"))?);
         }
         "sync" => {
             let attempts = match flags.get("attempts") {

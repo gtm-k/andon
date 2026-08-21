@@ -338,6 +338,140 @@ fn trim_float(value: f64) -> String {
     }
 }
 
+/// The S6 false-positive budget window, rendered (PLAN P9b).
+///
+/// One command holds both halves of the P9b instrumentation: the window
+/// quantities ([`andon_ledger::fp_window`]) and the round-1 B8 anti-gaming
+/// artifact — the policy in force diffed against the conservative defaults,
+/// with each delta's direction. It reports; the budget comparison and the
+/// loosening-justification check belong to the P10b entry gate, and the text
+/// says so rather than printing a verdict this tool has no standing to reach.
+pub fn fp_report(git: &Git, since: &str, until: Option<&str>) -> Result<String, String> {
+    let until = match until {
+        Some(text) => text.to_string(),
+        None => andon_ledger_min::measure::now_rfc3339(),
+    };
+    let scan = stats::load_ref(git, MEASURE_REF).map_err(|e| e.to_string())?;
+    // Records carry no wall-clock field by design; when each one landed comes
+    // from the notes ref's own history (see `fp_window`'s module docs).
+    let landing = andon_ledger::fp_window::landing_times(git, MEASURE_REF)?;
+    let window = andon_ledger::fp_window::window(&scan.entries, &landing, since, &until)?;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "\n  FP-budget window — single-repo instrumentation for the S6 gate (PLAN P9b).\n  \
+         This command reports measured quantities; the budget comparison happens at\n  \
+         the P10b entry gate, not here.\n"
+    );
+    let _ = writeln!(
+        out,
+        "  window      {} -> {} ({:.1} day(s), bounds inclusive)",
+        window.since, window.until, window.days
+    );
+    let _ = writeln!(
+        out,
+        "  ledger      {MEASURE_REF}: {} record(s) total, {} self-report(s) in window",
+        window.total_records, window.in_window
+    );
+    if window.undated > 0 || window.non_self_reports > 0 {
+        let _ = writeln!(
+            out,
+            "              not counted: {} record(s) with no landing time in the notes \
+             history, {} non-self-report(s)",
+            window.undated, window.non_self_reports
+        );
+    }
+    if !window.by_source.is_empty() {
+        let sources: Vec<String> = window
+            .by_source
+            .iter()
+            .map(|(source, n)| format!("{source} {n}"))
+            .collect();
+        let _ = writeln!(out, "  sources     {}", sources.join(" · "));
+    }
+    let _ = writeln!(
+        out,
+        "  changes     {} distinct measured change(s), by head identity",
+        window.changes
+    );
+    let _ = writeln!(
+        out,
+        "  MED+        {} change(s) carried a MED+ finding{}",
+        window.med_plus_changes,
+        match window.med_plus_share() {
+            Some(share) => format!(" — {:.1}% of changes", share * 100.0),
+            None => String::new(),
+        }
+    );
+    let _ = writeln!(
+        out,
+        "    rider     {} of those driven by cognitive/cyclomatic complexity (P2 rider,\n              \
+         prefix-match on {})",
+        window.rider_changes,
+        andon_ledger::fp_window::RIDER_PREFIXES.join(" / ")
+    );
+    for (metric, changes) in &window.med_plus_by_metric {
+        let _ = writeln!(out, "    med+ on   {metric}: {changes} change(s)");
+    }
+    let _ = writeln!(
+        out,
+        "  escalation  {} record(s) reached escalate_to_human{}",
+        window.escalations,
+        match window.escalations_per_week() {
+            Some(rate) => format!(" — {rate:.2} per week"),
+            None => " (rate undefined over a zero-length window)".to_string(),
+        }
+    );
+    let hashes: Vec<String> = window
+        .policy_hashes
+        .iter()
+        .map(|(hash, n)| format!("{} ({n})", &hash[..hash.len().min(12)]))
+        .collect();
+    let _ = writeln!(
+        out,
+        "  policy      hash(es) carried by in-window records: {}",
+        if hashes.is_empty() {
+            "none — no record in window".to_string()
+        } else {
+            hashes.join(" · ")
+        }
+    );
+
+    // The B8 half: what is in force now, against the conservative defaults.
+    let in_force = crate::measure::load_policy(git, &crate::measure::PolicySource::Worktree)
+        .map_err(|e| e.to_string())?;
+    let diff = andon_core::verdict::policy_change::evaluate(&Policy::default(), &in_force, None);
+    let _ = writeln!(
+        out,
+        "\n  policy in force vs the conservative defaults (round-1 B8) — read from the\n  \
+         working tree now; the hash list above witnesses what governed the records:"
+    );
+    if diff.is_empty() {
+        let _ = writeln!(
+            out,
+            "    no field differs: the policy in force is the conservative defaults."
+        );
+    } else {
+        for delta in &diff.deltas {
+            let _ = writeln!(out, "    {}", delta.describe());
+        }
+        let _ = writeln!(
+            out,
+            "    -> {} loosening(s). At the P10b entry gate every loosening needs a\n       \
+             ledgered justification; this diff is the anti-gaming artifact produced\n       \
+             at window end.",
+            diff.loosenings().count()
+        );
+    }
+    let _ = writeln!(
+        out,
+        "\n  budget (ex ante, round-1 B9 / R2-3): >=30 honest changes over >=14 days;\n  \
+         MED+ on <10% of changes; escalations <1/week. Checked at P10b entry."
+    );
+    Ok(out)
+}
+
 /// Fetch, merge, and push both ledger refs.
 pub fn sync(git: &Git, remote: &str, attempts: u32) -> Result<String, String> {
     let options = SyncOptions {
