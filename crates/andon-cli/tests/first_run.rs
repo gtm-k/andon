@@ -2310,9 +2310,9 @@ fn the_record_says_the_base_was_the_commit_the_tree_sits_on() {
 fn the_manual_fetch_checkout_is_measured() {
     // The same blocker with a remote attached, which is what makes it a CI
     // failure rather than a scratch-repo artefact: `git init -b develop`, add a
-    // remote, fetch, `reset --hard`. `origin/HEAD` is unset and the branch
-    // tracks nothing, so no candidate resolves — while a plain `git clone` of
-    // the same upstream measures, because clone sets both.
+    // remote, fetch, `reset --hard`. `origin/HEAD` is kept unset (see below)
+    // and the branch tracks nothing, so no candidate resolves — while a plain
+    // `git clone` of the same upstream measures, because clone sets both.
     let upstream = scratch_on_branch("develop");
     let upstream_git = Git::open(upstream.path()).expect("a repository");
     commit_fixture(&upstream_git, "second");
@@ -2348,11 +2348,23 @@ fn the_manual_fetch_checkout_is_measured() {
     git.cmd(["fetch", "--quiet", "origin"])
         .output()
         .expect("fetch");
+    // The premise is constructed here, not inherited from the runner: git 2.48
+    // made `fetch` create `origin/HEAD` when it is missing, so whether the ref
+    // exists after the line above is decided by whichever git the environment
+    // ships. Deleting it builds the checkout this test describes — the shape
+    // older gits and refspec-driven CI fetches leave behind — under the test's
+    // own control. `set-head --delete` exits 0 whether or not the ref exists,
+    // so this holds on both sides of 2.48.
+    git.cmd(["remote", "set-head", "origin", "--delete"])
+        .output()
+        .expect("unset origin/HEAD");
     git.cmd(["reset", "--quiet", "--hard", "origin/develop"])
         .output()
         .expect("reset");
 
-    // The premise: neither of the two candidates a clone would have set exists.
+    // The premise, established above rather than assumed: neither of the two
+    // candidates a clone would have set exists. Still asserted, as the
+    // tripwire — a hit here means the setup lost control of the premise again.
     for candidate in ["origin/HEAD", "@{upstream}"] {
         let resolved = git
             .cmd(["rev-parse", "--verify", "--quiet", candidate])
