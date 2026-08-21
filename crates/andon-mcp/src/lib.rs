@@ -277,12 +277,21 @@ impl AndonMcp {
         }
     }
 
-    /// The last measurement, plus what the async lane still owes it.
+    /// The last measurement, completed: any deferred async-lane work is run
+    /// here, then the merged record is returned.
     #[tool(
-        description = "Return the agent profile of the last measurement plus what the async lane still owes it. Until the async lane ships (PLAN P7), every shipped engine answers in the fast lane, so the owed list is empty and this differs from `get_results` only by the lane report."
+        description = "Complete and return the last measurement. Work the fast lane deferred to the async lane — the user test command, or content engines spilled at the cold cap — is executed now (this call blocks while the suite runs, up to [sandbox] test_timeout_ms) and merged into the record; the merged agent profile is returned with the lane report beside it. With nothing deferred this differs from `get_results` only by the lane report."
     )]
     fn await_results(&self, Parameters(p): Parameters<RepoParams>) -> CallToolResult {
         let repo = repo_path(&p.repo);
+        // The same completion the CLI's `wait` runs — one implementation, so
+        // the two surfaces cannot answer "what was still owed?" differently.
+        let mut notices: Vec<String> = Vec::new();
+        match andon_cli::jobs::complete(&repo) {
+            Ok(None) => {}
+            Ok(Some(completion)) => notices = completion.notices,
+            Err(e) => return refusal(e),
+        }
         let git = match Git::open(&repo) {
             Ok(git) => git,
             Err(e) => return refusal(e.to_string()),
@@ -299,12 +308,16 @@ impl AndonMcp {
             Ok(profile) => profile,
             Err(e) => return refusal(e),
         };
-        // Two blocks: the machine-readable profile stays one parseable JSON
-        // document, and the lane report — prose about what is still owed —
-        // rides beside it rather than corrupting it.
+        // Blocks in order: the machine-readable profile stays one parseable
+        // JSON document; the lane report — prose about what was owed and what
+        // completing it said — rides beside it rather than corrupting it.
+        let mut lane_report = andon_cli::lanes::wait(&record);
+        for notice in notices {
+            lane_report.push_str(&format!("  note     {notice}\n"));
+        }
         CallToolResult::success(vec![
             ContentBlock::text(profile),
-            ContentBlock::text(andon_cli::lanes::wait(&record)),
+            ContentBlock::text(lane_report),
         ])
     }
 

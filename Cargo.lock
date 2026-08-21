@@ -22,6 +22,7 @@ dependencies = [
  "andon-engine-tamper",
  "andon-ledger",
  "andon-ledger-min",
+ "andon-sandbox",
  "andon-static-metrics",
  "serde",
  "serde_json",
@@ -151,6 +152,7 @@ version = "0.1.0"
 dependencies = [
  "andon-core",
  "libc",
+ "serde",
  "tempfile",
  "thiserror",
  "windows-sys",

@@ -72,6 +72,12 @@ pub mod reason {
     pub const ITERATION_CAP: &str = "iteration-cap";
     /// An engine could not run. Its metrics are absent, not zero.
     pub const ENGINE_UNAVAILABLE: &str = "engine-unavailable";
+
+    /// Work deferred to the async lane — the cold cap, or the code-exec lane,
+    /// which never runs inline. `andon wait` completes it. Distinct from
+    /// `engine-unavailable` because "not finished" and "could not run" ask a
+    /// reader for different next moves.
+    pub const ENGINE_SPILLED_ASYNC: &str = "engine-spilled-async";
     /// A reported finding stands on a claim that is past its re-review date.
     pub const EVIDENCE_STALE: &str = "evidence-stale";
     /// The iteration counter restarted because its state was unusable.
@@ -84,13 +90,23 @@ pub mod reason {
     pub const EVIDENCE_REGISTRY_SKEW: &str = "evidence-registry-skew";
 }
 
-/// An engine that was asked to measure and could not.
+/// An engine that contributed no results to this assembly, and why.
+///
+/// Two kinds share the shape, split by `spilled`, and the split is wire-visible
+/// as two verdict reason codes: an engine that **could not** run
+/// (`engine-unavailable`) and an engine whose work was **deferred to the async
+/// lane** (`engine-spilled-async`) — the fast lane's cold cap, or the
+/// code-exec lane, which never runs inline (PLAN P7 / APPROACH graft 4).
+/// Collapsing them would tell a reader something is wrong when something is
+/// merely not finished, and `andon wait` finishes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineFailure {
     /// Which engine.
     pub engine_id: String,
     /// What it said, in its own words.
     pub reason: String,
+    /// True when the work is deferred rather than failed: `andon wait` runs it.
+    pub spilled: bool,
 }
 
 /// Everything the verdict needs besides the results themselves.
@@ -443,9 +459,10 @@ pub fn evaluate(
     // P9's confirmation-completeness criterion owns the rule that a record
     // missing an engine on both sides cannot be `confirmed`, keyed on per-engine
     // presence rather than on this roll-up (E20).
-    if !ctx.engine_failures.is_empty() {
-        let detail: Vec<String> = ctx
-            .engine_failures
+    let (spilled, unavailable): (Vec<&EngineFailure>, Vec<&EngineFailure>) =
+        ctx.engine_failures.iter().partition(|f| f.spilled);
+    if !unavailable.is_empty() {
+        let detail: Vec<String> = unavailable
             .iter()
             .map(|f| format!("{}: {}", f.engine_id, f.reason))
             .collect();
@@ -455,7 +472,28 @@ pub fn evaluate(
             message: format!(
                 "{} engine(s) produced no results, so their metrics are absent rather than \
                  zero and this record is {}: {}",
-                ctx.engine_failures.len(),
+                unavailable.len(),
+                format!("{:?}", ctx.completeness).to_lowercase(),
+                detail.join("; ")
+            ),
+            metric_ids: Vec::new(),
+        });
+    }
+    // Deferred, not broken — its own code because the reader's next move is
+    // different: nothing here needs fixing, something here needs finishing,
+    // and `andon wait` is what finishes it.
+    if !spilled.is_empty() {
+        let detail: Vec<String> = spilled
+            .iter()
+            .map(|f| format!("{}: {}", f.engine_id, f.reason))
+            .collect();
+        reasons.push(VerdictReason {
+            code: reason::ENGINE_SPILLED_ASYNC.to_string(),
+            severity: Severity::Medium,
+            message: format!(
+                "{} engine(s) deferred to the async lane, so this record is {} until `andon \
+                 wait` completes the measurement: {}",
+                spilled.len(),
                 format!("{:?}", ctx.completeness).to_lowercase(),
                 detail.join("; ")
             ),
@@ -1065,6 +1103,7 @@ mod tests {
         let failures = [EngineFailure {
             engine_id: "clones".to_string(),
             reason: "index lock held".to_string(),
+            spilled: false,
         }];
         for (completeness, word) in [
             (Completeness::Partial, "partial"),

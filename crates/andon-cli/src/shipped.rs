@@ -77,6 +77,17 @@ pub const SHIPPED: &[ShippedEngine] = &[
         metrics: andon_engine_artifacts::engine::metric_descriptors,
         ladders: andon_engine_artifacts::engine::severity_ladders,
     },
+    // The code-exec lane's occupant (P7). On the roster because the binary
+    // carries it — the roster describes the deployment — while whether a given
+    // MEASUREMENT expects it is policy's call, decided in one place:
+    // `andon_core::payload::expected_engines`. A repository that never enables
+    // `[sandbox]` gets payloads identical to a build without this entry.
+    ShippedEngine {
+        engine_id: "tests",
+        registry_file: andon_sandbox::engine::registry_file,
+        metrics: andon_sandbox::engine::metric_descriptors,
+        ladders: andon_sandbox::engine::severity_ladders,
+    },
 ];
 
 /// The engine that declares `metric_id`, and its ladder for it.

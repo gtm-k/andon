@@ -61,6 +61,11 @@ fn main() {
 
 /// The grandchild, with its stdio detached: the tests must observe its death
 /// through the heartbeat file, never through a pipe it might hold open.
+///
+/// Never waited on — deliberately. The orphan is the test subject: the
+/// sandbox's process-tree kill is what must reap it, and a probe that waited
+/// would prove only that the probe can wait.
+#[allow(clippy::zombie_processes)]
 fn spawn_heartbeat(path: &str) {
     let me = std::env::current_exe().expect("current_exe");
     Command::new(me)

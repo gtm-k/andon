@@ -16,8 +16,11 @@
 //!
 //! - [`resolve`] — what to measure, and saying so when it is not what was asked
 //!   for. PREMORTEM A1 lives here.
-//! - [`measure`] — five engines over one change, assembled into one record.
+//! - [`measure`] — every shipped engine over one change, assembled into one
+//!   record.
 //! - [`shipped`] — the one roster of engines this build carries.
+//! - [`jobs`] — the async lane's other half: what `measure` spilled, executed
+//!   and merged back by `wait`.
 //! - [`render`] — the terminal render and the self-contained HTML report.
 //! - [`explain`] — the claim behind a number, and what it does not predict.
 //! - [`lanes`] — what the async lane still owes a measurement.
@@ -35,6 +38,7 @@ pub mod args;
 pub mod attest;
 pub mod explain;
 pub mod init;
+pub mod jobs;
 pub mod lanes;
 pub mod ledger;
 pub mod measure;

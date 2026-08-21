@@ -36,7 +36,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use andon_core::git::{BlobBatch, Git};
 
 /// One changed path to lay over the anchor commit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serde-derived because the async lane's job file carries the overlay across
+/// processes: the suite at `andon wait` time runs the snapshot that was
+/// measured, and an uncommitted head's snapshot cannot be re-derived later.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OverlayEntry {
     /// Repository-relative path, forward slashes, as git spells it.
     pub path: String,

@@ -326,6 +326,7 @@ fn failed<'a>(mut req: AssembleRequest<'a>, engine_id: &str, reason: &str) -> As
     req.engine_failures.push(EngineFailure {
         engine_id: engine_id.to_string(),
         reason: reason.to_string(),
+        spilled: false,
     });
     req
 }
@@ -864,6 +865,7 @@ fn an_engine_cannot_both_produce_results_and_report_a_failure() {
     req.engine_failures = vec![EngineFailure {
         engine_id: "clones".to_string(),
         reason: "index lock held".to_string(),
+        spilled: false,
     }];
     assert_eq!(
         prepare(req).expect_err("two statements, one of them false"),
@@ -884,10 +886,12 @@ fn an_engine_cannot_fail_twice() {
         EngineFailure {
             engine_id: "clones".to_string(),
             reason: "index lock held".to_string(),
+            spilled: false,
         },
         EngineFailure {
             engine_id: "clones".to_string(),
             reason: "and something else".to_string(),
+            spilled: false,
         },
     ];
     assert_eq!(
@@ -910,6 +914,7 @@ fn an_unknown_engine_cannot_hide_in_the_failure_list() {
     req.engine_failures = vec![EngineFailure {
         engine_id: "prcoess".to_string(),
         reason: "a typo is a different engine".to_string(),
+        spilled: false,
     }];
     assert_eq!(
         prepare(req).expect_err("refused"),

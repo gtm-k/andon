@@ -78,7 +78,7 @@ use serde_json::Value;
 use crate::policy::{Policy, PolicyError};
 
 /// Which way an edit moved the gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     /// The gate got easier to pass. The only direction that can block.
     Loosening,
@@ -91,7 +91,7 @@ pub enum Direction {
 }
 
 /// One field that moved.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PolicyDelta {
     /// Dotted path, spelled as the TOML file spells it, e.g.
     /// `severity.block_on_tamper`.
@@ -129,7 +129,7 @@ impl PolicyDelta {
 /// Carried rather than reduced to a boolean so that the finding can say *what*
 /// was cited and *whether anyone checked it* — both of which a boolean throws
 /// away, and the second of which is the part that decides the verdict.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Justification {
     /// Supplied by the caller and checked against nothing.
     ///
@@ -207,7 +207,7 @@ impl Justification {
 /// mypy, coverage and tsconfig too, and a loosening there needs the same exit
 /// this module gives an `.andon.toml` loosening or it has none at all
 /// ([`super::severity::signal_stops_the_line`]).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct PolicyChange {
     /// Every field that moved, in path order.
     pub deltas: Vec<PolicyDelta>,
