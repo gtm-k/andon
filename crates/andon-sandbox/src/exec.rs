@@ -103,7 +103,7 @@ pub fn run(workdir: &Path, spec: &ExecSpec) -> Result<ExecOutcome, SandboxError>
 
     // The sweep. However the command ended, nothing it started outlives it.
     platform::kill_tree(&child, &containment);
-    drop(containment);
+    containment.sweep();
 
     let stdout_tail = stdout
         .join()
@@ -218,6 +218,15 @@ mod platform {
     // object reference and moving it between threads is fine.
     unsafe impl Send for Containment {}
 
+    impl Containment {
+        /// Consume the containment. Dropping it closes the job handle, and
+        /// with `KILL_ON_JOB_CLOSE` set the close is itself the final sweep —
+        /// a named method rather than a bare `drop(..)` at the call site,
+        /// because on the Unix arm `Containment` holds nothing and a `drop`
+        /// there is the no-op clippy rightly refuses.
+        pub fn sweep(self) {}
+    }
+
     impl Drop for Containment {
         fn drop(&mut self) {
             // KILL_ON_JOB_CLOSE turns this close into the final sweep.
@@ -279,6 +288,13 @@ mod platform {
     /// Unix needs no owned handle; the group id is the child's pid.
     #[derive(Debug)]
     pub struct Containment;
+
+    impl Containment {
+        /// Nothing left to release: the group `SIGKILL` in [`kill_tree`] was
+        /// the sweep. Consuming rather than `drop(..)` so both platform arms
+        /// end the containment the same way at the one call site.
+        pub fn sweep(self) {}
+    }
 
     /// Start the child in its own process group, with the address-space
     /// rlimit when one is configured. Runs after fork, before exec.
