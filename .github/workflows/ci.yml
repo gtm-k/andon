@@ -128,10 +128,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Full history. The default shallow checkout leaves no earlier state
+          # for the base ladder to resolve, and `andon measure` refuses a
+          # shallow clone rather than recompute over history it cannot see —
+          # the verifier's own unshallow rule, biting this repository's CI.
+          # The refusal was honest; the depth was the defect. dogfood.yml's
+          # checkout says the same thing at more length.
+          fetch-depth: 0
 
-      # Placeholder until dogfood switch-on at P5b. It announces that no
-      # measurement was performed, and fails if the measurement CLI has appeared
-      # and made it obsolete. See docs/self-measure.md.
+      # P5b's dogfood switch-on replaced the P0 placeholder this step used to
+      # run: scripts/self-measure.sh now builds the working tree's binary and
+      # measures the repository with it, under the recorded
+      # bootstrap-no-attested-release override. dogfood.yml drives the same
+      # script with the ledger regression test and the typed gate beside it.
+      # See docs/self-measure.md.
       - name: Self-measure
         run: bash scripts/self-measure.sh
 
