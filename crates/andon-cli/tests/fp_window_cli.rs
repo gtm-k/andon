@@ -140,10 +140,7 @@ fn the_report_counts_the_recorded_change_and_its_med_plus_rider_split() {
     assert!(output.status.success(), "{text}");
 
     assert!(text.contains("1 self-report(s) in window"), "{text}");
-    assert!(
-        text.contains("1 distinct measured change(s)"),
-        "{text}"
-    );
+    assert!(text.contains("1 distinct measured change(s)"), "{text}");
     // The change really crosses the rung under the shipped policy, and the
     // rider split attributes it to the cognitive/cyclomatic family.
     assert!(
@@ -185,10 +182,7 @@ fn a_window_holding_nothing_says_so_rather_than_failing() {
     let text = stdout(&output);
     assert!(output.status.success(), "{text}");
     assert!(text.contains("0 self-report(s) in window"), "{text}");
-    assert!(
-        text.contains("0 distinct measured change(s)"),
-        "{text}"
-    );
+    assert!(text.contains("0 distinct measured change(s)"), "{text}");
 }
 
 #[test]

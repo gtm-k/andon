@@ -242,7 +242,10 @@ fn run_tamper(keep: bool) -> Result<String, String> {
         &mut out,
         "  --ci` prints the recipe — and this command exists so you can watch the",
     );
-    say(&mut out, "  distinction work without setting any of that up.");
+    say(
+        &mut out,
+        "  distinction work without setting any of that up.",
+    );
     say(&mut out, "");
 
     if keep {

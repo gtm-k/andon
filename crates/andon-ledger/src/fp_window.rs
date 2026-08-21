@@ -281,7 +281,10 @@ pub fn window(
             report.rider_changes += 1;
         }
         for id in fired {
-            *report.med_plus_by_metric.entry((*id).to_string()).or_insert(0) += 1;
+            *report
+                .med_plus_by_metric
+                .entry((*id).to_string())
+                .or_insert(0) += 1;
         }
     }
 
@@ -317,9 +320,8 @@ fn wire_name(value: &impl serde::Serialize) -> String {
 /// the expected shape) or a record from a producer this code does not know
 /// (worth counting as undated rather than misfiling).
 pub fn parse_stamp(text: &str) -> Result<i64, String> {
-    let refuse = || {
-        format!("'{text}' is not a ledger timestamp; the shape is YYYY-MM-DDTHH:MM:SSZ (UTC)")
-    };
+    let refuse =
+        || format!("'{text}' is not a ledger timestamp; the shape is YYYY-MM-DDTHH:MM:SSZ (UTC)");
     let bytes = text.as_bytes();
     if bytes.len() != 20 || bytes[10] != b'T' || bytes[19] != b'Z' {
         return Err(refuse());

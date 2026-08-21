@@ -100,7 +100,9 @@ fn one_command_tells_the_whole_story_and_cleans_up() {
         "{text}"
     );
     assert!(
-        text.contains("counts        no — this record does not count as attested evidence downstream"),
+        text.contains(
+            "counts        no — this record does not count as attested evidence downstream"
+        ),
         "{text}"
     );
 
