@@ -264,7 +264,7 @@ mod tests {
         );
         assert!(
             !loaded.registry.metrics.is_empty(),
-            "five engines have shipped metrics"
+            "the shipped registry declares metrics"
         );
     }
 

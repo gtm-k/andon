@@ -1,4 +1,4 @@
-//! Payload assembly: five engines' results become one record.
+//! Payload assembly: the engines' results become one record.
 //!
 //! # What assembly is for
 //!

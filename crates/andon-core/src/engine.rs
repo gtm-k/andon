@@ -33,7 +33,7 @@ use crate::verdict::ladder::SeverityLadder;
 pub struct EngineDescriptor {
     /// Stable id, e.g. `static-metrics`. Matches the registry file stem.
     pub engine_id: String,
-    /// Which of the five families this engine belongs to.
+    /// Which family this engine belongs to.
     pub family: EngineFamily,
     /// Whether running it executes repository code.
     pub class: EngineClass,

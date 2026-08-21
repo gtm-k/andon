@@ -5,8 +5,8 @@
 //! `andon-core` is the contract crate: every engine depends on it and it depends
 //! on none of them, which is what keeps the payload schema stable while engines
 //! move. The subject of these tests is the assembler, not any engine, so the
-//! outputs are built from the contract's own types: all five
-//! [`MeasurementRegime`] variants are constructible in this crate, and the claim
+//! outputs are built from the contract's own types: every
+//! [`MeasurementRegime`] variant is constructible in this crate, and the claim
 //! ids are the ones the shipped `registry/` actually declares — so
 //! `five_engine_families_assemble_into_one_record` fails if a shipped registry
 //! stops resolving a shipped metric.
@@ -20,7 +20,7 @@
 //! test.
 //!
 //! `tests/shipped_severity_band.rs` asks that question, over real engines
-//! measuring a real repository, through a dev-dependency cycle onto the five
+//! measuring a real repository, through a dev-dependency cycle onto the
 //! engine crates. The cycle is confined to that file's purpose: it never enters
 //! the built library, and these tests stay synthetic on the reasoning above.
 
@@ -1023,6 +1023,43 @@ fn five_engine_families_assemble_into_one_record() {
     assert_eq!(record.schema_version, SCHEMA_VERSION);
     assert_eq!(record.completeness, Completeness::Complete);
     assert_eq!(record.verdict.verdict, Verdict::Pass);
+}
+
+#[test]
+fn the_tests_family_assembles_when_policy_declares_the_lane() {
+    // The sixth family's positive control, mirroring the five-family join
+    // above: under a policy that switches the code-exec lane on, a tests
+    // result resolves its claim, survives the digest recompute, and joins the
+    // record — so the lane's gate (`expected_engines`) is provably a gate and
+    // not a wall.
+    let mut policy = Policy::default();
+    policy.sandbox.enabled = true;
+    policy.sandbox.test_command = Some("exit 0".to_string());
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    engines.push(output(
+        "tests",
+        EngineFamily::Tests,
+        vec![result(
+            &registry,
+            "tests",
+            EngineFamily::Tests,
+            "tests.suite-failure",
+            "andon.tests.suite@1|any|regression-signal",
+            MetricValue::Flag(false),
+        )],
+    ));
+    let record = prepare(request(&policy, &registry, engines))
+        .expect("the sixth family assembles under the policy that declares it")
+        .finish(advance(0, 3));
+    assert_eq!(record.results.len(), 6);
+    let families: BTreeSet<EngineFamily> = record.results.iter().map(|r| r.family).collect();
+    assert_eq!(families.len(), 6, "one result from each family");
+    assert_eq!(
+        record.verdict.verdict,
+        Verdict::Pass,
+        "a passing suite passes"
+    );
 }
 
 #[test]

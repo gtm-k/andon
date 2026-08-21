@@ -1,5 +1,5 @@
-//! One measurement, end to end: five engines over one change, assembled into one
-//! record.
+//! One measurement, end to end: every shipped engine over one change, assembled
+//! into one record.
 //!
 //! # Where the evidence registry comes from, and why it is not the checkout
 //!

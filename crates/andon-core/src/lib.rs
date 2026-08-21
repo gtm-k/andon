@@ -23,7 +23,7 @@
 //!   metric has none.
 //! - [`policy`] — `.andon.toml`, where every threshold lives so that changing
 //!   one is a reviewable edit.
-//! - [`payload`] — where five engines' results become one record, and the
+//! - [`payload`] — where the engines' results become one record, and the
 //!   registry gate that no number gets past without evidence.
 //! - [`verdict`] — the four categorical words, the severity policy behind them,
 //!   and the per-branch loop counter.
