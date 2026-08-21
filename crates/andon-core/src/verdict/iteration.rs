@@ -578,54 +578,13 @@ mod tests {
         assert_eq!(store.peek("feat/a", 3).count, 1);
     }
 
-    #[test]
-    fn the_test_failure_knob_is_declared_and_unread() {
-        // `severity.block_on_test_failure` gates nothing yet — no engine
-        // produces a test result until the sandbox does (P7). Pinned so that the
-        // claim in its own documentation cannot quietly become false: flipping it
-        // must change no verdict this workspace can reach.
-        use crate::policy::Policy;
-        use crate::schema::enums::{Severity, Verdict};
-        use crate::testing::sample_result;
-        use crate::verdict::{evaluate, VerdictContext};
-
-        let mut result = sample_result();
-        result.severity = Severity::High;
-
-        let strict = Policy::default();
-        let permissive = Policy {
-            severity: crate::policy::SeverityPolicy {
-                block_on_test_failure: false,
-                ..strict.severity.clone()
-            },
-            ..strict.clone()
-        };
-        let iteration = IterationState {
-            count: 1,
-            cap: 3,
-            escalated: false,
-        };
-        fn context(policy: &Policy) -> VerdictContext<'_> {
-            VerdictContext {
-                policy,
-                policy_change: None,
-                engine_failures: &[],
-                stale_claim_ids: &[],
-                iteration_state_recovered: false,
-                completeness: crate::schema::enums::Completeness::Complete,
-                registry_skew: &[],
-                unreadable_paths: &[],
-            }
-        }
-        let a = evaluate(std::slice::from_ref(&result), &context(&strict), iteration);
-        let b = evaluate(
-            std::slice::from_ref(&result),
-            &context(&permissive),
-            iteration,
-        );
-        assert_eq!(a, b, "nothing reads this field yet");
-        assert_eq!(a.verdict, Verdict::Block, "and the case is a live one");
-    }
+    // `the_test_failure_knob_is_declared_and_unread` lived here for six
+    // phases, pinning the claim that `severity.block_on_test_failure` gated
+    // nothing. P7 built the reader — `severity::stops_the_line`'s suite-flag
+    // route — so the pin was retired exactly as its own comment planned:
+    // "the day something does read it, the claim above fails rather than
+    // quietly becoming false." The reader's own tests live beside the rule
+    // in `severity::tests`.
 
     /// A change nothing else in this file uses.
     ///

@@ -146,6 +146,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "andon-sandbox"
+version = "0.1.0"
+dependencies = [
+ "andon-core",
+ "libc",
+ "tempfile",
+ "thiserror",
+ "windows-sys",
+]
+
+[[package]]
 name = "andon-static-metrics"
 version = "0.1.0"
 dependencies = [

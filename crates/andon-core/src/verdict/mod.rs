@@ -52,6 +52,12 @@ use policy_change::PolicyChange;
 pub mod reason {
     /// A tamper detector fired and policy stops the line for it.
     pub const TAMPER_SIGNAL: &str = "tamper-signal";
+
+    /// The user test command failed and policy blocks on that.
+    pub const TEST_FAILURE: &str = "test-failure";
+
+    /// The user test command failed and policy chose not to block.
+    pub const TEST_FAILURE_ADVISORY: &str = "test-failure-advisory";
     /// A tamper detector fired and policy does not stop the line for it.
     pub const TAMPER_SIGNAL_ADVISORY: &str = "tamper-signal-advisory";
     /// One or more findings reached MED+ after policy.
@@ -288,12 +294,61 @@ pub fn evaluate(
         });
     }
 
-    // --- metric findings ----------------------------------------------------
-    let blocking_metrics = metric_ids(
-        results
+    // --- the failed test suite ----------------------------------------------
+    // Its own reason, not a row in the generic metric findings: the block keys
+    // on the flag while the tier ceiling holds the reported severity at `Low`,
+    // so the generic "reached {severity} after policy" sentence would describe
+    // a `block` with a word that cannot block. The tamper loop above has the
+    // same split for the same reason.
+    for result in results.iter().filter(|r| severity::fired_suite_failure(r)) {
+        let blocking = severity::stops_the_line(result, ctx);
+        // The sibling sentence says how it failed; the engine emits the pair
+        // together, so its absence means a hand-built record — the reason
+        // still stands, just without the detail.
+        let outcome = results
             .iter()
-            .filter(|r| severity::fired_signal(r).is_none() && severity::stops_the_line(r, ctx)),
-    );
+            .find(|r| {
+                r.family == crate::schema::enums::EngineFamily::Tests
+                    && r.metric_id == severity::SUITE_OUTCOME_METRIC
+            })
+            .and_then(|r| match &r.value {
+                crate::schema::payload::MetricValue::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or("exited non-zero");
+        reasons.push(VerdictReason {
+            code: if blocking {
+                reason::TEST_FAILURE
+            } else {
+                reason::TEST_FAILURE_ADVISORY
+            }
+            .to_string(),
+            // Keyed on the flag, so the reason says `critical` even though the
+            // result's own severity is tier-capped — the same wording rule as
+            // the tamper reasons above.
+            severity: if blocking {
+                Severity::Critical
+            } else {
+                result.severity
+            },
+            message: format!(
+                "the user test command failed ({outcome}): {}",
+                if blocking {
+                    "the line stops"
+                } else {
+                    "reported; policy does not block on test failure"
+                }
+            ),
+            metric_ids: vec![result.metric_id.clone()],
+        });
+    }
+
+    // --- metric findings ----------------------------------------------------
+    let blocking_metrics = metric_ids(results.iter().filter(|r| {
+        severity::fired_signal(r).is_none()
+            && !severity::fired_suite_failure(r)
+            && severity::stops_the_line(r, ctx)
+    }));
     if !blocking_metrics.is_empty() {
         let worst = worst_severity(results, &blocking_metrics);
         reasons.push(VerdictReason {
@@ -309,6 +364,7 @@ pub fn evaluate(
 
     let advisory_metrics = metric_ids(results.iter().filter(|r| {
         severity::fired_signal(r).is_none()
+            && !severity::fired_suite_failure(r)
             && !severity::stops_the_line(r, ctx)
             && r.severity > Severity::Info
     }));
@@ -550,7 +606,10 @@ pub fn evaluate(
     let blocking = reasons.iter().any(|r| {
         matches!(
             r.code.as_str(),
-            reason::TAMPER_SIGNAL | reason::SEVERITY_MED_PLUS | reason::POLICY_CHANGE_LOOSENING
+            reason::TAMPER_SIGNAL
+                | reason::TEST_FAILURE
+                | reason::SEVERITY_MED_PLUS
+                | reason::POLICY_CHANGE_LOOSENING
         )
     });
     let anything_worth_saying = reasons.iter().any(|r| r.severity > Severity::Info);

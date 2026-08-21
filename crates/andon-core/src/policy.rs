@@ -87,31 +87,17 @@ impl Default for Policy {
 pub struct SeverityPolicy {
     /// A tamper signal blocks. Conservative default, and the product's point.
     pub block_on_tamper: bool,
-    // DECLARED, AND READ BY NOTHING YET
+    // Read by `verdict::severity::stops_the_line` since P7 — the disposition
+    // the original declared-and-unread note reserved for P0 and P7 to make
+    // together. It keys on the tests engine's failure FLAG, never on the
+    // result's severity: both tests-lane claims are tier N, so the tier
+    // ceiling caps every suite result at `Low` and a severity-keyed rule
+    // could never stop the line for a failed suite at all — the same
+    // construction, for the same reason, as `block_on_tamper` (P5a muzzle
+    // rule). `severity::tests::` pins both directions.
     //
-    // Nothing in the workspace consults this field to reach a verdict, and that
-    // is not an oversight to be tidied away by deleting it. Running a test suite
-    // means executing repository code, which is a `code-exec` engine and needs
-    // the sandbox — P7's, and the first phase that can produce a test result for
-    // this field to gate on. Until then the honest state is a declared knob with
-    // no consumer.
-    //
-    // Removing it is not the cheaper option it looks like. `Policy` is the
-    // `.andon.toml` schema, `policy_hash` is computed over it and rides in every
-    // record, and the field is already classified in the policy direction table
-    // and named in the tamper detector's strictness list — so a deletion is a
-    // schema edit that moves every hash, for a field that is coming back. P0
-    // owns the v1 schema definition pre-release (PLAN decision log, P0 execution
-    // (b)); the disposition is P0's and P7's to make together, and this note is
-    // what stops the next reader deciding it alone.
-    //
-    // `iteration::tests::the_test_failure_knob_is_declared_and_unread` pins the
-    // current state, so that the day something does read it, the claim above
-    // fails rather than quietly becoming false.
-    //
-    // A plain comment rather than a doc comment on purpose: doc comments on this
-    // struct become `description` strings in the committed JSON schema, and
-    // `schemas/*` is P0-owned.
+    // A plain comment rather than a doc comment on purpose: doc comments on
+    // this struct become `description` strings in the committed JSON schema.
     /// A failing test suite blocks.
     pub block_on_test_failure: bool,
     /// The strongest severity a C-tier claim may reach. Weak evidence advises.
