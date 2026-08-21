@@ -111,13 +111,21 @@ STUB
     chmod +x "$sandbox/stub-bin/cargo" "$sandbox/target/release/andon"
 
     git -c init.defaultBranch=main init --quiet "$sandbox"
+
+    # The identity for every git write in the sandbox, in the sandbox's own
+    # config rather than inline on the seed commit: `git notes add` writes a
+    # commit object on the notes ref exactly as `commit` does, and a CI runner
+    # has an identity for neither — the fatal was "empty ident name", from the
+    # first notes call, on a runner whose passwd entry has no name to
+    # auto-detect. Repo-local config covers every case's writes and touches
+    # nothing outside this throwaway repository.
+    git -C "$sandbox" config user.name "andon test"
+    git -C "$sandbox" config user.email test@andon.invalid
+    git -C "$sandbox" config commit.gpgsign false
+
     echo "seed" > "$sandbox/seed.txt"
     git -C "$sandbox" add seed.txt
-    git -C "$sandbox" \
-        -c commit.gpgsign=false \
-        -c user.email=test@andon.invalid \
-        -c user.name="andon test" \
-        commit --quiet -m "seed"
+    git -C "$sandbox" commit --quiet -m "seed"
 }
 
 # Runs the real script in the sandbox. Sets RUN_OUT and RUN_STATUS.
