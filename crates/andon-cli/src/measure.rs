@@ -287,7 +287,7 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
         compare_context: resolution.compare_context.clone(),
         policy: policy.clone(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
 
     let (engines, engine_failures, mut engine_notes) =

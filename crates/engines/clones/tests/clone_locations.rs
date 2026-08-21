@@ -54,7 +54,7 @@ fn context() -> MeasureContext {
         },
         policy: Policy::default(),
         changed_paths: Vec::new(),
-        sandbox_available: false,
+        sandbox: None,
     }
 }
 

@@ -80,7 +80,7 @@ fn run() -> Result<(), String> {
         // field outside every per-result digest.
         policy: Policy::default(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     let results = run_engine(&engine, &context).map_err(|e| e.to_string())?;
 

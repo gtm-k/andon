@@ -71,9 +71,64 @@ pub struct MeasureContext {
     pub policy: Policy,
     /// Repository-relative paths touched by the change, as git spells them.
     pub changed_paths: Vec<String>,
-    /// Whether a sandbox is available for `code-exec` engines. P7 replaces the
-    /// flag with a real handle.
-    pub sandbox_available: bool,
+    /// The sandbox a `code-exec` engine runs repository code through, when the
+    /// caller provides one.
+    ///
+    /// A capability, not a flag — P0 shipped `sandbox_available: bool` here and
+    /// named this replacement. A boolean was a caller's *claim* that a sandbox
+    /// existed, and a claim can be set without the thing it claims; a handle
+    /// cannot. A `code-exec` engine executes only by calling [`SandboxExec::run`]
+    /// on this value, so a context built without a sandbox has not merely
+    /// promised static analysis — it has withheld the means of anything else
+    /// (Codex #19).
+    pub sandbox: Option<std::sync::Arc<dyn SandboxExec>>,
+}
+
+/// The one way repository code runs during a measurement.
+///
+/// Implemented by `andon-sandbox` over a temporary worktree with a default-deny
+/// environment, a wall-clock timeout with a process-tree kill, and best-effort
+/// resource limits — and with **no network isolation**, which is disclosed
+/// rather than claimed (VISION §5). Defined here so that engine crates and the
+/// trait boundary agree on the shape without depending on the sandbox crate.
+pub trait SandboxExec: std::fmt::Debug + Send + Sync {
+    /// Run one command to completion, or to the timeout.
+    ///
+    /// Errors are refusals to run at all (the sandbox could not be entered, the
+    /// process could not spawn). A command that ran and failed, or ran and was
+    /// killed at the timeout, is an [`ExecOutcome`] — the caller decides what
+    /// each means, and a timeout is never reported as a test failure.
+    fn run(&self, spec: &ExecSpec) -> Result<ExecOutcome, String>;
+}
+
+/// One command for [`SandboxExec::run`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecSpec {
+    /// The command line, run through the platform shell (`sh -c` / `cmd /C`).
+    pub command: String,
+    /// Wall-clock cap in milliseconds; at it the whole process tree is killed.
+    pub timeout_ms: u32,
+    /// Environment variable names allowed through beyond the sandbox's base
+    /// allowlist. Everything else is denied by default.
+    pub env_allow: Vec<String>,
+    /// Best-effort memory cap in MiB, `None` for no cap.
+    pub memory_limit_mb: Option<u64>,
+}
+
+/// What one sandboxed command did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecOutcome {
+    /// The exit code, when the process exited with one. `None` when it was
+    /// killed — by the timeout, or by a signal on Unix.
+    pub exit_code: Option<i32>,
+    /// True when the wall-clock cap fired and the process tree was killed.
+    pub timed_out: bool,
+    /// Wall-clock time the command took, in milliseconds.
+    pub duration_ms: u64,
+    /// The last bytes of stdout, bounded by the sandbox.
+    pub stdout_tail: String,
+    /// The last bytes of stderr, bounded by the sandbox.
+    pub stderr_tail: String,
 }
 
 /// Why an engine could not produce results.
@@ -176,7 +231,7 @@ pub fn run_engine(
     ctx: &MeasureContext,
 ) -> Result<Vec<MeasurementResult>, EngineError> {
     let descriptor = engine.descriptor();
-    if descriptor.class == EngineClass::CodeExec && !ctx.sandbox_available {
+    if descriptor.class == EngineClass::CodeExec && ctx.sandbox.is_none() {
         return Err(EngineError::SandboxRequired {
             engine_id: descriptor.engine_id,
         });
@@ -357,7 +412,7 @@ mod tests {
             compare_context: sample_compare_context(),
             policy: Policy::default(),
             changed_paths: Vec::new(),
-            sandbox_available: false,
+            sandbox: None,
         }
     }
 

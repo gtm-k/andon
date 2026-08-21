@@ -246,7 +246,7 @@ fn measure_everything() -> Measured {
         compare_context: range.compare_context().expect("a commit range"),
         policy: Policy::default(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
 
     let mut results = Vec::new();
