@@ -1,8 +1,14 @@
 # The cross-harness ledger, executed
 
-PLAN P9b's A6 artifact: one repository's ledger holding **hook-driven**
-measurements from more than one harness integration, sliceable by the ledger
-dimensions. A harness vendor can ship measurement inside its own loop; what it
+PLAN P9b's A6 artifact, delivered per the user ruling on its acceptance
+criterion: **two hook-driven integrations exercised end-to-end with honest
+dimension semantics** — not "two recorded harness values", a literal reading
+the P6-reviewed design makes unsatisfiable, because a pre-commit gate that
+serves any harness can prove none. One repository's ledger holds
+**hook-driven** measurements from more than one harness integration,
+sliceable by the ledger dimensions; a real second-harness-native leg (a
+Codex-driven commit through the same gate, once its usage window resets) is
+a ledgered follow-up, not part of this artifact's bar. A harness vendor can ship measurement inside its own loop; what it
 structurally cannot ship is a ledger that outlives the choice of harness.
 This document is the executed demonstration — what was run, what it recorded,
 and exactly what each leg does and does not prove.
