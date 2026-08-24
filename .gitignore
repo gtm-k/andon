@@ -15,3 +15,10 @@
 /andon-self-measure.txt
 /andon-self-measure.html
 /andon-self-measure.json
+
+# Ephemeral agent worktrees (EnterWorktree, `claude --worktree`, subagent isolation).
+# Native tooling creates and sweeps these; they are checkouts of this same repo, so
+# committing them would nest the tree inside itself. Durable, human-named worktrees
+# live outside the repo under the project's `wt/` directory instead — see
+# gowtham-workflow/docs/PROJECT-LAYOUT.md. Never symlink or junction this path.
+/.claude/worktrees/
