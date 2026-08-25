@@ -42,10 +42,18 @@ pub struct AgentProfileBounds {
     /// probe produced ten reasons — silently dropping `policy-change`, one of
     /// the four codes this whole field was added to make visible.
     ///
-    /// So the bound is derived: up to 7 from the tamper family, at most 1 from
-    /// the test-failure family, and the remaining single-push codes, which comes
-    /// to roughly 20. The byte budget is the real guarantee; this stays a
-    /// runaway guard, and now it is actually sized like one.
+    /// So the bound is derived, and it is exact rather than padded. Exactly two
+    /// constructions in `verdict::compute` multiply — `for result in fired`
+    /// (tamper) and the `fired_suite_failure` filter (test-failure); the other
+    /// twelve codes are each a single condition and a single push. The tamper
+    /// ceiling is 7 rather than 8 because `TamperSignal::BaseFabrication` is
+    /// verifier-only and never arrives as a result. 7 + 1 + 12 = **20**, with no
+    /// slack beyond it: nothing in the current vocabulary can produce a 21st.
+    ///
+    /// That exactness carries an obligation. An eighth tamper detector, or a
+    /// third multiplying family, moves this number — and the failure mode is
+    /// silent, since an agent would simply stop seeing a reason. Any change to
+    /// either loop re-derives this.
     pub max_reasons: usize,
     /// Byte cap on identifier-like strings.
     pub max_string_bytes: usize,
