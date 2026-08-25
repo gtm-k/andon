@@ -71,7 +71,17 @@
 name: spike-matrix
 
 on:
-  push:
+  # PUSH TRIGGER REMOVED 2026-08-25 — free-tier minutes exhausted.
+  #
+  # This workflow is a dispatch-at-gate one by D2's own ruling ("macOS/Windows
+  # matrix legs + perf gate run via workflow_dispatch at phase-review gates"),
+  # and its cross-OS legs are already gated on `workflow_dispatch` via `needs:`.
+  # What ran on every push was the Linux remainder — still a double-digit count
+  # of Rust-compiling jobs per push on this workflow alone.
+  #
+  # Removing the trigger restores D2 rather than reinterpreting it, and honours
+  # the standing rule: workflow_dispatch during active dev, push triggers
+  # restored before release (P10a owns that restoration).
   workflow_dispatch:
 
 permissions:
