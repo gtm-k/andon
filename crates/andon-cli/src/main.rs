@@ -39,7 +39,6 @@
 use std::process::ExitCode;
 
 use andon_core::git::Git;
-use andon_core::policy::Policy;
 use andon_core::schema::enums::{InvocationSource, Verdict};
 use andon_core::schema::payload::MeasurementRecord;
 
@@ -53,9 +52,12 @@ andon — measurement that carries its evidence.
   andon measure       measure a change and reach a verdict
   andon report        render the last measurement again, or one from a file
   andon explain       the claim a number stands on, and what it does not predict
-  andon wait          what the async lane still owes this measurement
-  andon ledger        measurements recorded in the commit
+  andon wait          run anything the async lane still owes, and report it
+  andon ledger        the recorded measurements: list, stats, sync, migrate
   andon attest-stub   recompute a change as the verifier would, and compare
+  andon init          install a gate-shaped hook for a harness, removably
+  andon hook          what an installed hook runs (see `andon init`)
+  andon demo          watch a forged self-report get caught, locally, in a minute
 
 Run `andon <command> --help` for one command's options.
 
@@ -118,6 +120,14 @@ const SWITCHES: &[&str] = &[
     "exit-zero",
     "list",
     "fork-tier",
+    "claude",
+    "cursor",
+    "ci",
+    "remove",
+    "distribution",
+    "across-regimes",
+    "check",
+    "keep",
 ];
 
 fn run() -> Result<ExitCode, String> {
@@ -143,6 +153,13 @@ fn run() -> Result<ExitCode, String> {
         "wait" => cmd_wait(&flags),
         "ledger" => cmd_ledger(&flags),
         "attest-stub" => cmd_attest(&flags),
+        "init" => {
+            print!("{}", andon_cli::init::cmd_init(&flags)?);
+            println!();
+            Ok(ExitCode::SUCCESS)
+        }
+        "hook" => Ok(ExitCode::from(andon_cli::init::hook::cmd_hook(&flags)?)),
+        "demo" => Ok(ExitCode::from(andon_cli::demo::cmd_demo(&flags)?)),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
 }
@@ -403,48 +420,15 @@ fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
         );
     };
 
-    // Policy shapes what a claim's tier is allowed to do, so it is loaded even
-    // when no measurement is taken. Outside a repository the conservative
-    // defaults apply, which is what the binary would have used anyway — but
-    // inside one, a `.andon.toml` that exists and cannot be read is surfaced
-    // rather than defaulted. `measure` treats that condition as an error, and
-    // two surfaces answering one question differently is how an operator ends
-    // up reading a ceiling computed under a policy that is not theirs.
-    let git = Git::open(&flags.path("repo", ".")).ok();
-    let policy = match &git {
-        Some(git) => measure::load_policy(git, &measure::PolicySource::Worktree)
-            .map_err(|e| e.to_string())?,
-        None => Policy::default(),
-    };
-
-    let as_of = andon_core::date::Date::today_utc()
-        .map_err(|_| "the system clock could not be read".to_string())?;
-    let registry = measure::load_registry(
-        flags.get("registry").map(std::path::Path::new),
-        &policy,
-        as_of,
-    )
-    .map_err(|e| e.to_string())?;
-
-    let subject = explain::subject_of(query)?;
-    // `explain` works without a record, and a fresh checkout has none — that
-    // absence stays silent. A record that EXISTS and refuses to read is a
-    // different fact: swallowing it into the same `None` would render the page
-    // as if nothing were recorded, which is exactly the invisible-refusal shape
-    // `verify_seals` exists to prevent. The reader is told on stderr and the
-    // explanation still prints.
-    let record = git.as_ref().and_then(|git| match store::read_last(git) {
-        Ok(record) => Some(record),
-        Err(why) => {
-            if store::last_record_path(git).exists() {
-                eprintln!("explain: the last measurement exists and was not used: {why}");
-            }
-            None
-        }
-    });
+    // One body with the MCP server's `explain_finding` (`explain::run`), so the
+    // two surfaces cannot answer one question differently.
     print!(
         "{}",
-        explain::explain(&subject, &policy, &registry, record.as_ref())?
+        explain::run(
+            &flags.path("repo", "."),
+            flags.get("registry").map(std::path::Path::new),
+            query,
+        )?
     );
     println!();
     Ok(ExitCode::SUCCESS)
@@ -453,8 +437,13 @@ fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
 fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
     if flags.on("help") {
         println!(
-            "andon wait [--repo <PATH>] [--input <FILE>]\n\n  \
-             Reports what the async lane still owes the last measurement."
+            "andon wait [--repo <PATH>] [--input <FILE>] [--record]\n\n  \
+             Completes the last measurement — work the fast lane deferred to the async lane\n  \
+             (the user test command, or engines spilled at the cold cap) is executed HERE,\n  \
+             in the foreground, and merged into the record — then reports what the lane\n  \
+             still owes. --record appends the merged record to refs/notes/andon-measure.\n  \
+             With --input the record is only rendered: a file is not this checkout's\n  \
+             measurement, and there is no job of it to run."
         );
         return Ok(ExitCode::SUCCESS);
     }
@@ -462,25 +451,79 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
     let record = match flags.get("input") {
         Some(path) => store::read_record(std::path::Path::new(path))?,
         None => {
-            let git = Git::open(&flags.path("repo", ".")).map_err(|e| e.to_string())?;
-            store::read_last(&git)?
+            let repo = flags.path("repo", ".");
+            // Execute anything pending before rendering, so the report below
+            // is about the completed measurement rather than a stale half.
+            let completed = andon_cli::jobs::complete(&repo)?;
+            let git = Git::open(&repo).map_err(|e| e.to_string())?;
+            match completed {
+                None => store::read_last(&git)?,
+                Some(completion) => {
+                    for notice in &completion.notices {
+                        eprintln!("andon: {notice}");
+                    }
+                    if flags.on("record") {
+                        let note =
+                            ledger::record(&git, &completion.record, &completion.ledger_anchor)?;
+                        eprintln!("andon: {note}");
+                    }
+                    completion.record
+                }
+            }
         }
     };
     print!("{}", lanes::wait(&record));
     Ok(code_for_record(&record, flags.on("exit-zero")))
 }
 
+const LEDGER_USAGE: &str = "\
+andon ledger <list|show|ack|stats|sync|migrate|trailer> [--repo <PATH>]
+
+  list              every commit carrying a measurement record
+  show [<COMMIT>]   the records recorded against one commit (default: HEAD)
+  ack [--branch B]  clear the loop counter after a human has looked at an escalation
+  trailer [<COMMIT>]  one Andon-Measure-Digest trailer line per record on the
+                    commit (default: HEAD), ready for a commit message. A
+                    trailer travels where notes refs do not — a fork PR — and
+                    the verifier compares against the digest alone
+  stats             the ledger as a dataset. Single-repo local analytics for this
+                    repository's maintainer — not a fleet dashboard.
+    --by <DIM>          slice by one dimension with a verdict breakdown; the
+                        dimensions are source, harness, model, author, iteration
+    --filter <D>=<V>    keep only records where dimension D has value V
+    --distribution      per-metric value distributions, grouped by measurement
+                        regime, with the threshold-clustering warning. Values
+                        measured under different regimes are never pooled unless
+                        --across-regimes is passed, and the pooled view stays
+                        labeled as mixed
+    --check             exit 2 when any clustering warning fires, so a CI job
+                        goes red on the finding rather than on a log grep
+    --ref <NAME>        which ledger to read: measure (default) or attest
+  fp-window         the S6 false-positive budget, measured (PLAN P9b): changes,
+                    MED+ rate with the cognitive/cyclomatic split (P2 rider),
+                    escalation rate, policy hashes, and the policy-in-force diff
+                    against the conservative defaults (round-1 B8). Reports the
+                    quantities; the P10b entry gate does the comparing
+    --since <STAMP>     window start, YYYY-MM-DDTHH:MM:SSZ, inclusive (required)
+    --until <STAMP>     window end, same shape (default: now)
+  sync              fetch both ledger refs, merge with cat_sort_uniq, and push —
+                    retrying with backoff. Exhausted retries fail red: the
+                    records stay safe locally and the failure says what to do
+    --remote <NAME>     the remote to sync with (default: origin)
+    --attempts <N>      push attempts per ref before failing loudly (default: 3)
+  migrate           carry records from a pre-squash head onto the landed commit
+    --from <REV>        the branch head that was squash-merged
+    --to <REV>          the commit the squash landed (e.g. the new main tip)";
+
 fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
     if flags.on("help") || flags.first().is_none() {
-        println!(
-            "andon ledger <list|show|ack> [--repo <PATH>]\n\n  \
-             list              every commit carrying a measurement record\n  \
-             show [<COMMIT>]   the records recorded against one commit (default: HEAD)\n  \
-             ack [--branch B]  clear the loop counter after a human has looked at an escalation"
-        );
+        println!("{LEDGER_USAGE}");
         return Ok(ExitCode::SUCCESS);
     }
-    flags.reject_unknown(&["repo", "branch"])?;
+    flags.reject_unknown(&[
+        "repo", "branch", "by", "filter", "ref", "remote", "attempts", "from", "to", "since",
+        "until",
+    ])?;
     let git = Git::open(&flags.path("repo", ".")).map_err(|e| e.to_string())?;
 
     match flags.first().unwrap_or("list") {
@@ -521,7 +564,81 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 .map_err(|e| e.to_string())?;
             print!("\n{}\n", ledger::ack(&git, flags.get("branch"), &policy)?);
         }
-        other => return Err(format!("unknown ledger command '{other}'")),
+        "stats" => {
+            let by = match flags.get("by") {
+                None => None,
+                Some(name) => {
+                    Some(andon_ledger::stats::Dimension::parse(name).ok_or_else(|| {
+                        format!(
+                            "'{name}' is not a ledger dimension; the dimensions are source, \
+                             harness, model, author, iteration"
+                        )
+                    })?)
+                }
+            };
+            let filter = flags
+                .get("filter")
+                .map(andon_ledger::stats::Filter::parse)
+                .transpose()?;
+            let request = ledger::StatsRequest {
+                notes_ref: ledger::ref_named(flags.get("ref").unwrap_or("measure"))?.to_string(),
+                distribution: flags.on("distribution") || flags.on("check"),
+                across_regimes: flags.on("across-regimes"),
+                by,
+                filter,
+            };
+            let (report, clustered) = ledger::stats_report(&git, &request)?;
+            print!("{report}");
+            // `--check` keys the exit on the finding: 2 is the "the line
+            // stops" code, and a clustering signature is a stop-and-look
+            // signal for a human, distinguishable from 1 (the tool fell over).
+            if clustered && flags.on("check") {
+                return Ok(ExitCode::from(2));
+            }
+        }
+        "fp-window" => {
+            let since = flags.get("since").ok_or(
+                "fp-window needs --since <STAMP>, the ledgered window start \
+                 (YYYY-MM-DDTHH:MM:SSZ)",
+            )?;
+            print!("{}", ledger::fp_report(&git, since, flags.get("until"))?);
+        }
+        "sync" => {
+            let attempts = match flags.get("attempts") {
+                None => 3,
+                Some(text) => text.parse::<u32>().map_err(|_| {
+                    format!("--attempts wants a number of push attempts, not '{text}'")
+                })?,
+            };
+            print!(
+                "\n{}\n",
+                ledger::sync(&git, flags.get("remote").unwrap_or("origin"), attempts)?
+            );
+        }
+        "migrate" => {
+            let from = flags
+                .get("from")
+                .ok_or("migrate needs --from <REV>, the branch head that was squash-merged")?;
+            let to = flags
+                .get("to")
+                .ok_or("migrate needs --to <REV>, the commit the squash landed")?;
+            print!("\n{}\n", ledger::migrate(&git, from, to)?);
+        }
+        "trailer" => {
+            let commit = flags
+                .positional()
+                .get(1)
+                .map(String::as_str)
+                .unwrap_or("HEAD");
+            // Bare trailer lines on stdout, no framing: the output's job is to
+            // be appended to a commit message, by a person or by `--trailer`.
+            print!("{}", ledger::trailer(&git, commit)?);
+        }
+        other => {
+            return Err(format!(
+                "unknown ledger command '{other}'\n\n{LEDGER_USAGE}"
+            ))
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

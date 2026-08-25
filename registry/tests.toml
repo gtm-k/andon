@@ -1,0 +1,59 @@
+# Evidence registry for the tests engine (PLAN P7) — the user test-command
+# occupant, the only code-exec engine in v1.
+#
+# TIER N, AND THE BLOCK DOES NOT COME FROM THE TIER
+#
+# The default policy admits only tiers A and B to the MED+ band, so both
+# metrics here cap at `Severity::Low` — and the line still stops on a failed
+# suite, because `severity.block_on_test_failure` keys on the failure FLAG,
+# exactly as `block_on_tamper` keys on a fired detector (the P5a muzzle rule).
+# The severity a reader sees is the evidence talking; the stop is policy
+# talking. Neither borrows the other's authority.
+#
+# WHAT THE CLAIM IS, AND IS NOT
+#
+# The claim is deliberately minimal: a test command the repository's own policy
+# declares, exiting non-zero, is evidence that observed behaviour regressed
+# under that command. That is close to definitional — which is why there is no
+# study to cite and the tier is N, not A: nothing here has been validated
+# against outcomes at scale, and the suite being run is whatever the operator
+# declared, not a suite anyone audited.
+
+schema_version = 1
+engine = "tests"
+family = "tests"
+
+[[metric]]
+metric_id = "tests.suite-failure"
+claim_id = "andon.tests.suite@1|any|regression-signal"
+class = "diff-actionable"
+# Test suites are timing- and environment-dependent by nature, and the sandbox
+# discloses `no-net-isolation` — nothing here is byte-reproducible, so nothing
+# here enters the digest compare set (docs/trust-boundary.md's
+# CI-authoritative side).
+deterministic = false
+
+[[metric]]
+metric_id = "tests.suite-outcome"
+claim_id = "andon.tests.suite@1|any|regression-signal"
+class = "context-informational"
+deterministic = false
+
+[[claim]]
+claim_id = "andon.tests.suite@1|any|regression-signal"
+implementation = "andon.tests.suite"
+implementation_version = "1"
+language = "any"
+outcome = "regression-signal"
+tier = "N"
+citation = "Novel. No study is cited because none is needed for the narrow claim made and none exists for the wide one: the command run is whatever `[sandbox] test_command` declares, so the evidence is about that command's exit code and nothing else. The wide claim — that the declared suite meaningfully exercises the change — is the operator's, not this registry's."
+population = "none. The signal is definitional (the declared command exited non-zero in a clean worktree of the measured snapshot), not sampled."
+effect = "none claimed beyond the exit code. A non-zero exit blocks under the default `severity.block_on_test_failure`; a timeout is reported as an unanswered question (`engine-unavailable`), never as a failure."
+does_not_predict = [
+    "that the suite exercises the changed code — an empty or trivial test_command passes everything, and declaring one is visible in policy, not prevented by it",
+    "defect density, code quality, or anything about code the suite does not reach",
+    "that a failure was caused by this change — a flaky or environment-sensitive suite fails for its own reasons, and the sandbox's default-deny environment and cold worktree can themselves be the difference",
+    "anything when the suite times out or cannot start — those runs report no suite result at all, never a failure",
+]
+owner = "gtm-k"
+expiry = "2027-12-13"

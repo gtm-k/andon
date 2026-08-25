@@ -5,8 +5,8 @@
 //! `andon-core` is the contract crate: every engine depends on it and it depends
 //! on none of them, which is what keeps the payload schema stable while engines
 //! move. The subject of these tests is the assembler, not any engine, so the
-//! outputs are built from the contract's own types: all five
-//! [`MeasurementRegime`] variants are constructible in this crate, and the claim
+//! outputs are built from the contract's own types: every
+//! [`MeasurementRegime`] variant is constructible in this crate, and the claim
 //! ids are the ones the shipped `registry/` actually declares — so
 //! `five_engine_families_assemble_into_one_record` fails if a shipped registry
 //! stops resolving a shipped metric.
@@ -20,7 +20,7 @@
 //! test.
 //!
 //! `tests/shipped_severity_band.rs` asks that question, over real engines
-//! measuring a real repository, through a dev-dependency cycle onto the five
+//! measuring a real repository, through a dev-dependency cycle onto the
 //! engine crates. The cycle is confined to that file's purpose: it never enters
 //! the built library, and these tests stay synthetic on the reasoning above.
 
@@ -99,6 +99,11 @@ fn regime(family: EngineFamily) -> MeasurementRegime {
         EngineFamily::Artifacts => MeasurementRegime::Artifacts {
             engine_version: "0.1.0".to_string(),
             parser_versions: BTreeMap::from([("lcov".to_string(), "1.0".to_string())]),
+        },
+        EngineFamily::Tests => MeasurementRegime::Tests {
+            engine_version: "0.1.0".to_string(),
+            command: "true".to_string(),
+            sandbox: "no-net-isolation".to_string(),
         },
     }
 }
@@ -285,7 +290,10 @@ fn request<'a>(
         .iter()
         .map(|e| e.descriptor.engine_id.clone())
         .collect();
-    for engine_id in &registry.expected_engines {
+    // Padded to the same roster `prepare` will hold the payload to — the
+    // policy-filtered one, so a policy that leaves the code-exec lane off
+    // (every default-policy test here) pads no `tests` engine in.
+    for engine_id in &super::expected_engines(registry, policy, RecordKind::SelfReport) {
         if !supplied.contains(engine_id) {
             engines.push(output(engine_id, family_of(engine_id), Vec::new()));
         }
@@ -301,6 +309,7 @@ fn family_of(engine_id: &str) -> EngineFamily {
         "tamper" => EngineFamily::Tamper,
         "process" => EngineFamily::Process,
         "artifacts" => EngineFamily::Artifacts,
+        "tests" => EngineFamily::Tests,
         other => panic!("no family known for engine '{other}'"),
     }
 }
@@ -317,6 +326,7 @@ fn failed<'a>(mut req: AssembleRequest<'a>, engine_id: &str, reason: &str) -> As
     req.engine_failures.push(EngineFailure {
         engine_id: engine_id.to_string(),
         reason: reason.to_string(),
+        spilled: false,
     });
     req
 }
@@ -786,11 +796,23 @@ fn an_empty_success_set_cannot_be_complete_or_pass() {
 fn every_declared_engine_must_appear_exactly_once() {
     let policy = Policy::default();
     let registry = shipped_registry();
+    let declared: Vec<&str> = registry
+        .expected_engines
+        .iter()
+        .map(String::as_str)
+        .collect();
     assert_eq!(
-        registry.expected_engines.len(),
-        5,
-        "the shipped registry declares five engines: {:?}",
-        registry.expected_engines
+        declared,
+        vec![
+            "artifacts",
+            "clones",
+            "process",
+            "static-metrics",
+            "tamper",
+            "tests"
+        ],
+        "the engines the registry directory declares, by id — a new registry \
+         file joins this list or fails here"
     );
 
     // Four of five, and the fifth neither ran nor was reported as unavailable.
@@ -843,6 +865,7 @@ fn an_engine_cannot_both_produce_results_and_report_a_failure() {
     req.engine_failures = vec![EngineFailure {
         engine_id: "clones".to_string(),
         reason: "index lock held".to_string(),
+        spilled: false,
     }];
     assert_eq!(
         prepare(req).expect_err("two statements, one of them false"),
@@ -863,10 +886,12 @@ fn an_engine_cannot_fail_twice() {
         EngineFailure {
             engine_id: "clones".to_string(),
             reason: "index lock held".to_string(),
+            spilled: false,
         },
         EngineFailure {
             engine_id: "clones".to_string(),
             reason: "and something else".to_string(),
+            spilled: false,
         },
     ];
     assert_eq!(
@@ -889,6 +914,7 @@ fn an_unknown_engine_cannot_hide_in_the_failure_list() {
     req.engine_failures = vec![EngineFailure {
         engine_id: "prcoess".to_string(),
         reason: "a typo is a different engine".to_string(),
+        spilled: false,
     }];
     assert_eq!(
         prepare(req).expect_err("refused"),
@@ -907,13 +933,17 @@ fn five_engines_that_found_nothing_still_pass() {
     // different records, and only the first is a bug.
     let policy = Policy::default();
     let registry = shipped_registry();
-    let quiet: Vec<EngineOutput> = registry
-        .expected_engines
-        .iter()
-        .map(|id| output(id, family_of(id), Vec::new()))
-        .collect();
+    // The policy-filtered roster, not the declared one: under the default
+    // policy the code-exec lane is off, and supplying a `tests` output a
+    // policy never sanctioned is refused as unknown — running repository code
+    // without the grant is the violation the refusal is about.
+    let quiet: Vec<EngineOutput> =
+        super::expected_engines(&registry, &policy, RecordKind::SelfReport)
+            .iter()
+            .map(|id| output(id, family_of(id), Vec::new()))
+            .collect();
     let record = prepare(bare_request(&policy, &registry, quiet))
-        .expect("five engines with nothing to report is a measurement")
+        .expect("engines with nothing to report are still a measurement")
         .finish(advance(0, 3));
     assert!(record.results.is_empty());
     assert_eq!(record.completeness, Completeness::Complete);
@@ -993,6 +1023,43 @@ fn five_engine_families_assemble_into_one_record() {
     assert_eq!(record.schema_version, SCHEMA_VERSION);
     assert_eq!(record.completeness, Completeness::Complete);
     assert_eq!(record.verdict.verdict, Verdict::Pass);
+}
+
+#[test]
+fn the_tests_family_assembles_when_policy_declares_the_lane() {
+    // The sixth family's positive control, mirroring the five-family join
+    // above: under a policy that switches the code-exec lane on, a tests
+    // result resolves its claim, survives the digest recompute, and joins the
+    // record — so the lane's gate (`expected_engines`) is provably a gate and
+    // not a wall.
+    let mut policy = Policy::default();
+    policy.sandbox.enabled = true;
+    policy.sandbox.test_command = Some("exit 0".to_string());
+    let registry = shipped_registry();
+    let mut engines = five_engines(&registry);
+    engines.push(output(
+        "tests",
+        EngineFamily::Tests,
+        vec![result(
+            &registry,
+            "tests",
+            EngineFamily::Tests,
+            "tests.suite-failure",
+            "andon.tests.suite@1|any|regression-signal",
+            MetricValue::Flag(false),
+        )],
+    ));
+    let record = prepare(request(&policy, &registry, engines))
+        .expect("the sixth family assembles under the policy that declares it")
+        .finish(advance(0, 3));
+    assert_eq!(record.results.len(), 6);
+    let families: BTreeSet<EngineFamily> = record.results.iter().map(|r| r.family).collect();
+    assert_eq!(families.len(), 6, "one result from each family");
+    assert_eq!(
+        record.verdict.verdict,
+        Verdict::Pass,
+        "a passing suite passes"
+    );
 }
 
 #[test]

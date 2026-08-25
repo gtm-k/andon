@@ -74,12 +74,31 @@ impl MeasureEngine for TestEngine {
     }
 }
 
-fn context(sandbox_available: bool) -> MeasureContext {
+/// A sandbox that refuses everything — presence is what these tests are about.
+///
+/// The boundary keys on whether the context *carries* a sandbox, not on what
+/// the sandbox would do; a double that ran anything would make these tests
+/// execute code to check a rule about not executing code.
+#[derive(Debug)]
+struct InertSandbox;
+
+impl andon_core::engine::SandboxExec for InertSandbox {
+    fn run(
+        &self,
+        _spec: &andon_core::engine::ExecSpec,
+    ) -> Result<andon_core::engine::ExecOutcome, String> {
+        Err("this test double runs nothing".to_string())
+    }
+}
+
+fn context(with_sandbox: bool) -> MeasureContext {
     MeasureContext {
         compare_context: sample_compare_context(),
         policy: Policy::default(),
         changed_paths: vec!["src/index.ts".to_string()],
-        sandbox_available,
+        sandbox: with_sandbox.then(|| {
+            std::sync::Arc::new(InertSandbox) as std::sync::Arc<dyn andon_core::engine::SandboxExec>
+        }),
     }
 }
 

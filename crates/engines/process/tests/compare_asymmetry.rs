@@ -66,7 +66,7 @@ fn measured_results(repo: &TestRepo, truncate: bool) -> Vec<MeasurementResult> {
         compare_context: sample_compare_context(),
         policy: Policy::default(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     run_engine(&engine, &ctx).expect("the engine measures")
 }

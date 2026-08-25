@@ -123,6 +123,55 @@ pub fn list() -> String {
     out
 }
 
+/// The whole `explain` question for one query, from a repository path to the
+/// rendered answer: load the policy in force, load the registry under it,
+/// resolve the query to a subject, and explain it beside the last measurement.
+///
+/// One function rather than a recipe in each caller, because the CLI and the
+/// MCP server both answer this question and two assemblies of the same steps
+/// is how two surfaces drift. Outside a repository the conservative defaults
+/// apply — which is what the binary would have measured under anyway — but a
+/// `.andon.toml` that exists and cannot be read is surfaced rather than
+/// defaulted, the same rule `measure` applies.
+pub fn run(
+    repo: &std::path::Path,
+    registry_dir: Option<&std::path::Path>,
+    query: &str,
+) -> Result<String, String> {
+    let git = andon_core::git::Git::open(repo).ok();
+    let policy = match &git {
+        Some(git) => measure::load_policy(git, &measure::PolicySource::Worktree)
+            .map_err(|e| e.to_string())?,
+        None => Policy::default(),
+    };
+    let as_of = Date::today_utc().map_err(|_| "the system clock could not be read".to_string())?;
+    let registry =
+        measure::load_registry(registry_dir, &policy, as_of).map_err(|e| e.to_string())?;
+    let subject = subject_of(query)?;
+    // `explain` works without a record, and a fresh checkout has none — that
+    // absence stays silent. A record that EXISTS and refuses to read is a
+    // different fact: swallowing it into the same `None` would render the page
+    // as if nothing were recorded, which is exactly the invisible-refusal shape
+    // `verify_seals` exists to prevent. The reader is told and the explanation
+    // still prints.
+    //
+    // On stderr rather than stdout because this body is shared with the MCP
+    // server's `explain_finding`, where stdout carries the protocol and a stray
+    // line on it is a transport error rather than a message.
+    let record = git
+        .as_ref()
+        .and_then(|git| match crate::store::read_last(git) {
+            Ok(record) => Some(record),
+            Err(why) => {
+                if crate::store::last_record_path(git).exists() {
+                    eprintln!("explain: the last measurement exists and was not used: {why}");
+                }
+                None
+            }
+        });
+    explain(&subject, &policy, &registry, record.as_ref())
+}
+
 /// Explain a subject against the registry this binary compiles in.
 pub fn explain(
     subject: &Subject,

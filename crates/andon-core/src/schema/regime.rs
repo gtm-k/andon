@@ -71,6 +71,21 @@ pub enum MeasurementRegime {
         /// Report format to parser version, e.g. `lcov` -> `1.0`.
         parser_versions: BTreeMap<String, String>,
     },
+    /// The user test-command engine (P7) — the one `code-exec` regime.
+    Tests {
+        /// Version of the tests engine.
+        engine_version: String,
+        /// The command run, verbatim from `[sandbox] test_command`. Part of
+        /// the regime because two runs are comparable only when they ran the
+        /// same command.
+        command: String,
+        /// The isolation class the sandbox provided. `no-net-isolation` in
+        /// v1: the suite runs in a temporary worktree with a default-deny
+        /// environment and a process-tree kill, and with **no** network
+        /// isolation — the disclosed limitation (VISION §5, Codex #19).
+        /// Carried in the payload so the disclosure survives serialization.
+        sandbox: String,
+    },
 }
 
 impl MeasurementRegime {
@@ -82,6 +97,7 @@ impl MeasurementRegime {
             MeasurementRegime::Tamper { .. } => EngineFamily::Tamper,
             MeasurementRegime::Process { .. } => EngineFamily::Process,
             MeasurementRegime::Artifacts { .. } => EngineFamily::Artifacts,
+            MeasurementRegime::Tests { .. } => EngineFamily::Tests,
         }
     }
 
@@ -92,7 +108,8 @@ impl MeasurementRegime {
             | MeasurementRegime::Clones { engine_version, .. }
             | MeasurementRegime::Tamper { engine_version, .. }
             | MeasurementRegime::Process { engine_version, .. }
-            | MeasurementRegime::Artifacts { engine_version, .. } => engine_version,
+            | MeasurementRegime::Artifacts { engine_version, .. }
+            | MeasurementRegime::Tests { engine_version, .. } => engine_version,
         }
     }
 }

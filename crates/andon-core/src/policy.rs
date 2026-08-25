@@ -34,6 +34,10 @@ pub const DEFAULT_CLAIM_BUDGET: u32 = 24;
 /// At the budget of 24 a year, two a month is the even spread; three leaves
 /// slack without allowing a cliff.
 pub const DEFAULT_MAX_CLAIMS_EXPIRING_PER_MONTH: u32 = 3;
+/// Default wall-clock cap on the user test command. Generous on purpose: the
+/// sandbox is a fresh temporary worktree, so a compiled suite pays a cold
+/// build before its first test runs.
+pub const DEFAULT_TEST_TIMEOUT_MS: u32 = 600_000;
 
 /// The whole of `.andon.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -56,6 +60,9 @@ pub struct Policy {
     pub registry: RegistryPolicy,
     /// Rules for Andon measuring itself.
     pub self_measure: SelfMeasurePolicy,
+    /// The code-exec lane: the async feature flag, the sandbox limits, and the
+    /// user test command (P7).
+    pub sandbox: SandboxPolicy,
 }
 
 impl Default for Policy {
@@ -69,6 +76,7 @@ impl Default for Policy {
             history: HistoryPolicy::default(),
             registry: RegistryPolicy::default(),
             self_measure: SelfMeasurePolicy::default(),
+            sandbox: SandboxPolicy::default(),
         }
     }
 }
@@ -79,31 +87,17 @@ impl Default for Policy {
 pub struct SeverityPolicy {
     /// A tamper signal blocks. Conservative default, and the product's point.
     pub block_on_tamper: bool,
-    // DECLARED, AND READ BY NOTHING YET
+    // Read by `verdict::severity::stops_the_line` since P7 — the disposition
+    // the original declared-and-unread note reserved for P0 and P7 to make
+    // together. It keys on the tests engine's failure FLAG, never on the
+    // result's severity: both tests-lane claims are tier N, so the tier
+    // ceiling caps every suite result at `Low` and a severity-keyed rule
+    // could never stop the line for a failed suite at all — the same
+    // construction, for the same reason, as `block_on_tamper` (P5a muzzle
+    // rule). `severity::tests::` pins both directions.
     //
-    // Nothing in the workspace consults this field to reach a verdict, and that
-    // is not an oversight to be tidied away by deleting it. Running a test suite
-    // means executing repository code, which is a `code-exec` engine and needs
-    // the sandbox — P7's, and the first phase that can produce a test result for
-    // this field to gate on. Until then the honest state is a declared knob with
-    // no consumer.
-    //
-    // Removing it is not the cheaper option it looks like. `Policy` is the
-    // `.andon.toml` schema, `policy_hash` is computed over it and rides in every
-    // record, and the field is already classified in the policy direction table
-    // and named in the tamper detector's strictness list — so a deletion is a
-    // schema edit that moves every hash, for a field that is coming back. P0
-    // owns the v1 schema definition pre-release (PLAN decision log, P0 execution
-    // (b)); the disposition is P0's and P7's to make together, and this note is
-    // what stops the next reader deciding it alone.
-    //
-    // `iteration::tests::the_test_failure_knob_is_declared_and_unread` pins the
-    // current state, so that the day something does read it, the claim above
-    // fails rather than quietly becoming false.
-    //
-    // A plain comment rather than a doc comment on purpose: doc comments on this
-    // struct become `description` strings in the committed JSON schema, and
-    // `schemas/*` is P0-owned.
+    // A plain comment rather than a doc comment on purpose: doc comments on
+    // this struct become `description` strings in the committed JSON schema.
     /// A failing test suite blocks.
     pub block_on_test_failure: bool,
     /// The strongest severity a C-tier claim may reach. Weak evidence advises.
@@ -193,8 +187,11 @@ pub struct PerfPolicy {
     /// policy edit; the gap between them is the cost of not having a daemon, and
     /// it is meant to be visible.
     pub fast_lane_warm_fallback_p95_ms: u32,
-    /// Hard cold cap; past it the fast lane spills to async with
-    /// `completeness: partial` (APPROACH graft 4).
+    /// Cold cap on when a content engine may start (APPROACH graft 4).
+    /// Enforced while `[sandbox] enabled` switches the async lane on: past the
+    /// cap the remaining content engines spill to that lane and the record
+    /// says so. With the lane off — the default — the cap is unenforced,
+    /// which is the pre-P7 behaviour and the rollback path.
     pub fast_lane_cold_cap_ms: u32,
     /// Asserted, not observed: a regression that doubles git spawns shows up
     /// here before it shows up as latency on someone else's machine.
@@ -273,6 +270,59 @@ impl Default for SelfMeasurePolicy {
                 "crates/andon-registry-lint/tests/fixtures/**".to_string(),
             ],
             exclusion_drift_signal: true,
+        }
+    }
+}
+
+/// The code-exec lane (PLAN P7, Codex #19).
+///
+/// Everything here is off or empty by default: the async lane is feature-flagged
+/// (`enabled` is the flag, and the P7 rollback path), and the only v1 code-exec
+/// occupant — the user's own test command — exists only where an operator
+/// declares one. A repository that never touches this section measures exactly
+/// as it did before the lane existed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct SandboxPolicy {
+    /// The async lane's feature flag. While `false`, no code-exec engine joins
+    /// a measurement and the fast lane never spills work to the async lane —
+    /// `perf.fast_lane_cold_cap_ms` goes back to being unenforced, which is the
+    /// pre-P7 behaviour and the rollback path.
+    pub enabled: bool,
+    /// The user's test command, run by the tests engine inside the sandbox
+    /// through the platform shell (`sh -c` / `cmd /C`). `None` means this
+    /// deployment ships no code-exec engine at all: the tests engine is absent
+    /// from the expected-engine roster, not present-and-failing.
+    ///
+    /// Declared here rather than taken as a flag so that the command is policy:
+    /// the verifier reads it from the base commit, and editing it inside the
+    /// change under measurement surfaces as a `policy-change` finding (the
+    /// trusted-command half of Codex #19).
+    pub test_command: Option<String>,
+    /// Wall-clock cap on the test command, in milliseconds. At the cap the
+    /// whole process tree is killed and the engine reports a timeout — which is
+    /// an unanswered question (`engine-unavailable`), never a test failure.
+    pub test_timeout_ms: u32,
+    /// Environment variable names passed through to the suite beyond the base
+    /// allowlist (`andon-sandbox` documents the base list). Default-deny is the
+    /// rule: nothing else crosses, so secrets in the invoking environment never
+    /// reach repository code.
+    pub env_allow: Vec<String>,
+    /// Best-effort memory cap for the suite's process tree, in MiB. `None`
+    /// means no cap. Best-effort by name because the mechanisms differ per OS
+    /// (job-object limit on Windows, address-space rlimit elsewhere) and
+    /// neither is a security boundary.
+    pub memory_limit_mb: Option<u64>,
+}
+
+impl Default for SandboxPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            test_command: None,
+            test_timeout_ms: DEFAULT_TEST_TIMEOUT_MS,
+            env_allow: Vec::new(),
+            memory_limit_mb: None,
         }
     }
 }

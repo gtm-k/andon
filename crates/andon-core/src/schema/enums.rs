@@ -165,8 +165,8 @@ impl Severity {
     }
 }
 
-/// The five engine families. Fixed in v1: every `MeasurementRegime` variant and
-/// every registry file maps onto exactly one.
+/// The engine families. Every `MeasurementRegime` variant and every registry
+/// file maps onto exactly one.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
@@ -182,6 +182,11 @@ pub enum EngineFamily {
     Process,
     /// Coverage-report parsing, negative signal only (P4).
     Artifacts,
+    /// The user's own test command, run in the sandbox (P7). The only family
+    /// whose engine is `code-exec`; it joins a measurement only when
+    /// `[sandbox]` policy declares a command, so a deployment that never
+    /// opted in never sees it.
+    Tests,
 }
 
 /// Whether running an engine executes repository code.

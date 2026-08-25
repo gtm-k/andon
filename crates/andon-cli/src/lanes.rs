@@ -1,18 +1,16 @@
-//! `andon wait` — the async lane, and what it honestly is today.
+//! The async lane's report: what a record came back with, and what it was
+//! still owed.
 //!
-//! # Why this command exists before the lane does
+//! # Where the waiting actually happens
 //!
-//! The measurement contract splits into a fast lane (sub-second static diff) and
-//! an async lane (mutation runs, full test suites) with per-result freshness, and
-//! `wait` is how a caller blocks until the slow half arrives. **P7 builds the
-//! async lane.** This build has only the fast one, and every result it produces
-//! is stamped `lane: fast`.
-//!
-//! So `wait` reads the last record and reports what is actually outstanding. It
-//! does not pretend to wait, it does not sleep for effect, and it does not
-//! report a completed async job that never ran — the whole thesis of this tool
-//! is that a measurement never claims more than it did, and a subcommand that
-//! faked a lane would be the first thing to break it.
+//! Not here. The lane is deferred execution: `measure` leaves a job file
+//! (`crate::jobs`) and `andon wait` **executes** it in the foreground before
+//! rendering — so by the time this module sees a record, anything that was
+//! owed has either been merged in (`lane: async` results below) or failed
+//! loudly on the way. This module renders; it does not pretend to wait, it
+//! does not sleep for effect, and it does not report a completed async job
+//! that never ran — the whole thesis of this tool is that a measurement never
+//! claims more than it did.
 //!
 //! **The lane is not the only thing a measurement can be waiting on.** This said
 //! "today the answer is nothing" and printed it unconditionally, including over
@@ -115,18 +113,17 @@ pub fn wait(record: &MeasurementRecord) -> String {
                 out,
                 "\n  A HUMAN IS OUTSTANDING. This measurement escalated on pass {} of a cap of \
                  {}, which means the agent must stop trying and somebody has to look. Nothing \
-                 else is: this build ships no async lane, so every result above came from the \
-                 fast one.\n  \
+                 else is: every result in this record came from the fast lane.\n  \
                  `andon ledger ack` records that a human looked, and clears the counter.",
                 record.verdict.iteration.count, record.verdict.iteration.cap
             );
         } else {
             let _ = writeln!(
                 out,
-                "\n  Nothing is outstanding. This build ships no async lane: mutation runs and \
-                 full test suites execute repository code, which needs the sandbox, and the \
-                 sandbox is not in this binary. When it is, results from it will be stamped \
-                 `lane: async` and this command will report them."
+                "\n  Nothing is outstanding. Every result in this record came from the fast \
+                 lane, and no deferred work was pending: a measurement that spills to the \
+                 async lane — the user test command, or engines past the cold cap — is \
+                 completed by this same command, and its results arrive stamped `lane: async`."
             );
         }
     } else {

@@ -95,7 +95,7 @@ pub fn measure(
         // Nothing in the spike executes repository code, so no sandbox is
         // offered. `run_engine` refuses a `code-exec` engine here, which is the
         // assertion rather than a comment.
-        sandbox_available: false,
+        sandbox: None,
     };
     let mut results = run_engine(&engine, &ctx)?;
     let measured_at = now_rfc3339();

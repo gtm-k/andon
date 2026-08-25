@@ -1,5 +1,5 @@
-//! One measurement, end to end: five engines over one change, assembled into one
-//! record.
+//! One measurement, end to end: every shipped engine over one change, assembled
+//! into one record.
 //!
 //! # Where the evidence registry comes from, and why it is not the checkout
 //!
@@ -287,11 +287,23 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
         compare_context: resolution.compare_context.clone(),
         policy: policy.clone(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
 
-    let (engines, engine_failures, mut engine_notes) =
-        run_all_engines(&git, &resolution, &changed, &policy, &ctx);
+    let (engines, engine_failures, mut engine_notes, spilled) = run_all_engines(
+        &git,
+        &resolution,
+        &changed,
+        &policy,
+        &ctx,
+        request.record_kind,
+    );
+    // What the async job will need, taken before assembly consumes the parts.
+    let real_failures: Vec<(String, String)> = engine_failures
+        .iter()
+        .filter(|f| !f.spilled)
+        .map(|f| (f.engine_id.clone(), f.reason.clone()))
+        .collect();
 
     // What this measurement does and does not cover. Which sentence is true
     // depends on what the head turned out to be, so this asks rather than
@@ -377,6 +389,7 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
     }
 
     let policy_change = detect_policy_change(&git, &changed).map_err(MeasureError::Policy)?;
+    let job_policy_change = policy_change.clone();
 
     let prepared = andon_core::payload::prepare(AssembleRequest {
         tool: tool_identity(),
@@ -476,6 +489,44 @@ pub fn measure(request: &Request) -> Result<Measurement, MeasureError> {
     }
 
     let record = prepared.finish(advance);
+
+    // The async lane's handoff. A new measurement always supersedes any older
+    // pending job — merging yesterday's suite into today's record would stitch
+    // two measurements into one — and a measurement that deferred work leaves
+    // the job `andon wait` executes.
+    if spilled.is_empty() {
+        crate::jobs::clear(&git);
+    } else {
+        let (anchor_oid, overlay) = sandbox_snapshot(&resolution, &changed);
+        let job = crate::jobs::AsyncJob {
+            job_version: crate::jobs::JOB_VERSION,
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            compare_context: resolution.compare_context.clone(),
+            policy: policy.clone(),
+            policy_change: job_policy_change,
+            failures: real_failures,
+            changed: changed.clone(),
+            anchor_oid,
+            overlay,
+            spilled: spilled.clone(),
+            registry_dir: request.registry_dir.clone(),
+            ledger_anchor: resolution.range.head.anchor_oid().to_string(),
+            self_measure: request.self_measure,
+        };
+        match crate::jobs::write(&git, &job) {
+            Ok(()) => engine_notes.push(format!(
+                "{} engine(s) deferred to the async lane; run `andon wait` to complete this \
+                 measurement.",
+                spilled.len()
+            )),
+            Err(e) => engine_notes.push(format!(
+                "{} engine(s) deferred to the async lane, and the job file could NOT be \
+                 written ({e}) — `andon wait` will find nothing to run. Re-run `andon \
+                 measure`.",
+                spilled.len()
+            )),
+        }
+    }
 
     Ok(Measurement {
         record,
@@ -628,7 +679,7 @@ fn read_without_staging(git: &Git, changed: &mut ChangedSet) -> StageFree {
 /// corrupt or unwritable index is a real problem and stays a real failure. And
 /// the caller reports that it happened, because handling that produces no signal
 /// is a silent failure for whoever has to explain why a measurement took longer.
-fn build_clone_engine(
+pub(crate) fn build_clone_engine(
     git: &Git,
     changed: &ChangedSet,
 ) -> (Result<Box<dyn MeasureEngine>, String>, Option<String>) {
@@ -655,17 +706,70 @@ fn build_clone_engine(
     }
 }
 
-/// Run every shipped engine, turning each failure into a named absence.
+/// Run every shipped engine, turning each failure into a named absence and
+/// each deferral into a named spill.
+///
+/// # The cold cap, and exactly what it bounds
+///
+/// With the async lane enabled (`[sandbox] enabled`), a wall-clock deadline of
+/// `perf.fast_lane_cold_cap_ms` starts when the engines do, and **no content
+/// engine starts past it**: static-metrics, clones and tamper — the engines
+/// that parse file content, and the ones a cold 100k-file repository makes
+/// slow — spill to the async lane instead (APPROACH graft 4). The check is at
+/// engine granularity: an engine already running is not interrupted mid-file,
+/// so the cap bounds when work may *begin*, not the length of the longest
+/// single engine. The process and artifacts engines run regardless — they
+/// read history and reports, not content, and are diff-cheap.
+///
+/// The user test-command engine never runs here at all: executing a test
+/// suite does not fit any fast-lane budget, so with the lane on and a command
+/// declared it is always deferred (`crate::jobs`). With the lane off, none of
+/// this happens and `measure` behaves exactly as it did before the lane
+/// existed — that is the rollback path the P7 plan names.
 fn run_all_engines(
     git: &Git,
     resolution: &Resolution,
     changed: &ChangedSet,
     policy: &Policy,
     ctx: &MeasureContext,
-) -> (Vec<EngineOutput>, Vec<EngineFailure>, Vec<String>) {
+    record_kind: RecordKind,
+) -> (
+    Vec<EngineOutput>,
+    Vec<EngineFailure>,
+    Vec<String>,
+    Vec<String>,
+) {
     let mut outputs: Vec<EngineOutput> = Vec::new();
     let mut failures: Vec<EngineFailure> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
+    let mut spilled: Vec<String> = Vec::new();
+
+    // Spill exists only where the async lane exists: for self-reports under a
+    // policy that enabled it. An attestation never defers (the verifier wants
+    // a complete recompute and has CI time to pay for it), and a policy that
+    // never opted in keeps the pre-P7 behaviour to the byte.
+    let lane_on = policy.sandbox.enabled && record_kind == RecordKind::SelfReport;
+    let deadline = lane_on.then(|| {
+        std::time::Instant::now()
+            + std::time::Duration::from_millis(u64::from(policy.perf.fast_lane_cold_cap_ms))
+    });
+    let spill_if_late =
+        |engine_id: &str, failures: &mut Vec<EngineFailure>, spilled: &mut Vec<String>| -> bool {
+            let late = deadline.is_some_and(|d| std::time::Instant::now() >= d);
+            if late {
+                failures.push(EngineFailure {
+                    engine_id: engine_id.to_string(),
+                    reason: format!(
+                        "the {} ms cold cap passed before this engine started; its work moved \
+                         to the async lane, and `andon wait` completes the measurement",
+                        policy.perf.fast_lane_cold_cap_ms
+                    ),
+                    spilled: true,
+                });
+                spilled.push(engine_id.to_string());
+            }
+            late
+        };
 
     // A closure rather than five copies: an engine whose failure path differed
     // from the others' would be an engine whose absence reads differently, and
@@ -685,43 +789,51 @@ fn run_all_engines(
                     Err(e) => failed.push(EngineFailure {
                         engine_id: engine_id.to_string(),
                         reason: e.to_string(),
+                        spilled: false,
                     }),
                 }
             }
             Err(reason) => failed.push(EngineFailure {
                 engine_id: engine_id.to_string(),
                 reason,
+                spilled: false,
             }),
         }
     };
 
-    record(
-        "static-metrics",
-        andon_static_metrics::StaticMetricsEngine::for_change(
-            git,
-            changed,
-            andon_static_metrics::engine_version(),
-        )
-        .map(|e| Box::new(e) as Box<dyn MeasureEngine>)
-        .map_err(|e| e.to_string()),
-        &mut outputs,
-        &mut failures,
-    );
-
-    let (clones, clone_note) = build_clone_engine(git, changed);
-    if let Some(note) = clone_note {
-        notes.push(note);
-    }
-    record("clones", clones, &mut outputs, &mut failures);
-
-    record(
-        "tamper",
-        andon_engine_tamper::TamperEngine::for_change(git, changed)
+    if !spill_if_late("static-metrics", &mut failures, &mut spilled) {
+        record(
+            "static-metrics",
+            andon_static_metrics::StaticMetricsEngine::for_change(
+                git,
+                changed,
+                andon_static_metrics::engine_version(),
+            )
             .map(|e| Box::new(e) as Box<dyn MeasureEngine>)
             .map_err(|e| e.to_string()),
-        &mut outputs,
-        &mut failures,
-    );
+            &mut outputs,
+            &mut failures,
+        );
+    }
+
+    if !spill_if_late("clones", &mut failures, &mut spilled) {
+        let (clones, clone_note) = build_clone_engine(git, changed);
+        if let Some(note) = clone_note {
+            notes.push(note);
+        }
+        record("clones", clones, &mut outputs, &mut failures);
+    }
+
+    if !spill_if_late("tamper", &mut failures, &mut spilled) {
+        record(
+            "tamper",
+            andon_engine_tamper::TamperEngine::for_change(git, changed)
+                .map(|e| Box::new(e) as Box<dyn MeasureEngine>)
+                .map_err(|e| e.to_string()),
+            &mut outputs,
+            &mut failures,
+        );
+    }
 
     // The process engine's hotspot metric needs a complexity number per path,
     // and the static engine is the only thing in the workspace that has one.
@@ -765,7 +877,66 @@ fn run_all_engines(
         &mut failures,
     );
 
-    (outputs, failures, notes)
+    // The code-exec lane's occupant. Never inline — deferral is not a
+    // deadline outcome but the lane's design: a test suite in the fast lane
+    // would make the sub-second contract a fiction on every measurement.
+    if lane_on && policy.sandbox.test_command.is_some() {
+        failures.push(EngineFailure {
+            engine_id: "tests".to_string(),
+            reason: "the user test command executes repository code and runs only on the \
+                     async lane; `andon wait` runs it in the sandbox and merges the result"
+                .to_string(),
+            spilled: true,
+        });
+        spilled.push("tests".to_string());
+    }
+
+    (outputs, failures, notes, spilled)
+}
+
+/// The snapshot the sandbox materializes: the head anchor, and — for an
+/// uncommitted head — the measured change laid over it from the object
+/// database.
+///
+/// Deletions and rename sources become removals; entries with no readable blob
+/// (already reported as unreadable) and gitlinks (submodule pointers, whose
+/// content is another repository's) are not replayed.
+fn sandbox_snapshot(
+    resolution: &Resolution,
+    changed: &ChangedSet,
+) -> (String, Vec<andon_sandbox::OverlayEntry>) {
+    if resolution.compare_context.head_kind.is_witnessable() {
+        return (resolution.compare_context.head_oid.clone(), Vec::new());
+    }
+    let mut overlay: Vec<andon_sandbox::OverlayEntry> = Vec::new();
+    for entry in &changed.entries {
+        if entry.is_gitlink() {
+            continue;
+        }
+        if let Some(old) = entry.old_path.as_ref().filter(|old| **old != entry.path) {
+            overlay.push(andon_sandbox::OverlayEntry {
+                path: old.clone(),
+                blob_oid: None,
+                executable: false,
+            });
+        }
+        match (entry.dst_mode.as_deref(), entry.readable_blob()) {
+            (None, _) => overlay.push(andon_sandbox::OverlayEntry {
+                path: entry.path.clone(),
+                blob_oid: None,
+                executable: false,
+            }),
+            (Some(mode), Some(oid)) => overlay.push(andon_sandbox::OverlayEntry {
+                path: entry.path.clone(),
+                blob_oid: Some(oid.to_string()),
+                executable: mode == "100755",
+            }),
+            // Present but unreadable: nothing honest to replay, and the record
+            // already names the path in `unreadable_paths`.
+            (Some(_), None) => {}
+        }
+    }
+    (resolution.range.head.anchor_oid().to_string(), overlay)
 }
 
 /// Per-path complexity for the hotspot metric, from the static engine's results.
@@ -1033,7 +1204,7 @@ fn package_owner() -> &'static str {
 /// own measurement CI attested. Saying `true` here would be the self-measure
 /// rule asserting itself (`docs/self-measure.md`), which is the one thing a
 /// self-report may not do.
-fn tool_identity() -> ToolIdentity {
+pub(crate) fn tool_identity() -> ToolIdentity {
     ToolIdentity {
         name: TOOL_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),

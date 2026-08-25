@@ -129,9 +129,16 @@ pub enum VerifyError {
 /// and a loop that keeps producing unusable records is exactly what
 /// `escalate_to_human` exists for (PREMORTEM A4/S6).
 ///
-/// A constant rather than a policy field **only because this is the spike**. It
+/// A constant rather than a policy field, and the routing has moved once: it
 /// belongs in `.andon.toml` beside the iteration cap, where changing it is a
-/// ledgered edit; P8 moves it there.
+/// ledgered edit, and the plan first assigned that move to P8. P8 found the
+/// blocker — any new `Policy` field changes `policy_hash`, which the frozen
+/// golden fixtures pin (`golden.rs`: "the policy schema moved, so every
+/// record's policy_hash did") — and the orchestrator ruled the move deferred
+/// to **P9**, where base-commit policy loading is the natural home and the
+/// authoritative reviewer is available to gate the golden re-record the hash
+/// change forces. Until then the constant stands, and current behavior is
+/// unchanged.
 pub const REPEAT_ESCALATION_THRESHOLD: usize = 3;
 
 /// What the verifier was asked to do.
@@ -324,7 +331,9 @@ fn decide(
         );
         let replace = match &worst {
             None => true,
-            Some((_, current, _)) => rank(outcome.attestation) > rank(current.attestation),
+            Some((_, current, _)) => {
+                attestation_rank(outcome.attestation) > attestation_rank(current.attestation)
+            }
         };
         if replace {
             worst = Some((index, outcome, base_relation));
@@ -449,7 +458,13 @@ pub fn base_relation_of(
 /// Not derived from the enum's declaration order, which is a documentation
 /// order: this is a trust ordering and it is spelled out so that adding a value
 /// to the enum is a compile error here rather than a silent misplacement.
-fn rank(value: Attestation) -> u8 {
+///
+/// Public because this ordering is the ONE ordering: `andon-ledger`'s durable
+/// worst-of consumption rule (PLAN P8; decision log P1.5 (a)) re-exports this
+/// function rather than restating the table, so the verifier's in-run worst-of
+/// and a downstream consumer's read of the finished ledger cannot rank the same
+/// two values differently.
+pub fn attestation_rank(value: Attestation) -> u8 {
     match value {
         Attestation::Confirmed => 0,
         Attestation::ConfirmedStatic => 1,
@@ -693,13 +708,13 @@ mod tests {
             Attestation::UnwitnessedBaseMismatch,
         ] {
             assert!(
-                rank(Attestation::Divergent) > rank(other),
+                attestation_rank(Attestation::Divergent) > attestation_rank(other),
                 "divergent must outrank {other:?}"
             );
         }
         // And a confirmation is the only thing a second record can be beaten
         // down from, never up to.
-        assert_eq!(rank(Attestation::Confirmed), 0);
+        assert_eq!(attestation_rank(Attestation::Confirmed), 0);
     }
 
     #[test]

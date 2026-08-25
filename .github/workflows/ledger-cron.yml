@@ -1,0 +1,123 @@
+# The ledger watches itself (PLAN P8; PREMORTEM S1).
+#
+# WHAT THIS JOB IS FOR
+#
+# Andon's adversarial corpus is public, so the one signal an evader cannot help
+# leaving is in the distribution of the measured values themselves: numbers
+# that pile up just under a declared severity rung are the shape of iterating
+# against the gate until the value slips beneath the line. `andon ledger stats
+# --distribution` computes that shape over this repository's own ledger — the
+# dogfood loop measuring the tool — and `--check` turns a clustering finding
+# into exit 2, so this job goes red on the finding itself, never on a log grep.
+#
+# SCOPE, STATED WHERE THE NUMBERS ARE
+#
+# This is single-repo local analytics for the maintainer's dogfood loop. It is
+# not fleet analytics — the Gatekeeper fleet product is an explicit non-goal
+# (PLAN round-1 3.4) — and the stats output prints that scope line above its
+# own numbers, so the log says it too.
+#
+# WHY THE EXIT CODE IS THE GATE
+#
+# The command's contract (documented in `andon ledger --help`): exit 0 is a
+# distribution nobody is hugging, exit 2 is a clustering finding a human should
+# look at, exit 1 is the tool failing. Three different reds for three different
+# situations, none of them parsed out of prose.
+#
+# TWO THINGS GITHUB DOES THAT ARE WORTH KNOWING (corpus-refresh's notes apply)
+#
+#   - `schedule` only ever runs on the default branch, so this workflow does
+#     nothing on the phase branch and starts working when it merges.
+#   - GitHub disables scheduled workflows in a repository with no activity for
+#     60 days, and emails the owner. The manual trigger below is the escape
+#     hatch, and the pre-flip checklist should dispatch it once.
+#
+# Weekly rather than monthly: the ledger accumulates with every dogfood run and
+# the P9b false-positive window reads this signal on a two-week clock, so a
+# monthly check could miss the entire window. One ubuntu build a week is within
+# the Actions conserve rule's tolerance for standing jobs (corpus-refresh's own
+# arithmetic).
+#
+# Every third-party action is pinned by commit SHA with the tag in a trailing
+# comment, for the reason ci.yml gives: a tag is a mutable pointer, and these
+# run in a project whose product is trust.
+
+name: ledger-cron
+
+on:
+  schedule:
+    # 07:30 UTC every Monday.
+    - cron: '30 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NO_COLOR: "1"
+
+jobs:
+  ledger-stats:
+    name: distribution and clustering over the repository's own ledger
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # actions/checkout fetches no notes refs, so without this step the job
+      # would always read an empty ledger and prove nothing — a vacuity, not a
+      # pass. The refspec is explicit (PREMORTEM T4): each ref lands in the
+      # working notes namespace directly, which is safe here because a fresh CI
+      # checkout has no local records a fetch could clobber. `--depth 1` is not
+      # needed for the ledger itself — a notes tree references no commit in
+      # history — but the fetch stays shallow-safe either way.
+      #
+      # TRANSPORT FAILURE IS NOT AN EMPTY LEDGER. Testing `ls-remote` only
+      # through `[ -n "$(...)" ]` fails open: a command substitution is exempt
+      # from `set -e`, so a dead or unauthorized remote produces empty output,
+      # reads as "ref does not exist yet", and the gate runs green over a
+      # ledger it never fetched — the exact fail-open `NotesError::Transport`
+      # exists to prevent. So the exit status of ls-remote is checked on its
+      # own: a remote that cannot answer fails this step red; a remote that
+      # answers "no such ref" is the young-repository case and stays green.
+      - name: Fetch the ledger
+        run: |
+          for ref in refs/notes/andon-measure refs/notes/andon-attest; do
+            if ! listing=$(git ls-remote origin "$ref"); then
+              echo "::error::could not reach origin while asking for $ref — a transport failure is not an empty ledger, and running the gate over one would report green on nothing"
+              exit 1
+            fi
+            if [ -n "$listing" ]; then
+              git fetch --no-tags origin "+$ref:$ref"
+              echo "fetched $ref"
+            else
+              echo "$ref does not exist on origin yet (no records; that is a fact, not a failure)"
+            fi
+          done
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # `--check` makes the finding the exit code: 2 on a clustering warning,
+      # 0 on a distribution nobody is hugging (including the empty ledger).
+      # Both refs are checked because both were fetched: the measure ledger is
+      # where an agent's shaved numbers would land, and the attest ledger is
+      # the verifier's recompute of the same values — a distribution signature
+      # present in one and not the other is itself worth seeing in the summary.
+      # The full report goes to the step summary either way, so the reader of
+      # a red run sees the warning's own sentence — which metric, which rung,
+      # which regime — without reconstructing it from a failure line.
+      - name: Distribution and clustering check
+        run: |
+          worst=0
+          for ledger_ref in measure attest; do
+            echo "## ledger stats --ref $ledger_ref" >> "$GITHUB_STEP_SUMMARY"
+            set +e
+            cargo run --quiet -p andon-cli --bin andon -- ledger stats --check --ref "$ledger_ref" | tee -a "$GITHUB_STEP_SUMMARY"
+            status=${PIPESTATUS[0]}
+            set -e
+            if [ "$status" -eq 2 ]; then
+              echo "::error::the $ledger_ref ledger's value distribution hugs a declared severity rung — see the summary; PREMORTEM S1"
+            fi
+            if [ "$status" -gt "$worst" ]; then worst=$status; fi
+          done
+          exit "$worst"

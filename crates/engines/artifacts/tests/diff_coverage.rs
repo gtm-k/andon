@@ -94,7 +94,7 @@ fn measure(fixture: &Fixture, reports: &[CoverageReport]) -> Vec<MeasurementResu
         compare_context: range.compare_context().expect("a commit range"),
         policy: Policy::default(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     run_engine(&engine, &ctx).expect("the engine measures")
 }
@@ -307,7 +307,7 @@ fn a_report_that_exists_and_cannot_be_read_says_so_rather_than_saying_nothing() 
         compare_context: range.compare_context().expect("a commit range"),
         policy: Policy::default(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     let results = run_engine(&engine, &ctx).expect("the engine measures");
 
@@ -376,7 +376,7 @@ fn a_broken_report_beside_a_working_one_is_still_reported() {
         compare_context: range.compare_context().expect("a commit range"),
         policy: Policy::default(),
         changed_paths: changed.entries.iter().map(|e| e.path.clone()).collect(),
-        sandbox_available: false,
+        sandbox: None,
     };
     let results = run_engine(&engine, &ctx).expect("the engine measures");
 

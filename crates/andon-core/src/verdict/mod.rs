@@ -52,6 +52,12 @@ use policy_change::PolicyChange;
 pub mod reason {
     /// A tamper detector fired and policy stops the line for it.
     pub const TAMPER_SIGNAL: &str = "tamper-signal";
+
+    /// The user test command failed and policy blocks on that.
+    pub const TEST_FAILURE: &str = "test-failure";
+
+    /// The user test command failed and policy chose not to block.
+    pub const TEST_FAILURE_ADVISORY: &str = "test-failure-advisory";
     /// A tamper detector fired and policy does not stop the line for it.
     pub const TAMPER_SIGNAL_ADVISORY: &str = "tamper-signal-advisory";
     /// One or more findings reached MED+ after policy.
@@ -66,6 +72,12 @@ pub mod reason {
     pub const ITERATION_CAP: &str = "iteration-cap";
     /// An engine could not run. Its metrics are absent, not zero.
     pub const ENGINE_UNAVAILABLE: &str = "engine-unavailable";
+
+    /// Work deferred to the async lane — the cold cap, or the code-exec lane,
+    /// which never runs inline. `andon wait` completes it. Distinct from
+    /// `engine-unavailable` because "not finished" and "could not run" ask a
+    /// reader for different next moves.
+    pub const ENGINE_SPILLED_ASYNC: &str = "engine-spilled-async";
     /// A reported finding stands on a claim that is past its re-review date.
     pub const EVIDENCE_STALE: &str = "evidence-stale";
     /// The iteration counter restarted because its state was unusable.
@@ -78,13 +90,23 @@ pub mod reason {
     pub const EVIDENCE_REGISTRY_SKEW: &str = "evidence-registry-skew";
 }
 
-/// An engine that was asked to measure and could not.
+/// An engine that contributed no results to this assembly, and why.
+///
+/// Two kinds share the shape, split by `spilled`, and the split is wire-visible
+/// as two verdict reason codes: an engine that **could not** run
+/// (`engine-unavailable`) and an engine whose work was **deferred to the async
+/// lane** (`engine-spilled-async`) — the fast lane's cold cap, or the
+/// code-exec lane, which never runs inline (PLAN P7 / APPROACH graft 4).
+/// Collapsing them would tell a reader something is wrong when something is
+/// merely not finished, and `andon wait` finishes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineFailure {
     /// Which engine.
     pub engine_id: String,
     /// What it said, in its own words.
     pub reason: String,
+    /// True when the work is deferred rather than failed: `andon wait` runs it.
+    pub spilled: bool,
 }
 
 /// Everything the verdict needs besides the results themselves.
@@ -288,12 +310,61 @@ pub fn evaluate(
         });
     }
 
-    // --- metric findings ----------------------------------------------------
-    let blocking_metrics = metric_ids(
-        results
+    // --- the failed test suite ----------------------------------------------
+    // Its own reason, not a row in the generic metric findings: the block keys
+    // on the flag while the tier ceiling holds the reported severity at `Low`,
+    // so the generic "reached {severity} after policy" sentence would describe
+    // a `block` with a word that cannot block. The tamper loop above has the
+    // same split for the same reason.
+    for result in results.iter().filter(|r| severity::fired_suite_failure(r)) {
+        let blocking = severity::stops_the_line(result, ctx);
+        // The sibling sentence says how it failed; the engine emits the pair
+        // together, so its absence means a hand-built record — the reason
+        // still stands, just without the detail.
+        let outcome = results
             .iter()
-            .filter(|r| severity::fired_signal(r).is_none() && severity::stops_the_line(r, ctx)),
-    );
+            .find(|r| {
+                r.family == crate::schema::enums::EngineFamily::Tests
+                    && r.metric_id == severity::SUITE_OUTCOME_METRIC
+            })
+            .and_then(|r| match &r.value {
+                crate::schema::payload::MetricValue::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or("exited non-zero");
+        reasons.push(VerdictReason {
+            code: if blocking {
+                reason::TEST_FAILURE
+            } else {
+                reason::TEST_FAILURE_ADVISORY
+            }
+            .to_string(),
+            // Keyed on the flag, so the reason says `critical` even though the
+            // result's own severity is tier-capped — the same wording rule as
+            // the tamper reasons above.
+            severity: if blocking {
+                Severity::Critical
+            } else {
+                result.severity
+            },
+            message: format!(
+                "the user test command failed ({outcome}): {}",
+                if blocking {
+                    "the line stops"
+                } else {
+                    "reported; policy does not block on test failure"
+                }
+            ),
+            metric_ids: vec![result.metric_id.clone()],
+        });
+    }
+
+    // --- metric findings ----------------------------------------------------
+    let blocking_metrics = metric_ids(results.iter().filter(|r| {
+        severity::fired_signal(r).is_none()
+            && !severity::fired_suite_failure(r)
+            && severity::stops_the_line(r, ctx)
+    }));
     if !blocking_metrics.is_empty() {
         let worst = worst_severity(results, &blocking_metrics);
         reasons.push(VerdictReason {
@@ -309,6 +380,7 @@ pub fn evaluate(
 
     let advisory_metrics = metric_ids(results.iter().filter(|r| {
         severity::fired_signal(r).is_none()
+            && !severity::fired_suite_failure(r)
             && !severity::stops_the_line(r, ctx)
             && r.severity > Severity::Info
     }));
@@ -387,9 +459,10 @@ pub fn evaluate(
     // P9's confirmation-completeness criterion owns the rule that a record
     // missing an engine on both sides cannot be `confirmed`, keyed on per-engine
     // presence rather than on this roll-up (E20).
-    if !ctx.engine_failures.is_empty() {
-        let detail: Vec<String> = ctx
-            .engine_failures
+    let (spilled, unavailable): (Vec<&EngineFailure>, Vec<&EngineFailure>) =
+        ctx.engine_failures.iter().partition(|f| f.spilled);
+    if !unavailable.is_empty() {
+        let detail: Vec<String> = unavailable
             .iter()
             .map(|f| format!("{}: {}", f.engine_id, f.reason))
             .collect();
@@ -399,7 +472,28 @@ pub fn evaluate(
             message: format!(
                 "{} engine(s) produced no results, so their metrics are absent rather than \
                  zero and this record is {}: {}",
-                ctx.engine_failures.len(),
+                unavailable.len(),
+                format!("{:?}", ctx.completeness).to_lowercase(),
+                detail.join("; ")
+            ),
+            metric_ids: Vec::new(),
+        });
+    }
+    // Deferred, not broken — its own code because the reader's next move is
+    // different: nothing here needs fixing, something here needs finishing,
+    // and `andon wait` is what finishes it.
+    if !spilled.is_empty() {
+        let detail: Vec<String> = spilled
+            .iter()
+            .map(|f| format!("{}: {}", f.engine_id, f.reason))
+            .collect();
+        reasons.push(VerdictReason {
+            code: reason::ENGINE_SPILLED_ASYNC.to_string(),
+            severity: Severity::Medium,
+            message: format!(
+                "{} engine(s) deferred to the async lane, so this record is {} until `andon \
+                 wait` completes the measurement: {}",
+                spilled.len(),
                 format!("{:?}", ctx.completeness).to_lowercase(),
                 detail.join("; ")
             ),
@@ -550,7 +644,10 @@ pub fn evaluate(
     let blocking = reasons.iter().any(|r| {
         matches!(
             r.code.as_str(),
-            reason::TAMPER_SIGNAL | reason::SEVERITY_MED_PLUS | reason::POLICY_CHANGE_LOOSENING
+            reason::TAMPER_SIGNAL
+                | reason::TEST_FAILURE
+                | reason::SEVERITY_MED_PLUS
+                | reason::POLICY_CHANGE_LOOSENING
         )
     });
     let anything_worth_saying = reasons.iter().any(|r| r.severity > Severity::Info);
@@ -1006,6 +1103,7 @@ mod tests {
         let failures = [EngineFailure {
             engine_id: "clones".to_string(),
             reason: "index lock held".to_string(),
+            spilled: false,
         }];
         for (completeness, word) in [
             (Completeness::Partial, "partial"),

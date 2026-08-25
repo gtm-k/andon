@@ -33,6 +33,14 @@ pub const LAST_RECORD_FILE: &str = "last-measure.json";
 /// File the incremental clone index is written to.
 pub const CLONES_INDEX_FILE: &str = "clones-index";
 
+/// File describing work the fast lane spilled to the async lane, consumed by
+/// `andon wait` (see `crate::jobs`).
+pub const ASYNC_JOB_FILE: &str = "async-job.json";
+
+/// File the last suite run's output tails are written to, for the operator a
+/// verdict reason points here.
+pub const SUITE_OUTPUT_FILE: &str = "test-suite-output.log";
+
 /// The tool's state directory for this checkout.
 pub fn state_dir(git: &Git) -> PathBuf {
     git.facts().git_dir.join(STATE_SUBDIR)
@@ -46,6 +54,16 @@ pub fn last_record_path(git: &Git) -> PathBuf {
 /// Where the clone engine's incremental index lives.
 pub fn clones_index(git: &Git) -> PathBuf {
     state_dir(git).join(CLONES_INDEX_FILE)
+}
+
+/// Where the pending async job, if any, lives.
+pub fn async_job_path(git: &Git) -> PathBuf {
+    state_dir(git).join(ASYNC_JOB_FILE)
+}
+
+/// Where the last suite run's output tails are written.
+pub fn suite_output_path(git: &Git) -> PathBuf {
+    state_dir(git).join(SUITE_OUTPUT_FILE)
 }
 
 /// Persist a record as the last measurement of this checkout.

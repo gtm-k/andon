@@ -1,0 +1,29 @@
+# The full ledger machinery (PLAN P8), built on the P1.5 spike's kernel.
+#
+# Picked up by the root manifest's `crates/andon-*` member glob, so the root
+# Cargo.toml is untouched (PLAN R2-2). Every dependency comes from
+# `[workspace.dependencies]` or is a sibling crate — nothing new enters the
+# lockfile, so the `cargo deny check licenses bans sources` gate is unmoved by
+# this phase.
+#
+# `andon-ledger-min` stays and this crate builds ON it rather than beside it:
+# the notes plumbing (guarded reads, cat_sort_uniq discipline, push recovery)
+# has exactly one implementation, in the -min crate, and everything here is a
+# caller. A second reader would be a second chance to skip the checks the first
+# one runs.
+[package]
+name = "andon-ledger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Andon's ledger: notes transport with retry and backoff, squash migration, trailer digests, and single-repo dimension/distribution analytics."
+
+[dependencies]
+andon-core.workspace = true
+andon-ledger-min = { path = "../andon-ledger-min" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
