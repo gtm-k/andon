@@ -664,7 +664,18 @@ pub struct EvidenceRef {
 /// Timing and cache metadata. Excluded from every digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Freshness {
-    /// RFC 3339 timestamp.
+    /// RFC 3339 timestamp — **and empty in every record this build writes.**
+    ///
+    /// Every production construction site sets `String::new()`: all five engines,
+    /// `andon-sandbox`, and the spike. That is deliberate, not an oversight. The
+    /// authoritative time for a measurement is when its note landed in the
+    /// ledger, which the FP window reads; a self-reported wall clock is a value
+    /// the measuring machine chooses for itself, and the window is dated on
+    /// evidence rather than on a claim.
+    ///
+    /// Documented here because the field's shape promises something the field
+    /// never delivers, and a consumer reading the schema has no other way to
+    /// learn not to rely on it.
     pub measured_at: String,
     /// How long the measurement took.
     pub duration_ms: u64,
