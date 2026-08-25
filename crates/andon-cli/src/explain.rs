@@ -123,6 +123,23 @@ pub fn list() -> String {
     out
 }
 
+/// What `run` produced: the explanation, and anything the caller must show
+/// beside it.
+///
+/// The notice is returned rather than printed because this body is shared with
+/// the MCP server, and there `eprintln!` reaches nobody who matters. A tool
+/// result is built from the return value alone — subprocess stderr is host-side
+/// logging and never becomes part of what the model reads. So a refusal written
+/// to stderr closed the gap for the CLI reader and left it open for the agent,
+/// which is the surface this project calls its primary consumer.
+pub struct Explained {
+    /// The rendered explanation.
+    pub answer: String,
+    /// Present when a record existed and could not be used. The explanation is
+    /// still complete; what it lacks is the measurement it would have cited.
+    pub notice: Option<String>,
+}
+
 /// The whole `explain` question for one query, from a repository path to the
 /// rendered answer: load the policy in force, load the registry under it,
 /// resolve the query to a subject, and explain it beside the last measurement.
@@ -137,7 +154,7 @@ pub fn run(
     repo: &std::path::Path,
     registry_dir: Option<&std::path::Path>,
     query: &str,
-) -> Result<String, String> {
+) -> Result<Explained, String> {
     let git = andon_core::git::Git::open(repo).ok();
     let policy = match &git {
         Some(git) => measure::load_policy(git, &measure::PolicySource::Worktree)
@@ -158,18 +175,22 @@ pub fn run(
     // On stderr rather than stdout because this body is shared with the MCP
     // server's `explain_finding`, where stdout carries the protocol and a stray
     // line on it is a transport error rather than a message.
+    let mut notice = None;
     let record = git
         .as_ref()
         .and_then(|git| match crate::store::read_last(git) {
             Ok(record) => Some(record),
             Err(why) => {
                 if crate::store::last_record_path(git).exists() {
-                    eprintln!("explain: the last measurement exists and was not used: {why}");
+                    notice = Some(format!(
+                        "the last measurement exists and was not used: {why}"
+                    ));
                 }
                 None
             }
         });
-    explain(&subject, &policy, &registry, record.as_ref())
+    let answer = explain(&subject, &policy, &registry, record.as_ref())?;
+    Ok(Explained { answer, notice })
 }
 
 /// Explain a subject against the registry this binary compiles in.

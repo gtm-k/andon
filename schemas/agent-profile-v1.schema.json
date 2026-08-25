@@ -72,6 +72,33 @@
       ],
       "type": "object"
     },
+    "AgentReason": {
+      "description": "One verdict reason, trimmed for an agent's context.\n\nThe `metric_ids` a `VerdictReason` carries are deliberately not projected: where they exist the metrics are already in `findings`, and where the reason class has no backing result the list is empty. Repeating it would spend budget to say what the payload says elsewhere or nothing at all.",
+      "properties": {
+        "code": {
+          "description": "Stable machine code, e.g. `policy-change-loosening`, `tamper-signal`.",
+          "type": "string"
+        },
+        "message": {
+          "description": "The reason's own explanation, in its own words.",
+          "type": "string"
+        },
+        "severity": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Severity"
+            }
+          ],
+          "description": "How serious this reason is."
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "severity"
+      ],
+      "type": "object"
+    },
     "Attestation": {
       "description": "How much trust a measurement record has earned.\n\nA self-reported record starts life unattested; CI moves it. Only `confirmed` and `confirmed-static` are passes. The `unwitnessed-*` values are explicitly **not** tamper accusations — conflating them with `divergent` is the false-divergence epidemic of PREMORTEM T1/Story 1.",
       "oneOf": [
@@ -524,6 +551,14 @@
       "description": "Always [`PROFILE_NAME`].",
       "type": "string"
     },
+    "reasons": {
+      "default": [],
+      "description": "Why the verdict came out the way it did, worst first.\n\n# The gap this closes\n\nAn agent could be told `block` with nothing in this payload explaining it. Of the 16 `VerdictReason` codes, four — `policy-change`, `policy-change-loosening`, `evidence-registry-skew`, `iteration-state-reset` — have no backing `MeasurementResult` and no field of their own, so they reached the agent through nothing at all; four more moved a field that never said which cause moved it. Only six are backed by a real result and arrive via `findings`.\n\nThe worst of them was `policy-change-loosening`, which fires exactly when an agent edits `.andon.toml` mid-change — the scenario the rule exists to police — and produced a silent `block` an agent could not act on. The server's own instructions say \"on `block`, fix what the findings name\", and the findings named nothing.\n\nAdditive with `#[serde(default)]`, the same shape `verdict_invalid` used, so a v1 consumer that predates this field still parses.",
+      "items": {
+        "$ref": "#/definitions/AgentReason"
+      },
+      "type": "array"
+    },
     "schema_version": {
       "description": "Payload schema version this view belongs to.",
       "format": "uint32",
@@ -536,8 +571,15 @@
       "minimum": 0,
       "type": "integer"
     },
+    "total_reasons": {
+      "default": 0,
+      "description": "How many reasons the full record held.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
     "truncated": {
-      "description": "True when findings were dropped to stay inside the budget.",
+      "description": "True when anything — findings or reasons — was dropped to stay inside the budget.\n\nOne flag covers both, so it does not say WHICH was cut. To check reasons specifically, compare `reasons.len()` against [`Self::total_reasons`]; for findings, `findings.len()` against [`Self::total_findings`]. Named here because a consumer that trusts the flag alone learns that something was lost and not that the explanation was.",
       "type": "boolean"
     },
     "unread_paths": {
