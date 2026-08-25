@@ -117,6 +117,34 @@ pub fn wait(record: &MeasurementRecord) -> String {
                  `andon ledger ack` records that a human looked, and clears the counter.",
                 record.verdict.iteration.count, record.verdict.iteration.cap
             );
+        } else if let Some(unanswered) = record
+            .verdict
+            .reasons
+            .iter()
+            .find(|r| r.code == "engine-unavailable" || r.code == "measurement-incomplete")
+        {
+            // AN EMPTY ASYNC LANE IS NOT PROOF THAT NOTHING WAS DEFERRED.
+            //
+            // This is the escalation bug above, a second time. Deferred work
+            // that RAN and produced no result — a test command killed at its
+            // timeout is the ordinary case — leaves `async_results` empty,
+            // because a timeout is an unanswered question and deliberately
+            // emits no `tests.*` result. Counting results therefore reported
+            // "no deferred work was pending" directly beneath the line naming
+            // the log file that proves one was, in the one command somebody
+            // runs to find out whether they can move on.
+            //
+            // The record already carries the honest answer as a reason. Read it
+            // rather than inferring from a count: the count cannot distinguish
+            // "nothing was deferred" from "something was deferred and died".
+            let _ = writeln!(
+                out,
+                "\n  DEFERRED WORK RAN AND ANSWERED NOTHING. This command completed a job that \
+                 produced no result, so the async lane is empty for a reason that is not \
+                 absence:\n    {}  {}\n  That is an unanswered question, not a passing test. \
+                 The verdict above was reached WITHOUT the answer.",
+                unanswered.code, unanswered.message
+            );
         } else {
             let _ = writeln!(
                 out,
@@ -204,6 +232,43 @@ mod tests {
     fn a_fast_only_record_reports_nothing_outstanding() {
         let text = wait(&record(vec![sample_result()]));
         assert!(text.contains("Nothing is outstanding"), "{text}");
+    }
+
+    #[test]
+    fn deferred_work_that_died_is_not_reported_as_nothing_deferred() {
+        // A test command killed at its timeout emits no `tests.*` result at all
+        // — a timeout is an unanswered question, never a test failure — so the
+        // async lane is empty and a result count cannot tell that apart from a
+        // measurement where nothing was ever deferred. It reported the second,
+        // one line under the log file proving the first.
+        //
+        // Fixtured from the reason the record actually carries, not from a flag
+        // this test invents: `engine-unavailable` is what a timed-out lane
+        // records, so a record without one is genuinely fast-only and the test
+        // above still holds.
+        let mut r = record(vec![sample_result()]);
+        r.verdict
+            .reasons
+            .push(andon_core::schema::payload::VerdictReason {
+                code: "engine-unavailable".to_string(),
+                severity: andon_core::schema::enums::Severity::Low,
+                message: "the declared test command was killed at its timeout".to_string(),
+                metric_ids: Vec::new(),
+            });
+
+        let text = wait(&r);
+        assert!(
+            !text.contains("no deferred work was pending"),
+            "a job ran and died; the report must not call that nothing deferred: {text}"
+        );
+        assert!(
+            text.contains("DEFERRED WORK RAN AND ANSWERED NOTHING"),
+            "{text}"
+        );
+        assert!(
+            text.contains("the declared test command was killed at its timeout"),
+            "the reason's own message is the honest account and must be quoted: {text}"
+        );
     }
 
     #[test]
