@@ -149,13 +149,22 @@ pub fn wait(record: &MeasurementRecord, job_completed: bool) -> String {
             // rather than this function guessing from what the job left behind.
             // It also makes a second `wait` correct for free: nothing is pending
             // the second time, so nothing claims to have just run.
+            //
+            // The sentence names no cause, deliberately. An earlier draft said "a
+            // test command killed at its timeout", which is the usual case and
+            // not the only one: `spill_if_late` defers ANY of five engines past
+            // the cold cap, and a spilled content engine that then failed reaches
+            // here identically — printing that a test command timed out in a
+            // repository that declares none. The trigger is a fact; the cause is
+            // not this function's to assert, and the notices and the record's own
+            // reasons already carry it.
             let _ = writeln!(
                 out,
                 "\n  DEFERRED WORK RAN AND ANSWERED NOTHING. This command completed a job that \
                  produced no result, so the async lane is empty for a reason that is not \
-                 absence — a test command killed at its timeout emits no result at all.\n  \
-                 That is an unanswered question, not a passing test. The verdict above was \
-                 reached WITHOUT the answer."
+                 absence. What failed is named in the notices above and in this record's own \
+                 reasons; this line does not guess at it.\n  It is an unanswered question, \
+                 not a passing test: the verdict above was reached WITHOUT the answer."
             );
         } else {
             let _ = writeln!(
