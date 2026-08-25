@@ -291,9 +291,17 @@ impl AndonMcp {
         // The same completion the CLI's `wait` runs — one implementation, so
         // the two surfaces cannot answer "what was still owed?" differently.
         let mut notices: Vec<String> = Vec::new();
+        // Whether a job ran HERE, kept beside the notices for the lane report.
+        // A job that ran and died leaves nothing in the record to tell it apart
+        // from one that never existed — a timed-out suite emits no result at all
+        // — so the fact travels rather than being inferred downstream.
+        let mut job_ran = false;
         match andon_cli::jobs::complete(&repo) {
             Ok(None) => {}
-            Ok(Some(completion)) => notices = completion.notices,
+            Ok(Some(completion)) => {
+                job_ran = true;
+                notices = completion.notices;
+            }
             Err(e) => return refusal(e),
         }
         let git = match Git::open(&repo) {
@@ -315,7 +323,7 @@ impl AndonMcp {
         // Blocks in order: the machine-readable profile stays one parseable
         // JSON document; the lane report — prose about what was owed and what
         // completing it said — rides beside it rather than corrupting it.
-        let mut lane_report = andon_cli::lanes::wait(&record);
+        let mut lane_report = andon_cli::lanes::wait(&record, job_ran);
         for notice in notices {
             lane_report.push_str(&format!("  note     {notice}\n"));
         }
