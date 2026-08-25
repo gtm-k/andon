@@ -126,7 +126,7 @@ struct MeasureParams {
 #[schemars(crate = "rmcp::schemars")]
 struct ExplainParams {
     /// A `metric_id` or `claim_id` from a finding, e.g.
-    /// `static.cognitive-complexity-ts`.
+    /// `static.cognitive-complexity.typescript`.
     id: String,
     /// Any path inside the repository. Defaults to the server's working
     /// directory.
@@ -335,7 +335,7 @@ impl AndonMcp {
 
     /// The claim behind a number, and what it does not predict.
     #[tool(
-        description = "Explain the evidence behind a finding: pass a metric_id or claim_id from a measurement (e.g. `static.cognitive-complexity-ts`) and get the claim it stands on — tier, citation, population, effect, re-review date, and what the number does NOT predict."
+        description = "Explain the evidence behind a finding: pass a metric_id or claim_id from a measurement (e.g. `static.cognitive-complexity.typescript`) and get the claim it stands on — tier, citation, population, effect, re-review date, and what the number does NOT predict."
     )]
     fn explain_finding(&self, Parameters(p): Parameters<ExplainParams>) -> CallToolResult {
         match explain::run(&repo_path(&p.repo), None, &p.id) {
@@ -346,7 +346,7 @@ impl AndonMcp {
 
     /// Measurements recorded in the commits — the ledger-min view.
     #[tool(
-        description = "List the measurements recorded against commits in this repository (the git-notes ledger): commit, record count, verdict, and who invoked the measurement. A stub of the full ledger surface — stats and dimension queries ship with PLAN P8; `andon ledger` on the CLI reads the same notes."
+        description = "List the measurements recorded against commits in this repository (the git-notes ledger): commit, record count, verdict, and who invoked the measurement. This is a SUBSET of the ledger surface, and the gap matters if you are asking whether a repository is being gamed: `andon ledger stats` on the CLI reads these same notes and additionally answers `--by` (slice by source, harness, model, author or iteration), `--filter`, and `--distribution` (per-metric distributions by measurement regime, carrying the threshold-clustering warning). None of that is exposed here yet."
     )]
     fn get_ledger(&self, Parameters(p): Parameters<RepoParams>) -> CallToolResult {
         let repo = repo_path(&p.repo);
