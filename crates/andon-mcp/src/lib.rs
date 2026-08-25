@@ -346,7 +346,7 @@ impl AndonMcp {
 
     /// Measurements recorded in the commits — the ledger-min view.
     #[tool(
-        description = "List the measurements recorded against commits in this repository (the git-notes ledger): commit, record count, verdict, and who invoked the measurement. This is a SUBSET of the ledger surface, and the gap matters if you are asking whether a repository is being gamed: `andon ledger stats` on the CLI reads these same notes and additionally answers `--by` (slice by source, harness, model, author or iteration), `--filter`, and `--distribution` (per-metric distributions by measurement regime, carrying the threshold-clustering warning). None of that is exposed here yet."
+        description = "List the measurements recorded against commits in this repository (the git-notes ledger): commit, record count, verdict, and who invoked the measurement. This is a SUBSET of the ledger surface, and the gap matters if you are asking whether a repository is being gamed: `andon ledger stats` on the CLI reads these same notes and additionally answers `--by` (slice by source, harness, model, author or iteration), `--filter`, and `--distribution` (per-metric distributions by measurement regime, carrying the threshold-clustering warning). None of that is exposed here."
     )]
     fn get_ledger(&self, Parameters(p): Parameters<RepoParams>) -> CallToolResult {
         let repo = repo_path(&p.repo);
