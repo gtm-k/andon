@@ -119,6 +119,99 @@ pub struct MeasurementRecord {
     pub self_measure: Option<SelfMeasureProvenance>,
 }
 
+/// Why a stored record cannot be believed even long enough to render.
+///
+/// Raised on read-back, never during assembly: assembly recomputes every digest
+/// before a record exists ([`crate::payload::AssemblyError::DigestMismatch`]),
+/// so a record that fails this check was edited after it was sealed, or
+/// corrupted where it was stored. No honest producer can emit one.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SealError {
+    /// A result's digest is not the digest of the contents beside it.
+    #[error(
+        "result '{metric_id}' carries a digest that is not the digest of the contents beside it. \
+         This record contradicts itself: it was edited after it was sealed, corrupted where it was stored, or sealed under an older schema than this binary recomputes"
+    )]
+    Broken {
+        /// The metric whose seal does not hold.
+        metric_id: String,
+    },
+    /// A result's digest could not be recomputed at all.
+    #[error("result '{metric_id}' could not be re-digested: {detail}")]
+    Unverifiable {
+        /// The metric that could not be checked.
+        metric_id: String,
+        /// What the canonical serializer said.
+        detail: String,
+    },
+}
+
+impl MeasurementRecord {
+    /// Check that every result's digest is the digest of the contents beside it.
+    ///
+    /// # The question this answers, and the one it does not
+    ///
+    /// The verifier's compare asks whether two records' digests *agree with each
+    /// other*. This asks whether one record *agrees with itself* — whether the
+    /// fields a digest covers still hash to that digest, against the record's
+    /// own `(base_oid, head_oid)` tuple. The two are different facts: a value
+    /// edited in a stored record while the digest beside it was left alone
+    /// still carries the digest the honest measurement sealed, so it matches
+    /// the other leg's digest perfectly and the compare declares the fabricated
+    /// number `confirmed`. Only the record's own contents can contradict it.
+    ///
+    /// # Where this must be called, and why there
+    ///
+    /// On every path that reads a record back from storage — a git note, a
+    /// record file, the last-measure file. Assembly runs the same recompute
+    /// before a record exists, so between the two checks a record is covered
+    /// from construction to every later read; a loader that skips this hands
+    /// its reader a record nobody vouches for.
+    ///
+    /// # What this deliberately does not bind
+    ///
+    /// Only the fields inside [`ResultDigestInput`] are covered. The record-level
+    /// trust fields -- `attestation`, `verdict`, per-result `severity`,
+    /// `self_measure`, `policy_hash` -- are outside every per-result digest (E20
+    /// keeps `severity` out so policy can move post-seal), so a stored record
+    /// with those fields edited passes this check and re-serves them. That is
+    /// the documented v1 trust boundary: the authoritative verifier recomputes
+    /// and never reads those fields off a self-report, and binding them at rest
+    /// is v1.5's problem (a whole-record seal beside sigstore provenance). This
+    /// check closes value-forgery against the seal; it does not make a stored
+    /// record comprehensively tamper-proof, and prose citing it should not say
+    /// it does.
+    ///
+    /// A failure is a refusal, not an attestation outcome. `divergent` states
+    /// that two honest-shaped records disagree, and writing it here would put
+    /// an accusation in the ledger over what may be storage corruption. A
+    /// record that contradicts itself is refused the way a record that does not
+    /// parse is refused — same class, same loudness — and the message says
+    /// which metric, so a reader can tell "this record was edited" from "the
+    /// two measurements genuinely differ".
+    ///
+    /// The recompute stamps this binary's [`SCHEMA_VERSION`], exactly as
+    /// [`MeasurementResult::seal`] did: `digest_input` owns that constant, so a
+    /// record from another schema version fails here rather than being taken on
+    /// faith — the record's own `schema_version` field is outside every digest
+    /// and gating on it would let one unsealed integer waive the whole check.
+    pub fn verify_seals(&self) -> Result<(), SealError> {
+        for result in &self.results {
+            let recomputed = canonical::digest(&result.digest_input(&self.compare_context))
+                .map_err(|e| SealError::Unverifiable {
+                    metric_id: result.metric_id.clone(),
+                    detail: e.to_string(),
+                })?;
+            if recomputed != result.digest {
+                return Err(SealError::Broken {
+                    metric_id: result.metric_id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// What was measured, when it was not what was asked for.
 ///
 /// PREMORTEM A1 is a first command that returns nothing. The no-diff fallback

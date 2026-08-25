@@ -1967,6 +1967,85 @@ fn an_assembled_record_serializes_canonically_and_reproducibly() {
     assert_eq!(round_tripped, record);
 }
 
+// --- the seal binds to what it seals, on the way back in -------------------
+
+/// A record that survives the round trip still verifies its own seals.
+///
+/// The half of the property `verify_seals` stands on that equality alone does
+/// not prove: the digests were computed from live values, and this recomputes
+/// them from *deserialized* ones — so a serializer that changed any covered
+/// field's bytes in flight (a float reformatted, a map reordered) would fail
+/// here, and would otherwise fail as a refusal of honest records at every
+/// loader.
+#[test]
+fn a_round_tripped_record_still_verifies_its_own_seals() {
+    let policy = Policy::default();
+    let registry = shipped_registry();
+    let record = prepare(request(&policy, &registry, five_engines(&registry)))
+        .expect("assembles")
+        .finish(advance(0, 3));
+    let text = crate::canonical::to_canonical_string(&record).expect("serializes");
+    let loaded: MeasurementRecord = serde_json::from_str(&text).expect("round trips");
+    loaded
+        .verify_seals()
+        .expect("an honest record agrees with itself");
+}
+
+/// A value edited without re-sealing is named, and named by its metric.
+#[test]
+fn an_edited_value_breaks_its_own_seal() {
+    let mut record = crate::testing::sample_record();
+    record.verify_seals().expect("sealed as built");
+    record.results[0].value = MetricValue::Count(999_999);
+    let err = record.verify_seals().expect_err("the seal no longer holds");
+    assert_eq!(
+        err,
+        crate::schema::payload::SealError::Broken {
+            metric_id: "sample.metric".to_string(),
+        }
+    );
+}
+
+/// The seal binds the tuple, so an edited base is a broken seal too.
+#[test]
+fn an_edited_base_breaks_every_seal() {
+    let mut record = crate::testing::sample_record();
+    record.compare_context.base_oid = "9".repeat(40);
+    record
+        .verify_seals()
+        .expect_err("a digest is only meaningful for the tuple it was sealed against");
+}
+
+/// A blanked digest is a broken seal, not a result waiting to be sealed.
+#[test]
+fn a_blanked_digest_breaks_its_own_seal() {
+    let mut record = crate::testing::sample_record();
+    record.results[0].digest = String::new();
+    record
+        .verify_seals()
+        .expect_err("assembly refuses an unsealed result, so a loaded one has been stripped");
+}
+
+/// What the seal does not cover stays editable without breaking it.
+///
+/// The verifier writes `attestation` and `verdict` onto an assembled record
+/// (`andon-ledger-min`'s `verify`), and policy rewrites `severity` — all after
+/// sealing, all by design outside `ResultDigestInput`. If any of them ever
+/// moved inside, the verifier would refuse its own attestation records on
+/// read-back.
+#[test]
+fn fields_outside_the_digest_do_not_break_the_seal() {
+    let mut record = crate::testing::sample_record();
+    record.attestation.value = crate::schema::enums::Attestation::Confirmed;
+    record.verdict.verdict = Verdict::Block;
+    record.results[0].severity = Severity::Critical;
+    record.results[0].deterministic = false;
+    record.results[0].freshness.duration_ms = 9_999;
+    record
+        .verify_seals()
+        .expect("nothing the seal covers has moved");
+}
+
 #[test]
 fn assembly_does_not_disturb_a_sealed_digest() {
     // Everything assembly writes — severity, evidence — is outside

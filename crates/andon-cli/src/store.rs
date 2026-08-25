@@ -103,9 +103,19 @@ pub fn write_last(git: &Git, record: &MeasurementRecord) -> Result<PathBuf, Stri
 }
 
 /// Read a record from an explicit path.
+///
+/// The seal check is part of the read, not a courtesy after it: `report`,
+/// `wait`, and `explain` have no recompute to compare against, so a record
+/// whose fields no longer hash to its own digests would otherwise render as
+/// authoritatively as an honest one.
 pub fn read_record(path: &Path) -> Result<MeasurementRecord, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+    let record: MeasurementRecord =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    record
+        .verify_seals()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(record)
 }
 
 /// Read the last record of this checkout, or say there is none.
@@ -123,4 +133,34 @@ pub fn read_last(git: &Git) -> Result<MeasurementRecord, String> {
         ));
     }
     read_record(&path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use andon_core::schema::payload::MetricValue;
+    use andon_core::testing::sample_record;
+
+    /// A record whose value was edited without re-sealing must not read back.
+    ///
+    /// This loader is the gate `report`, `report --input`, `wait`, and
+    /// `explain` all read through, and none of them has a recompute to compare
+    /// against — the read itself is the only place the edit can be noticed.
+    #[test]
+    fn a_value_edited_without_resealing_does_not_read_back() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("record.json");
+
+        let mut record = sample_record();
+        let honest = andon_core::canonical::to_canonical_string(&record).expect("serializes");
+        std::fs::write(&path, honest).expect("writes");
+        read_record(&path).expect("an honest record reads back");
+
+        record.results[0].value = MetricValue::Count(999_999);
+        let tampered = andon_core::canonical::to_canonical_string(&record).expect("serializes");
+        std::fs::write(&path, tampered).expect("writes");
+        let err =
+            read_record(&path).expect_err("a record that contradicts itself must not read back");
+        assert!(err.contains("sample.metric"), "{err}");
+    }
 }

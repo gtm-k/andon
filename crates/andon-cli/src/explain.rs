@@ -148,9 +148,27 @@ pub fn run(
     let registry =
         measure::load_registry(registry_dir, &policy, as_of).map_err(|e| e.to_string())?;
     let subject = subject_of(query)?;
+    // `explain` works without a record, and a fresh checkout has none — that
+    // absence stays silent. A record that EXISTS and refuses to read is a
+    // different fact: swallowing it into the same `None` would render the page
+    // as if nothing were recorded, which is exactly the invisible-refusal shape
+    // `verify_seals` exists to prevent. The reader is told and the explanation
+    // still prints.
+    //
+    // On stderr rather than stdout because this body is shared with the MCP
+    // server's `explain_finding`, where stdout carries the protocol and a stray
+    // line on it is a transport error rather than a message.
     let record = git
         .as_ref()
-        .and_then(|git| crate::store::read_last(git).ok());
+        .and_then(|git| match crate::store::read_last(git) {
+            Ok(record) => Some(record),
+            Err(why) => {
+                if crate::store::last_record_path(git).exists() {
+                    eprintln!("explain: the last measurement exists and was not used: {why}");
+                }
+                None
+            }
+        });
     explain(&subject, &policy, &registry, record.as_ref())
 }
 

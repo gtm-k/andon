@@ -49,6 +49,19 @@ pub enum RecordError {
         #[source]
         source: serde_json::Error,
     },
+    /// The file parsed as a record whose fields do not hash to its own digests.
+    ///
+    /// The matrix's whole question is whether independent legs produced the
+    /// same bytes, and a leg record edited after sealing would answer it with
+    /// bytes nobody produced.
+    #[error("{path} holds a record that cannot be believed: {source}")]
+    SealBroken {
+        /// The file at fault.
+        path: String,
+        /// Which seal does not hold, and why that is a refusal.
+        #[source]
+        source: andon_core::schema::payload::SealError,
+    },
     /// The record could not be canonically serialized.
     #[error(transparent)]
     Canonical(#[from] CanonicalError),
@@ -60,10 +73,18 @@ pub fn read(path: &Path) -> Result<MeasurementRecord, RecordError> {
         detail: format!("read {}", path.display()),
         source,
     })?;
-    serde_json::from_str(&text).map_err(|source| RecordError::Parse {
-        path: path.display().to_string(),
-        source,
-    })
+    let record: MeasurementRecord =
+        serde_json::from_str(&text).map_err(|source| RecordError::Parse {
+            path: path.display().to_string(),
+            source,
+        })?;
+    record
+        .verify_seals()
+        .map_err(|source| RecordError::SealBroken {
+            path: path.display().to_string(),
+            source,
+        })?;
+    Ok(record)
 }
 
 /// Write a record as canonical JSON.
