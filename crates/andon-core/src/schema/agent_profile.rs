@@ -28,6 +28,14 @@ pub const PROFILE_NAME: &str = "agent-mode";
 pub struct AgentProfileBounds {
     /// Hard cap on findings, before the byte budget is even consulted.
     pub max_findings: usize,
+    /// Hard cap on verdict reasons, before the byte budget is consulted.
+    ///
+    /// Higher than the number of reason codes that can realistically co-fire, so
+    /// this cap is a runaway guard rather than a routine cut: the vocabulary is
+    /// 16 codes and a single verdict draws on a handful. Reasons are filled
+    /// before findings, so under a hostile budget the agent keeps the answer to
+    /// "why" and loses detail, never the reverse.
+    pub max_reasons: usize,
     /// Byte cap on identifier-like strings.
     pub max_string_bytes: usize,
     /// Byte cap on the free-text hint.
@@ -46,6 +54,7 @@ impl AgentProfileBounds {
     pub fn from_token_budget(tokens: u32, bytes_per_token: u32) -> Self {
         Self {
             max_findings: 12,
+            max_reasons: 8,
             max_string_bytes: 64,
             max_hint_bytes: 128,
             budget_bytes: (tokens as usize) * (bytes_per_token as usize),
@@ -143,6 +152,47 @@ pub struct AgentProfile {
     pub truncated: bool,
     /// How many findings the full record held.
     pub total_findings: u32,
+    /// Why the verdict came out the way it did, worst first.
+    ///
+    /// # The gap this closes
+    ///
+    /// An agent could be told `block` with nothing in this payload explaining
+    /// it. Of the 16 `VerdictReason` codes, four — `policy-change`,
+    /// `policy-change-loosening`, `evidence-registry-skew`,
+    /// `iteration-state-reset` — have no backing `MeasurementResult` and no
+    /// field of their own, so they reached the agent through nothing at all;
+    /// four more moved a field that never said which cause moved it. Only six
+    /// are backed by a real result and arrive via `findings`.
+    ///
+    /// The worst of them was `policy-change-loosening`, which fires exactly when
+    /// an agent edits `.andon.toml` mid-change — the scenario the rule exists to
+    /// police — and produced a silent `block` an agent could not act on. The
+    /// server's own instructions say "on `block`, fix what the findings name",
+    /// and the findings named nothing.
+    ///
+    /// Additive with `#[serde(default)]`, the same shape `verdict_invalid` used,
+    /// so a v1 consumer that predates this field still parses.
+    #[serde(default)]
+    pub reasons: Vec<AgentReason>,
+    /// How many reasons the full record held.
+    #[serde(default)]
+    pub total_reasons: u32,
+}
+
+/// One verdict reason, trimmed for an agent's context.
+///
+/// The `metric_ids` a `VerdictReason` carries are deliberately not projected:
+/// where they exist the metrics are already in `findings`, and where the reason
+/// class has no backing result the list is empty. Repeating it would spend
+/// budget to say what the payload says elsewhere or nothing at all.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentReason {
+    /// Stable machine code, e.g. `policy-change-loosening`, `tamper-signal`.
+    pub code: String,
+    /// How serious this reason is.
+    pub severity: Severity,
+    /// The reason's own explanation, in its own words.
+    pub message: String,
 }
 
 /// One finding, trimmed for an agent's context.
@@ -198,7 +248,50 @@ pub fn build_agent_profile(
         findings: Vec::new(),
         truncated: false,
         total_findings: record.results.len() as u32,
+        reasons: Vec::new(),
+        total_reasons: record.verdict.reasons.len() as u32,
     };
+
+    // REASONS BEFORE FINDINGS, and the order is the point rather than an
+    // accident of where the code was added.
+    //
+    // A verdict an agent cannot explain is the defect this field closes, so when
+    // a budget squeeze forces a cut the agent keeps "why" and loses the Nth
+    // detail — never the reverse. Findings are elaboration; a `block` with no
+    // reason is a locked door with no sign on it.
+    //
+    // Sorted worst-first with `code` breaking ties, so the projection is
+    // deterministic and two runs over one record cannot disagree about what was
+    // dropped — the same rule the findings sort follows below.
+    //
+    // `metric_ids` is deliberately not carried: where a reason has them the
+    // metrics are already in `findings`, and where it does not the list is
+    // empty. The message takes the hint cap rather than the identifier cap
+    // because it is prose written for a reader, and its first clause is the part
+    // that names what to do.
+    let mut reason_candidates: Vec<&crate::schema::payload::VerdictReason> =
+        record.verdict.reasons.iter().collect();
+    reason_candidates.sort_by(|a, b| {
+        b.severity
+            .cmp(&a.severity)
+            .then_with(|| a.code.cmp(&b.code))
+    });
+
+    let reasons_dropped_by_count = reason_candidates.len() > bounds.max_reasons;
+    for reason in reason_candidates.iter().take(bounds.max_reasons) {
+        profile.reasons.push(AgentReason {
+            code: truncate_bytes(&reason.code, bounds.max_string_bytes),
+            severity: reason.severity,
+            message: truncate_bytes(&reason.message, bounds.max_hint_bytes),
+        });
+        if encoded_len(&profile) > bounds.budget_bytes {
+            // This reason pushed us over; drop it and stop.
+            profile.reasons.pop();
+            profile.truncated = true;
+            break;
+        }
+    }
+    profile.truncated = profile.truncated || reasons_dropped_by_count;
 
     // Worst first: if the budget forces a cut, the agent keeps what matters.
     // `metric_id` breaks severity ties so the projection is deterministic and
@@ -240,8 +333,9 @@ pub fn build_agent_profile(
     // The header alone can only exceed the budget under absurdly small bounds.
     // Say so rather than silently shipping an over-budget payload.
     debug_assert!(
-        encoded_len(&profile) <= bounds.budget_bytes || profile.findings.is_empty(),
-        "agent profile exceeded its budget with findings still attached"
+        encoded_len(&profile) <= bounds.budget_bytes
+            || (profile.findings.is_empty() && profile.reasons.is_empty()),
+        "agent profile exceeded its budget with findings or reasons still attached"
     );
     profile
 }
@@ -340,5 +434,82 @@ mod tests {
         assert_eq!(profile.profile, PROFILE_NAME);
         // The sample record is unwitnessed, so it must not read as countable.
         assert!(!profile.counts_downstream);
+    }
+
+    /// A reason with no backing result — the class that reached an agent
+    /// through nothing at all before this field existed.
+    fn loosening_reason() -> crate::schema::payload::VerdictReason {
+        crate::schema::payload::VerdictReason {
+            code: "policy-change-loosening".to_string(),
+            severity: Severity::High,
+            message: "policy loosened with no ledgered justification:                       sandbox.test_timeout_ms: 600000 -> 30000 (loosens)"
+                .to_string(),
+            metric_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_reason_with_no_backing_result_still_reaches_the_agent() {
+        // The defect this field closes. `policy-change-loosening` is computed
+        // with no `MeasurementResult` behind it, so before `reasons` existed an
+        // agent received a verdict and nothing whatsoever explaining it — and
+        // this is the code that fires exactly when an agent edits `.andon.toml`
+        // mid-change, the case the rule exists to police.
+        let mut record = crate::testing::sample_record();
+        record.verdict.reasons = vec![loosening_reason()];
+
+        let profile = build_agent_profile(&record, &AgentProfileBounds::default());
+
+        assert_eq!(profile.total_reasons, 1);
+        let reason = profile
+            .reasons
+            .first()
+            .expect("a reason with no result behind it must still be projected");
+        assert_eq!(reason.code, "policy-change-loosening");
+        assert!(
+            reason.message.contains("no ledgered justification"),
+            "the reason's own words are the actionable part: {}",
+            reason.message
+        );
+        // And it is genuinely not reachable the other way: nothing in findings
+        // describes it, which is why the field was needed.
+        assert!(
+            !profile
+                .findings
+                .iter()
+                .any(|f| f.metric_id.contains("policy")),
+            "no finding backs this reason; that is the whole point"
+        );
+    }
+
+    #[test]
+    fn a_squeezed_budget_keeps_why_and_drops_detail() {
+        // Ordering, asserted rather than assumed. Reasons are filled before
+        // findings so a budget cut costs the Nth detail and never the answer to
+        // "why am I blocked" — the inverse would reintroduce the defect under
+        // exactly the conditions that make it hardest to debug.
+        let mut record = crate::testing::sample_record();
+        record.verdict.reasons = vec![loosening_reason()];
+
+        // Tight enough that the header plus one reason is about all that fits.
+        let bounds = AgentProfileBounds {
+            budget_bytes: 900,
+            ..AgentProfileBounds::default()
+        };
+        let profile = build_agent_profile(&record, &bounds);
+
+        assert!(
+            !profile.reasons.is_empty(),
+            "the reason must survive a squeeze that cuts findings:
+{profile:?}"
+        );
+        assert!(
+            profile.truncated,
+            "a squeeze that drops anything has to say so"
+        );
+        assert!(
+            encoded_len(&profile) <= bounds.budget_bytes,
+            "the budget is a guarantee, not a target"
+        );
     }
 }

@@ -422,14 +422,17 @@ fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
 
     // One body with the MCP server's `explain_finding` (`explain::run`), so the
     // two surfaces cannot answer one question differently.
-    print!(
-        "{}",
-        explain::run(
-            &flags.path("repo", "."),
-            flags.get("registry").map(std::path::Path::new),
-            query,
-        )?
-    );
+    let explained = explain::run(
+        &flags.path("repo", "."),
+        flags.get("registry").map(std::path::Path::new),
+        query,
+    )?;
+    // stderr for the terminal reader, so the explanation on stdout stays
+    // pipeable. The MCP surface appends the same notice as its own block.
+    if let Some(notice) = &explained.notice {
+        eprintln!("explain: {notice}");
+    }
+    print!("{}", explained.answer);
     println!();
     Ok(ExitCode::SUCCESS)
 }

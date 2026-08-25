@@ -339,7 +339,19 @@ impl AndonMcp {
     )]
     fn explain_finding(&self, Parameters(p): Parameters<ExplainParams>) -> CallToolResult {
         match explain::run(&repo_path(&p.repo), None, &p.id) {
-            Ok(answer) => text(answer),
+            // The notice rides as its own block rather than being concatenated
+            // into the answer, the shape `measure_change` and `await_results`
+            // already use: one parseable thing per block. A record that exists
+            // and was refused is a different fact from no record at all, and an
+            // agent that cannot tell them apart re-runs a measurement it already
+            // has instead of investigating why the one on disk is unreadable.
+            Ok(explained) => match explained.notice {
+                None => text(explained.answer),
+                Some(notice) => CallToolResult::success(vec![
+                    ContentBlock::text(explained.answer),
+                    ContentBlock::text(format!("note     {notice}")),
+                ]),
+            },
             Err(e) => refusal(e),
         }
     }
