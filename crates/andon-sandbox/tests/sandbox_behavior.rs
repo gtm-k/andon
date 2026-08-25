@@ -484,3 +484,39 @@ fn the_compiled_registry_declares_exactly_what_the_engine_emits() {
         );
     }
 }
+
+#[test]
+fn a_declared_command_does_not_spill_while_the_lane_is_disabled() {
+    // P7's F4, pinned at last. The behaviour was correct all along and was
+    // verified by hand twice — once at P7's review, once at the 2026-08-25
+    // re-verdict — and nothing in the suite defended it, so a regression would
+    // have been silent both times.
+    //
+    // `enabled` is the rollback path for the only v1 code-exec surface. A
+    // repository that declares a `test_command` and then turns the lane off is
+    // saying "do not run my code", and the switch has to win over the
+    // declaration rather than merely reorder it: a `false` that still spilled
+    // would execute a command an operator had explicitly disabled, which is the
+    // failure this flag exists to make impossible.
+    //
+    // Asserted through `from_policy` because that is the seam where the lane is
+    // decided — no engine, no job, nothing to spill. Testing further downstream
+    // would pin the consequence rather than the rule.
+    let mut policy = lane_policy("this command must never run");
+    policy.sandbox.enabled = false;
+
+    assert!(
+        TestCommandEngine::from_policy(&policy).is_none(),
+        "the lane is disabled, so a declared test_command must produce no engine"
+    );
+
+    // The other half, so the test cannot pass because the command went missing:
+    // the identical policy with the switch back on DOES produce one. Without
+    // this, an unrelated change that stopped reading `test_command` at all would
+    // leave the assertion above green and meaningless.
+    policy.sandbox.enabled = true;
+    assert!(
+        TestCommandEngine::from_policy(&policy).is_some(),
+        "the same declaration with the lane enabled must still produce an engine"
+    );
+}
