@@ -579,7 +579,7 @@
       "type": "integer"
     },
     "truncated": {
-      "description": "True when findings were dropped to stay inside the budget.",
+      "description": "True when anything — findings or reasons — was dropped to stay inside the budget.\n\nOne flag covers both, so it does not say WHICH was cut. To check reasons specifically, compare `reasons.len()` against [`Self::total_reasons`]; for findings, `findings.len()` against [`Self::total_findings`]. Named here because a consumer that trusts the flag alone learns that something was lost and not that the explanation was.",
       "type": "boolean"
     },
     "unread_paths": {

@@ -30,11 +30,22 @@ pub struct AgentProfileBounds {
     pub max_findings: usize,
     /// Hard cap on verdict reasons, before the byte budget is consulted.
     ///
-    /// Higher than the number of reason codes that can realistically co-fire, so
-    /// this cap is a runaway guard rather than a routine cut: the vocabulary is
-    /// 16 codes and a single verdict draws on a handful. Reasons are filled
-    /// before findings, so under a hostile budget the agent keeps the answer to
-    /// "why" and loses detail, never the reverse.
+    /// **Sized against the adversarial case, not the common one, because the
+    /// adversarial case is the one this projection exists for.** An earlier
+    /// version of this comment reasoned "the vocabulary is 16 codes and a single
+    /// verdict draws on a handful" and set the cap at 8. That was wrong, and a
+    /// review disproved it by building one realistic commit: the vocabulary is
+    /// not the constraint, because `tamper-signal` is pushed **once per firing
+    /// detector** (`verdict::compute`'s per-result loop) rather than aggregated
+    /// the way `severity-med-plus` and `finding-advisory` are. Seven detectors
+    /// exist, a multi-vector gaming attempt fires several at once, and that
+    /// probe produced ten reasons — silently dropping `policy-change`, one of
+    /// the four codes this whole field was added to make visible.
+    ///
+    /// So the bound is derived: up to 7 from the tamper family, at most 1 from
+    /// the test-failure family, and the remaining single-push codes, which comes
+    /// to roughly 20. The byte budget is the real guarantee; this stays a
+    /// runaway guard, and now it is actually sized like one.
     pub max_reasons: usize,
     /// Byte cap on identifier-like strings.
     pub max_string_bytes: usize,
@@ -54,7 +65,7 @@ impl AgentProfileBounds {
     pub fn from_token_budget(tokens: u32, bytes_per_token: u32) -> Self {
         Self {
             max_findings: 12,
-            max_reasons: 8,
+            max_reasons: 20,
             max_string_bytes: 64,
             max_hint_bytes: 128,
             budget_bytes: (tokens as usize) * (bytes_per_token as usize),
@@ -148,7 +159,14 @@ pub struct AgentProfile {
     pub iteration: IterationState,
     /// Findings, worst first, cut to fit the budget.
     pub findings: Vec<AgentFinding>,
-    /// True when findings were dropped to stay inside the budget.
+    /// True when anything — findings or reasons — was dropped to stay inside
+    /// the budget.
+    ///
+    /// One flag covers both, so it does not say WHICH was cut. To check reasons
+    /// specifically, compare `reasons.len()` against [`Self::total_reasons`];
+    /// for findings, `findings.len()` against [`Self::total_findings`]. Named
+    /// here because a consumer that trusts the flag alone learns that something
+    /// was lost and not that the explanation was.
     pub truncated: bool,
     /// How many findings the full record held.
     pub total_findings: u32,
@@ -255,10 +273,12 @@ pub fn build_agent_profile(
     // REASONS BEFORE FINDINGS, and the order is the point rather than an
     // accident of where the code was added.
     //
-    // A verdict an agent cannot explain is the defect this field closes, so when
-    // a budget squeeze forces a cut the agent keeps "why" and loses the Nth
-    // detail — never the reverse. Findings are elaboration; a `block` with no
-    // reason is a locked door with no sign on it.
+    // A verdict an agent cannot explain is the defect this field closes, so a
+    // budget squeeze spends findings before it spends reasons. That is a
+    // RELATIVE priority, not a guarantee that every reason survives: reasons can
+    // still be cut, by `max_reasons` or by the byte budget, and `truncated` says
+    // so. Findings are elaboration; a `block` with no reason is a locked door
+    // with no sign on it.
     //
     // Sorted worst-first with `code` breaking ties, so the projection is
     // deterministic and two runs over one record cannot disagree about what was
@@ -479,6 +499,78 @@ mod tests {
                 .iter()
                 .any(|f| f.metric_id.contains("policy")),
             "no finding backs this reason; that is the whole point"
+        );
+    }
+
+    #[test]
+    fn every_tamper_detector_firing_at_once_still_fits() {
+        // The case the first cap got wrong, pinned. `tamper-signal` is pushed
+        // once per FIRING DETECTOR rather than aggregated the way
+        // `severity-med-plus` is, so a multi-vector gaming attempt — the exact
+        // adversary this tool is positioned against — produces one reason per
+        // detector plus everything else the change triggers.
+        //
+        // A review built this shape from a single real commit and got ten
+        // reasons against a cap of eight. The two silently dropped were
+        // `policy-change` and `measurement-incomplete`, and `policy-change` is
+        // one of the four codes the `reasons` field exists to make visible: the
+        // feature was hiding its own headline case.
+        let mut record = crate::testing::sample_record();
+        let detectors = [
+            "test-removal",
+            "suppression-density",
+            "assertion-free-test",
+            "coverage-exclusion-drift",
+            "threshold-config-edit",
+            "lookup-table-blowup",
+            "parse-error-delta",
+        ];
+        record.verdict.reasons = detectors
+            .iter()
+            .map(|d| crate::schema::payload::VerdictReason {
+                code: "tamper-signal".to_string(),
+                severity: Severity::Critical,
+                message: format!("tamper.{d} fired on this change"),
+                metric_ids: vec![format!("tamper.{d}")],
+            })
+            .chain([
+                loosening_reason(),
+                crate::schema::payload::VerdictReason {
+                    code: "policy-change".to_string(),
+                    severity: Severity::Low,
+                    message: "policy edited in this change".to_string(),
+                    metric_ids: Vec::new(),
+                },
+                crate::schema::payload::VerdictReason {
+                    code: "measurement-incomplete".to_string(),
+                    severity: Severity::Info,
+                    message: "this measurement is unwitnessed".to_string(),
+                    metric_ids: Vec::new(),
+                },
+            ])
+            .collect();
+
+        let profile = build_agent_profile(&record, &AgentProfileBounds::default());
+
+        assert_eq!(profile.total_reasons, 10);
+        assert_eq!(
+            profile.reasons.len(),
+            10,
+            "all ten must survive the default bounds; the count cap is a runaway              guard, not a routine cut:
+{:?}",
+            profile.reasons.iter().map(|r| &r.code).collect::<Vec<_>>()
+        );
+        // The specific regression: the low-severity policy code sorts last and
+        // is what a too-small cap eats first.
+        assert!(
+            profile.reasons.iter().any(|r| r.code == "policy-change"),
+            "the code this field exists for must not be the one dropped"
+        );
+        // Reasons must not have eaten the whole payload — an agent needs where
+        // as well as why.
+        assert!(
+            !profile.findings.is_empty(),
+            "reasons-first must not starve findings entirely"
         );
     }
 
