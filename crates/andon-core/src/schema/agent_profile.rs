@@ -47,13 +47,20 @@ pub struct AgentProfileBounds {
     /// (tamper) and the `fired_suite_failure` filter (test-failure); the other
     /// twelve codes are each a single condition and a single push. The tamper
     /// ceiling is 7 rather than 8 because `TamperSignal::BaseFabrication` is
-    /// verifier-only and never arrives as a result. 7 + 1 + 12 = **20**, with no
-    /// slack beyond it: nothing in the current vocabulary can produce a 21st.
+    /// raised by the attest lane, never by anything that reads content — and
+    /// that is test-pinned, not merely documented, by
+    /// `detectors::tests::base_fabrication_is_not_one_of_ours`. 7 + 1 + 12 =
+    /// **20**, with no slack beyond it: nothing in the current vocabulary can
+    /// produce a 21st.
     ///
-    /// That exactness carries an obligation. An eighth tamper detector, or a
-    /// third multiplying family, moves this number — and the failure mode is
-    /// silent, since an agent would simply stop seeing a reason. Any change to
-    /// either loop re-derives this.
+    /// That exactness carries an obligation, and it is partly defended already.
+    /// An eighth tamper detector would trip `assert_eq!(signals.len(), 7)` and
+    /// `assert_eq!(metrics.len(), 14)` in the same test module before it could
+    /// raise this ceiling quietly — so whoever fixes those is the person who
+    /// must re-derive this number. What is NOT defended is a third multiplying
+    /// construction in `verdict::compute`: nothing counts those loops, and
+    /// adding one would raise the true ceiling with no test objecting. That is
+    /// the silent path, and it is the narrow one.
     pub max_reasons: usize,
     /// Byte cap on identifier-like strings.
     pub max_string_bytes: usize,
