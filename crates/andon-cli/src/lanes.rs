@@ -28,7 +28,11 @@ use andon_core::schema::enums::{Completeness, Lane, Verdict};
 use andon_core::schema::payload::MeasurementRecord;
 
 /// What the async lane owes this record.
-pub fn wait(record: &MeasurementRecord) -> String {
+///
+/// `job_completed` says whether `jobs::complete` ran a pending job in THIS
+/// invocation. It is passed rather than inferred because a job that ran and died
+/// leaves nothing in the record to distinguish it from one that never existed.
+pub fn wait(record: &MeasurementRecord, job_completed: bool) -> String {
     let mut out = String::new();
     let async_results: Vec<&_> = record
         .results
@@ -117,12 +121,7 @@ pub fn wait(record: &MeasurementRecord) -> String {
                  `andon ledger ack` records that a human looked, and clears the counter.",
                 record.verdict.iteration.count, record.verdict.iteration.cap
             );
-        } else if let Some(unanswered) = record
-            .verdict
-            .reasons
-            .iter()
-            .find(|r| r.code == "engine-unavailable" || r.code == "measurement-incomplete")
-        {
+        } else if job_completed {
             // AN EMPTY ASYNC LANE IS NOT PROOF THAT NOTHING WAS DEFERRED.
             //
             // This is the escalation bug above, a second time. Deferred work
@@ -134,16 +133,29 @@ pub fn wait(record: &MeasurementRecord) -> String {
             // the log file that proves one was, in the one command somebody
             // runs to find out whether they can move on.
             //
-            // The record already carries the honest answer as a reason. Read it
-            // rather than inferring from a count: the count cannot distinguish
-            // "nothing was deferred" from "something was deferred and died".
+            // THE PREDICATE IS THE FACT, NOT A PROXY FOR IT. The first repair
+            // keyed on a `measurement-incomplete` reason, which
+            // `verdict::compute` emits whenever completeness is not Complete —
+            // a condition whose own comment says it "would fire on nearly every
+            // change", because an ordinary repo has legitimately unwitnessed
+            // results (no coverage report, no complexity input). That turned a
+            // sentence that was wrong on rare timeouts into one wrong on most
+            // ordinary runs. `engine-unavailable` is no better: five sync
+            // engines share the code, so a `clones` crash with no sandbox
+            // configured reads identically.
+            //
+            // `jobs::complete` already answers this exactly — `Some` means a job
+            // was pending and ran in THIS invocation — so the caller passes that
+            // rather than this function guessing from what the job left behind.
+            // It also makes a second `wait` correct for free: nothing is pending
+            // the second time, so nothing claims to have just run.
             let _ = writeln!(
                 out,
                 "\n  DEFERRED WORK RAN AND ANSWERED NOTHING. This command completed a job that \
                  produced no result, so the async lane is empty for a reason that is not \
-                 absence:\n    {}  {}\n  That is an unanswered question, not a passing test. \
-                 The verdict above was reached WITHOUT the answer.",
-                unanswered.code, unanswered.message
+                 absence — a test command killed at its timeout emits no result at all.\n  \
+                 That is an unanswered question, not a passing test. The verdict above was \
+                 reached WITHOUT the answer."
             );
         } else {
             let _ = writeln!(
@@ -230,7 +242,7 @@ mod tests {
 
     #[test]
     fn a_fast_only_record_reports_nothing_outstanding() {
-        let text = wait(&record(vec![sample_result()]));
+        let text = wait(&record(vec![sample_result()]), false);
         assert!(text.contains("Nothing is outstanding"), "{text}");
     }
 
@@ -242,21 +254,18 @@ mod tests {
         // measurement where nothing was ever deferred. It reported the second,
         // one line under the log file proving the first.
         //
-        // Fixtured from the reason the record actually carries, not from a flag
-        // this test invents: `engine-unavailable` is what a timed-out lane
-        // records, so a record without one is genuinely fast-only and the test
-        // above still holds.
-        let mut r = record(vec![sample_result()]);
-        r.verdict
-            .reasons
-            .push(andon_core::schema::payload::VerdictReason {
-                code: "engine-unavailable".to_string(),
-                severity: andon_core::schema::enums::Severity::Low,
-                message: "the declared test command was killed at its timeout".to_string(),
-                metric_ids: Vec::new(),
-            });
-
-        let text = wait(&r);
+        // The record here is deliberately ORDINARY — complete, no reasons. That
+        // is the point, and it is the second attempt at this test.
+        //
+        // The first keyed on a `measurement-incomplete` reason and argued, in
+        // this comment, that reading the record beat "a flag this test invents".
+        // That was wrong twice over: `verdict::compute` emits that reason
+        // whenever completeness is not Complete, a condition its own source
+        // comment says "would fire on nearly every change", so the sentence went
+        // from wrong on rare timeouts to wrong on ordinary runs. And the flag is
+        // not invented — `jobs::complete` returning `Some` IS the fact, known
+        // only to the caller and unrecoverable from the record afterwards.
+        let text = wait(&record(vec![sample_result()]), true);
         assert!(
             !text.contains("no deferred work was pending"),
             "a job ran and died; the report must not call that nothing deferred: {text}"
@@ -265,10 +274,31 @@ mod tests {
             text.contains("DEFERRED WORK RAN AND ANSWERED NOTHING"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn an_unwitnessed_record_with_no_job_is_not_told_one_ran() {
+        // The regression the first repair shipped, pinned. An ordinary repo
+        // routinely carries legitimately unwitnessed results — no coverage
+        // report, no complexity input for a path — which is not a deferred job
+        // dying and must never be reported as one.
+        let mut r = record(vec![sample_result()]);
+        r.completeness = Completeness::Unwitnessed;
+        r.verdict
+            .reasons
+            .push(andon_core::schema::payload::VerdictReason {
+                code: "measurement-incomplete".to_string(),
+                severity: andon_core::schema::enums::Severity::Info,
+                message: "this measurement is unwitnessed".to_string(),
+                metric_ids: Vec::new(),
+            });
+
+        let text = wait(&r, false);
         assert!(
-            text.contains("the declared test command was killed at its timeout"),
-            "the reason's own message is the honest account and must be quoted: {text}"
+            !text.contains("DEFERRED WORK RAN"),
+            "no job ran; an unwitnessed result must not be reported as one that did:\n{text}"
         );
+        assert!(text.contains("Nothing is outstanding"), "{text}");
     }
 
     #[test]
@@ -288,7 +318,7 @@ mod tests {
             cap: 3,
             escalated: true,
         };
-        let text = wait(&record);
+        let text = wait(&record, false);
         assert!(
             !text.contains("Nothing is outstanding"),
             "an escalation was reported as nothing outstanding:\n{text}"
@@ -304,7 +334,7 @@ mod tests {
     fn an_ordinary_record_still_reports_nothing_outstanding() {
         // The other half: the new sentence must not fire on the records it is
         // not about.
-        let text = wait(&record(vec![sample_result()]));
+        let text = wait(&record(vec![sample_result()]), false);
         assert!(text.contains("Nothing is outstanding"), "{text}");
         assert!(!text.contains("A HUMAN IS OUTSTANDING"), "{text}");
     }
@@ -315,7 +345,7 @@ mod tests {
         // `freshness.lane` rather than from a constant that says "no lane yet".
         let mut result = sample_result();
         result.freshness.lane = Lane::Async;
-        let text = wait(&record(vec![result]));
+        let text = wait(&record(vec![result]), false);
         assert!(!text.contains("Nothing is outstanding"), "{text}");
         assert!(text.contains("async lane"), "{text}");
     }

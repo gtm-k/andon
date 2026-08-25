@@ -448,8 +448,14 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&["repo", "input"])?;
-    let record = match flags.get("input") {
-        Some(path) => store::read_record(std::path::Path::new(path))?,
+    // Whether a job actually ran HERE travels with the record, because nothing
+    // in the record distinguishes a job that ran and died from one that never
+    // existed: a timeout emits no result at all. `wait` used to infer it from an
+    // empty async lane and told the reader no work had been deferred, one line
+    // under the notice naming the log file that proved otherwise.
+    let (record, job_ran) = match flags.get("input") {
+        // A record read from a file: this invocation ran nothing.
+        Some(path) => (store::read_record(std::path::Path::new(path))?, false),
         None => {
             let repo = flags.path("repo", ".");
             // Execute anything pending before rendering, so the report below
@@ -457,7 +463,7 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
             let completed = andon_cli::jobs::complete(&repo)?;
             let git = Git::open(&repo).map_err(|e| e.to_string())?;
             match completed {
-                None => store::read_last(&git)?,
+                None => (store::read_last(&git)?, false),
                 Some(completion) => {
                     for notice in &completion.notices {
                         eprintln!("andon: {notice}");
@@ -467,12 +473,12 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
                             ledger::record(&git, &completion.record, &completion.ledger_anchor)?;
                         eprintln!("andon: {note}");
                     }
-                    completion.record
+                    (completion.record, true)
                 }
             }
         }
     };
-    print!("{}", lanes::wait(&record));
+    print!("{}", lanes::wait(&record, job_ran));
     Ok(code_for_record(&record, flags.on("exit-zero")))
 }
 
