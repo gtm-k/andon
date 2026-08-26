@@ -278,22 +278,20 @@ pub fn slice(entries: &[LedgerEntry], dimension: Dimension) -> BTreeMap<String, 
     out
 }
 
-/// Which engine family a regime belongs to, from the enum rather than from its
-/// label text.
+/// Which engine family a regime belongs to, in its wire spelling.
 ///
-/// Exhaustive for the same reason [`regime_label`] is: a new variant must fail
-/// compilation here rather than fall through to a family that hides it. Parsing
-/// the family back out of a label would be a restated fact — correct until the
-/// label format moves, and silently wrong after.
-pub fn regime_family(regime: &MeasurementRegime) -> &'static str {
-    match regime {
-        MeasurementRegime::Static { .. } => "static",
-        MeasurementRegime::Clones { .. } => "clones",
-        MeasurementRegime::Tamper { .. } => "tamper",
-        MeasurementRegime::Process { .. } => "process",
-        MeasurementRegime::Artifacts { .. } => "artifacts",
-        MeasurementRegime::Tests { .. } => "tests",
-    }
+/// Composed rather than re-derived. `MeasurementRegime::family()` is already the
+/// canonical six-way mapping and `wire_name` already reads any unit enum's serde
+/// spelling, so writing a second `match` here — with the six names hand-typed —
+/// would have been two places encoding "which family is this regime", only one of
+/// them canonical. That is the restated-fact shape this project keeps finding in
+/// its own code: correct on the day it is written, and silently wrong the first
+/// time `EngineFamily`'s serde spelling moves under it.
+///
+/// A review caught it here. The first version passed its tests precisely because
+/// both copies agreed.
+pub fn regime_family(regime: &MeasurementRegime) -> String {
+    wire_name(&regime.family())
 }
 
 /// A one-line human label for a regime, naming every field of its variant.

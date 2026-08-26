@@ -283,7 +283,7 @@ pub fn window(
     let mut per_change: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     // family -> the distinct regimes seen for it, so a split is detected from the
     // enum rather than by counting labels (a record spans several by design).
-    let mut by_family: BTreeMap<&str, std::collections::BTreeSet<String>> = BTreeMap::new();
+    let mut by_family: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
 
     for entry in entries {
         let record = &entry.record;
@@ -338,9 +338,7 @@ pub fn window(
     // per family is the normal shape and says nothing at all.
     for (family, labels) in &by_family {
         if labels.len() > 1 {
-            report
-                .split_families
-                .insert((*family).to_string(), labels.len());
+            report.split_families.insert(family.clone(), labels.len());
         }
     }
 
