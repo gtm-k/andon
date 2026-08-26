@@ -161,7 +161,9 @@ pub fn run(workdir: &Path, spec: &ExecSpec) -> Result<ExecOutcome, SandboxError>
                 // what it measured — and the sandbox's worktree may still be
                 // being written to by something the record calls stopped.
                 ReapFailure::StillAlive => SandboxError::Spawn(format!(
-                    "the command exceeded its {}ms timeout and did not stop within {}s of being \n                     killed; the sandbox could not contain it and this measurement is \n                     abandoned rather than reported",
+                    "the command exceeded its {}ms timeout and did not stop within {}s of \
+                     being killed; the sandbox could not contain it and this \
+                     measurement is abandoned rather than reported",
                     spec.timeout_ms,
                     REAP_GRACE.as_secs()
                 )),
