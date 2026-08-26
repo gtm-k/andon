@@ -116,6 +116,44 @@ pub struct FpWindow {
     /// `policy_hash` values the in-window records carried, with record counts —
     /// the witness for "one policy governed this window" (or that none did).
     pub policy_hashes: BTreeMap<String, usize>,
+    /// Measurement regimes the in-window records were produced under, labeled,
+    /// with the number of records carrying each.
+    ///
+    /// # Why the window has to say this
+    ///
+    /// `policy_hashes` witnesses "one policy governed this window". Nothing
+    /// witnessed "one set of detector behaviours governed it", and the two are
+    /// different questions: a rule-pack bump, a grammar bump or an engine
+    /// upgrade moves the regime without touching the policy at all.
+    ///
+    /// That gap mattered because this window feeds the P10b entry gate. An
+    /// engine change mid-window would have pooled records measured under two
+    /// different detector behaviours into one false-positive rate, silently —
+    /// while [`crate::stats`], reading the same ledger, refuses to pool across
+    /// regimes without an explicit flag and cites PREMORTEM S4 for it. The
+    /// anti-gaming distribution surface treated cross-regime pooling as a
+    /// hazard; the surface authorising the release did it without a word.
+    ///
+    /// A regime is a property of each *result* rather than of a record, so one
+    /// record ordinarily spans several — one per engine family. A record is
+    /// counted once against every distinct regime it carries. More than a
+    /// handful of labels here, or a count that does not match `in_window`, means
+    /// the window is not homogeneous and the rate below pools across the split.
+    pub regimes: BTreeMap<String, usize>,
+    /// Engine families that carried MORE THAN ONE regime inside this window.
+    ///
+    /// Empty is the healthy state and the common one. A record spans several
+    /// regimes by design — one per engine family — so counting distinct labels
+    /// says nothing. What says something is one family measured two ways inside
+    /// one window: a rule-pack bump, a grammar bump, an engine version change.
+    /// That is the split the false-positive rate cannot honestly average over,
+    /// and the P10b entry gate has to either partition the window or justify
+    /// pooling it.
+    ///
+    /// Derived from the regime enum, never from label text: parsing a family out
+    /// of a rendered string is correct until the format moves and silently wrong
+    /// afterwards.
+    pub split_families: BTreeMap<String, usize>,
     /// In-window records by invocation source (wire spelling), because "honest
     /// changes" are expected to arrive through hooks and real sessions, and a
     /// window of nothing but `human-cli` re-runs would deserve a second look.
@@ -235,12 +273,17 @@ pub fn window(
         med_plus_by_metric: BTreeMap::new(),
         escalations: 0,
         policy_hashes: BTreeMap::new(),
+        regimes: BTreeMap::new(),
+        split_families: BTreeMap::new(),
         by_source: BTreeMap::new(),
     };
 
     // head_oid -> the metric ids that reached MED+ on that change (empty set =
     // measured, nothing fired).
     let mut per_change: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    // family -> the distinct regimes seen for it, so a split is detected from the
+    // enum rather than by counting labels (a record spans several by design).
+    let mut by_family: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
 
     for entry in entries {
         let record = &entry.record;
@@ -260,6 +303,20 @@ pub fn window(
             .policy_hashes
             .entry(record.policy_hash.clone())
             .or_insert(0) += 1;
+        // Deduplicated per record: a record with nine static results under one
+        // regime counts once for it, so these numbers are commensurable with
+        // `in_window` rather than with the result count.
+        let mut seen_regimes = std::collections::BTreeSet::new();
+        for result in &record.results {
+            seen_regimes.insert((
+                crate::stats::regime_family(&result.measurement_regime),
+                crate::stats::regime_label(&result.measurement_regime),
+            ));
+        }
+        for (family, label) in seen_regimes {
+            *report.regimes.entry(label.clone()).or_insert(0) += 1;
+            by_family.entry(family).or_default().insert(label);
+        }
         *report
             .by_source
             .entry(wire_name(&record.invocation.source))
@@ -274,6 +331,14 @@ pub fn window(
             if result.severity.is_med_plus() {
                 fired.insert(result.metric_id.as_str());
             }
+        }
+    }
+
+    // A family measured two ways inside one window is the finding; one regime
+    // per family is the normal shape and says nothing at all.
+    for (family, labels) in &by_family {
+        if labels.len() > 1 {
+            report.split_families.insert(family.clone(), labels.len());
         }
     }
 
@@ -594,5 +659,66 @@ mod tests {
         assert_eq!(report.days, 0.0);
         assert_eq!(report.med_plus_share(), None);
         assert_eq!(report.escalations_per_week(), None);
+    }
+    /// A `Static` regime differing only in engine version — the shape a rule
+    /// pack or engine bump produces mid-window.
+    fn static_regime(version: &str) -> andon_core::schema::regime::MeasurementRegime {
+        andon_core::schema::regime::MeasurementRegime::Static {
+            engine_version: version.to_string(),
+            spec_revision: "1".to_string(),
+            grammars: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn one_regime_per_family_is_not_a_split() {
+        // The shape every healthy window has. A record spans several regimes by
+        // design — one per engine family — so counting distinct labels would
+        // call every window split and the warning would mean nothing.
+        let mut a = record_on('a');
+        for r in &mut a.results {
+            r.measurement_regime = static_regime("1");
+        }
+        let landing = landed_at(&[&a], IN);
+        let report = window(&[entry(a)], &landing, SINCE, UNTIL).expect("window");
+
+        assert!(
+            report.split_families.is_empty(),
+            "one regime per family is the normal shape: {:?}",
+            report.split_families
+        );
+        assert_eq!(report.regimes.len(), 1, "{:?}", report.regimes);
+    }
+
+    #[test]
+    fn one_family_measured_two_ways_is_reported_as_a_split() {
+        // The case this field exists for, and the one that went unseen: a
+        // rule-pack or engine bump mid-window puts two regimes on one family,
+        // and the MED+ rate then averages across two detector behaviours.
+        // `stats` refuses that pooling by default and cites PREMORTEM S4; this
+        // window was doing it silently, in the number gating a public release.
+        let mut before = record_on('a');
+        for r in &mut before.results {
+            r.measurement_regime = static_regime("1");
+        }
+        let mut after = record_on('b');
+        for r in &mut after.results {
+            r.measurement_regime = static_regime("2");
+        }
+
+        let mut landing = landed_at(&[&before], SINCE);
+        landing.extend(landed_at(&[&after], IN));
+        let report =
+            window(&[entry(before), entry(after)], &landing, SINCE, UNTIL).expect("window");
+
+        assert_eq!(
+            report.split_families.get("static"),
+            Some(&2),
+            "one family measured two ways must be named: {:?}",
+            report.split_families
+        );
+        // The rate it would contaminate is still computed, deliberately: this
+        // command reports quantities and the P10b gate decides what to do.
+        assert_eq!(report.changes, 2);
     }
 }

@@ -278,6 +278,22 @@ pub fn slice(entries: &[LedgerEntry], dimension: Dimension) -> BTreeMap<String, 
     out
 }
 
+/// Which engine family a regime belongs to, in its wire spelling.
+///
+/// Composed rather than re-derived. `MeasurementRegime::family()` is already the
+/// canonical six-way mapping and `wire_name` already reads any unit enum's serde
+/// spelling, so writing a second `match` here — with the six names hand-typed —
+/// would have been two places encoding "which family is this regime", only one of
+/// them canonical. That is the restated-fact shape this project keeps finding in
+/// its own code: correct on the day it is written, and silently wrong the first
+/// time `EngineFamily`'s serde spelling moves under it.
+///
+/// A review caught it here. The first version passed its tests precisely because
+/// both copies agreed.
+pub fn regime_family(regime: &MeasurementRegime) -> String {
+    wire_name(&regime.family())
+}
+
 /// A one-line human label for a regime, naming every field of its variant.
 ///
 /// Exhaustive on purpose: a new regime variant must fail compilation here
