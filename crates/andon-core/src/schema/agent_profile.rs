@@ -590,6 +590,83 @@ mod tests {
     }
 
     #[test]
+    fn the_true_ceiling_of_twenty_still_leaves_room_for_findings() {
+        // D27. `every_tamper_detector_firing_at_once_still_fits` proves n=10 with
+        // short synthetic messages. The derived ceiling is 20, and the messages
+        // that reach it are not short: the single-push codes carry prose that
+        // hits the 128-byte hint cap in practice, where a tamper message runs
+        // about fifty. So the case nobody had measured is the one where the
+        // count is highest AND the strings are longest.
+        //
+        // Reasons fill before findings, so if twenty long reasons can exhaust
+        // the budget the agent gets the whole "why" and none of the "where" —
+        // which is a defensible trade only if somebody chose it, and nobody had.
+        let mut record = crate::testing::sample_record();
+
+        // Seven tamper reasons: one per detector, the multiplying family.
+        let mut reasons: Vec<crate::schema::payload::VerdictReason> = (0..7)
+            .map(|i| crate::schema::payload::VerdictReason {
+                code: "tamper-signal".to_string(),
+                severity: Severity::Critical,
+                message: format!(
+                    "tamper.detector-number-{i} fired on this change; the detector read a                      partial view, so its reported severity is capped and its finding is a                      lower bound — a firing is still a firing"
+                ),
+                metric_ids: vec![format!("tamper.detector-{i}")],
+            })
+            .collect();
+
+        // Thirteen single-push codes at realistic length. Every message here is
+        // longer than the 128-byte hint cap on purpose: truncation is part of
+        // what is being measured, not something to design around.
+        let long = "policy loosened with no ledgered justification:                     sandbox.test_timeout_ms: 600000 -> 30000 (loosens), and the justification                     the gate requires was not found in the ledger for this change";
+        for code in [
+            "test-failure",
+            "severity-med-plus",
+            "finding-advisory",
+            "policy-change",
+            "policy-change-loosening",
+            "engine-unavailable",
+            "engine-spilled-async",
+            "change-not-read",
+            "evidence-stale",
+            "evidence-registry-skew",
+            "measurement-incomplete",
+            "iteration-state-reset",
+            "iteration-cap",
+        ] {
+            reasons.push(crate::schema::payload::VerdictReason {
+                code: code.to_string(),
+                severity: Severity::Medium,
+                message: long.to_string(),
+                metric_ids: Vec::new(),
+            });
+        }
+        assert_eq!(reasons.len(), 20, "the derived ceiling is 20");
+        record.verdict.reasons = reasons;
+
+        let bounds = AgentProfileBounds::default();
+        let profile = build_agent_profile(&record, &bounds);
+
+        assert_eq!(profile.total_reasons, 20);
+        assert_eq!(
+            profile.reasons.len(),
+            20,
+            "the count cap is derived to admit exactly this case; if it drops one              here the derivation is wrong:
+{:?}",
+            profile.reasons.iter().map(|r| &r.code).collect::<Vec<_>>()
+        );
+        assert!(
+            !profile.findings.is_empty(),
+            "twenty long reasons must not starve findings entirely — an agent needs              where as well as why:
+{profile:?}"
+        );
+        assert!(
+            encoded_len(&profile) <= bounds.budget_bytes,
+            "the budget is a guarantee at the ceiling too, not only in the common case"
+        );
+    }
+
+    #[test]
     fn a_squeezed_budget_keeps_why_and_drops_detail() {
         // Ordering, asserted rather than assumed. Reasons are filled before
         // findings so a budget cut costs the Nth detail and never the answer to
