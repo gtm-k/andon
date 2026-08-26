@@ -520,3 +520,40 @@ fn a_declared_command_does_not_spill_while_the_lane_is_disabled() {
         "the same declaration with the lane enabled must still produce an engine"
     );
 }
+
+#[test]
+#[cfg(windows)]
+fn the_memory_cap_stops_a_child_that_asks_for_more() {
+    // P7's F3, pinned at last. The behaviour was verified by hand twice — at
+    // P7's own review and again at the 2026-08-25 re-verdict, where a 500MB
+    // allocator died against a 200MB cap — and nothing in the suite defended it,
+    // so a regression would have been silent on both occasions.
+    //
+    // Windows-only because the cap is a job-object limit
+    // (`JOB_OBJECT_LIMIT_JOB_MEMORY`); the Unix arm has no equivalent yet, and a
+    // test asserting a cap that the platform never applies would pass by
+    // accident and mean nothing.
+    //
+    // The probe TOUCHES every page it allocates: a job memory limit counts
+    // committed pages, so an untouched reservation could sit under any cap and
+    // prove nothing about the limit at all.
+    let (_temp, git, head) = scratch_repo();
+    let command = format!("{} allocate 512", q(PROBE));
+    let mut spec = spec(command, 60_000);
+    spec.memory_limit_mb = Some(128);
+
+    let sandbox = Sandbox::enter(&git, &head, &[]).expect("enters");
+    let outcome = sandbox.run(&spec).expect("the sandbox runs the command");
+
+    assert!(
+        !outcome.timed_out,
+        "the cap should stop this long before the 60s timeout does; a timeout here          means the limit was never applied:
+{outcome:?}"
+    );
+    assert_ne!(
+        outcome.exit_code,
+        Some(0),
+        "a child asking for 512MiB under a 128MiB cap must not succeed:
+{outcome:?}"
+    );
+}
