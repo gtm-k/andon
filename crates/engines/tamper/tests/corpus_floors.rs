@@ -209,3 +209,154 @@ fn the_published_table_is_the_measured_one() {
         );
     }
 }
+
+/// The language census the registry's honesty fields describe, pinned.
+///
+/// # Why this exists
+///
+/// Three tamper claims carry a `does_not_predict` line saying which languages
+/// their false-positive rate was actually measured on. Those numbers were
+/// hand-counted, shipped wrong, and caught in review — the first version said
+/// `lookup-table-blowup` had no non-TypeScript should-pass case, and it has a
+/// JSON one; two other counts were off by one because files were counted where
+/// cases were meant.
+///
+/// Nothing derived them, which is the same shape as the held-back set's status
+/// table drifting for eight days. `the_published_table_is_the_measured_one` keeps
+/// the precision table honest by rebuilding it; this keeps the language claims
+/// honest by pinning what they describe. It cannot read the prose — so if this
+/// fails, the prose in `registry/tamper.toml` is what has to move with it.
+#[test]
+fn the_language_census_the_claims_disclose_is_the_measured_one() {
+    use std::collections::BTreeMap;
+
+    let honest = repo_root().join(corpus::HONEST_DIR);
+    let mut census: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+
+    for detector in std::fs::read_dir(&honest).expect("the honest corpus is readable") {
+        let detector = detector.expect("entry").path();
+        if !detector.is_dir() {
+            continue;
+        }
+        let name = detector
+            .file_name()
+            .expect("named")
+            .to_string_lossy()
+            .into_owned();
+        for case in std::fs::read_dir(&detector).expect("detector dir") {
+            let case = case.expect("entry").path();
+            if !case.join("case.toml").is_file() {
+                continue;
+            }
+            // One language per CASE, not per file: a case is the unit the
+            // corpus counts in, and counting files is precisely the mistake the
+            // shipped disclosure made.
+            let mut exts: Vec<String> = Vec::new();
+            let mut stack = vec![case.join("head")];
+            while let Some(dir) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if let Some(ext) = p.extension() {
+                        exts.push(ext.to_string_lossy().into_owned());
+                    }
+                }
+            }
+            exts.sort();
+            exts.dedup();
+            let lang = exts.join("+");
+            *census
+                .entry(name.clone())
+                .or_default()
+                .entry(lang)
+                .or_default() += 1;
+        }
+    }
+
+    let got = |d: &str, l: &str| census.get(d).and_then(|m| m.get(l)).copied().unwrap_or(0);
+
+    // Pinned against what the three `does_not_predict` lines state. A corpus
+    // change that moves any of these makes one of those lines false.
+    assert_eq!(
+        got("test-removal", "ts"),
+        8,
+        "test-evidence-withdrawal's line says 8 TypeScript for test-removal:
+{census:#?}"
+    );
+    assert_eq!(
+        census["test-removal"].len(),
+        1,
+        "it also says test-removal has NO other language:
+{census:#?}"
+    );
+
+    assert_eq!(
+        got("assertion-free-test", "ts"),
+        6,
+        "test-evidence-withdrawal's line says 6 TypeScript:
+{census:#?}"
+    );
+    assert_eq!(
+        got("assertion-free-test", "py"),
+        1,
+        "...beside 1 Python:
+{census:#?}"
+    );
+
+    assert_eq!(
+        got("suppression-density", "ts"),
+        5,
+        "analysis-blind-spot's line says 5 TypeScript:
+{census:#?}"
+    );
+    assert_eq!(
+        got("suppression-density", "py"),
+        2,
+        "...beside 2 Python:
+{census:#?}"
+    );
+
+    assert_eq!(
+        got("parse-error-delta", "ts"),
+        5,
+        "analysis-blind-spot's line says 5 TypeScript:
+{census:#?}"
+    );
+    assert_eq!(
+        got("parse-error-delta", "js"),
+        1,
+        "...1 JavaScript:
+{census:#?}"
+    );
+    assert_eq!(
+        got("parse-error-delta", "rs"),
+        1,
+        "...and 1 Rust:
+{census:#?}"
+    );
+
+    assert_eq!(
+        got("lookup-table-blowup", "ts"),
+        6,
+        "hard-coded-answers' line says 6 TypeScript:
+{census:#?}"
+    );
+    assert_eq!(
+        got("lookup-table-blowup", "json"),
+        1,
+        "...and one JSON fixture, which the line now names:
+{census:#?}"
+    );
+
+    // The claim every disclosure makes and none of them counts: no TSX anywhere.
+    for (detector, langs) in &census {
+        assert!(
+            !langs.keys().any(|l| l.split('+').any(|e| e == "tsx")),
+            "a TSX should-pass case appeared under {detector}; three claims state there is none"
+        );
+    }
+}

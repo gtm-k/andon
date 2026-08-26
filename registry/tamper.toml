@@ -96,7 +96,7 @@ does_not_predict = [
     "that an assertion-free case is worthless — a smoke test that checks a call does not throw is a real test",
     "defect density, or the quality of the tests that remain",
     "anything about tests in languages this engine has no grammar for, which are not counted at all",
-    "how it behaves on a language the corpus barely covers. The should-pass half — the only source of the false-positive rate — is overwhelmingly TypeScript: `test-removal` and `lookup-table-blowup` have NO non-TypeScript should-pass case at all, `assertion-free-test` has one Python case beside seven TypeScript, `suppression-density` two, and TSX appears in no should-pass case for any detector. The claim tuple says `any` because the rules are written on node kinds rather than on a language, and the four grammars are read the same way — but the precision figure behind it was measured on one of them, and a false positive peculiar to JSX or to Python idiom would not have been seen",
+    "how it behaves on a language this claim's own corpus barely covers. The should-pass half is the only source of the false-positive rate, and for these two detectors it is 8 TypeScript cases for `test-removal` — every case it has — and 6 TypeScript beside 1 Python for `assertion-free-test`. No JavaScript case, no TSX case, for either. The claim tuple says `any` because the rules are written on node kinds rather than per-language branches, and the four grammars are read the same way; that is a statement about the MECHANISM. The precision figure is a statement about the EVIDENCE, and the evidence is one language",
     "anything about test cases the parser could not read — a case inside an ERROR region is not counted on either side, so a removal there is reported as no removal at all. Results over a file the parser did not finish are marked `parse-degraded` and the count is a lower bound (PREMORTEM T3)",
 ]
 owner = "gtm-k"
@@ -159,7 +159,7 @@ does_not_predict = [
     "suppressions from tools outside the enumerated marker list — this is a list of recognised directives, not a general rule, and a linter absent from it is not counted",
     "defect density",
     "anything about files no vendored grammar reads, which are never counted as zero",
-    "how it behaves on a language the corpus barely covers. The should-pass half — the only source of the false-positive rate — is overwhelmingly TypeScript: `test-removal` and `lookup-table-blowup` have NO non-TypeScript should-pass case at all, `assertion-free-test` has one Python case beside seven TypeScript, `suppression-density` two, and TSX appears in no should-pass case for any detector. The claim tuple says `any` because the rules are written on node kinds rather than on a language, and the four grammars are read the same way — but the precision figure behind it was measured on one of them, and a false positive peculiar to JSX or to Python idiom would not have been seen",
+    "how it behaves on a language this claim's own corpus barely covers. The should-pass half is the only source of the false-positive rate, and for these two detectors it is 5 TypeScript beside 2 Python for `suppression-density`, and 5 TypeScript beside 1 JavaScript and 1 Rust for `parse-error-delta`. Better spread than the other tamper claims and still no TSX case, for either. The claim tuple says `any` about the MECHANISM — node kinds, not per-language branches — and the precision figure behind it is a statement about the EVIDENCE",
 ]
 owner = "gtm-k"
 expiry = "2027-07-19"
@@ -268,7 +268,7 @@ does_not_predict = [
     "defect density",
     "tables assembled at run time rather than written as literals, which this detector cannot see",
     "tables inside a region the parser could not read, which are not seen at all — results over a file the parser did not finish are marked `parse-degraded` and the count is a lower bound (PREMORTEM T3)",
-    "how it behaves outside TypeScript. Every should-pass case for this detector is TypeScript — six of six — so the false-positive rate behind this claim was measured on one of the four grammars the rules are read with. A literal-collection idiom common in Python or JSX and rare in TypeScript would not have been seen by the number above",
+    "how it behaves outside TypeScript. Of this detector's 7 should-pass cases, 6 are TypeScript and the seventh is a JSON fixture — which exists to prove that data files do not fire, not to exercise a second grammar. So there is no Python, JavaScript or TSX case behind this claim's false-positive rate, and a literal-collection idiom common in those and rare in TypeScript would not have been seen by the number above",
 ]
 owner = "gtm-k"
 expiry = "2027-11-15"
