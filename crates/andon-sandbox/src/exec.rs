@@ -35,6 +35,55 @@ const TAIL_BYTES: usize = 16 * 1024;
 /// How often the wait loop polls the child.
 const POLL: Duration = Duration::from_millis(25);
 
+/// How long a killed child is given to actually die before this reports that the
+/// sandbox could not stop it.
+///
+/// P7's F2. The timeout path used to call `kill_tree` and then `child.wait()`,
+/// which blocks with no bound. `kill_tree` discards `TerminateJobObject`'s return
+/// value, so a kill that did not take turned a timeout — the ordinary, expected
+/// failure of a code-exec lane — into an unbounded hang of `andon wait` and of
+/// `await_results` behind it.
+///
+/// Two reviews agreed the failure is unreachable from repository content: a child
+/// holds no handle to the job object containing it, so nothing a measured
+/// repository can do makes the kill fail. That makes this an OS-level
+/// reliability gap rather than an attack surface, and the fix is bounded waiting
+/// rather than a stronger kill.
+///
+/// Generous on purpose. Process teardown under load is not instant, and a grace
+/// window shorter than a slow-but-working kill would turn a working sandbox into
+/// a reported failure — trading a rare hang for a common false alarm.
+const REAP_GRACE: Duration = Duration::from_secs(10);
+
+/// Why a bounded reap gave up.
+enum ReapFailure {
+    /// `try_wait` itself failed.
+    Wait(std::io::Error),
+    /// The grace expired and the child was still running — the kill did not take.
+    StillAlive,
+}
+
+/// Wait for an already-killed child, bounded by [`REAP_GRACE`].
+///
+/// One function for both call sites on purpose. Two near-identical fifteen-line
+/// blocks are two things someone edits one of, and the drift would be silent:
+/// both would still compile, both would still pass, and only one would still be
+/// bounded. A reviewer named this before it happened rather than after.
+fn reap_bounded(child: &mut std::process::Child) -> Result<std::process::ExitStatus, ReapFailure> {
+    let reap_by = Instant::now() + REAP_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(e) => return Err(ReapFailure::Wait(e)),
+        }
+        if Instant::now() >= reap_by {
+            return Err(ReapFailure::StillAlive);
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
 /// Run one command in `workdir` under the sandbox rules.
 pub fn run(workdir: &Path, spec: &ExecSpec) -> Result<ExecOutcome, SandboxError> {
     let mut command = shell_command(&spec.command);
@@ -87,16 +136,38 @@ pub fn run(workdir: &Path, spec: &ExecSpec) -> Result<ExecOutcome, SandboxError>
             Ok(None) => {}
             Err(e) => {
                 platform::kill_tree(&child, &containment);
-                let _ = child.wait();
+                // Bounded for the same reason the timeout path is. Reaching here
+                // needs `try_wait` itself to fail, which is rarer than an
+                // ordinary timeout — but an unbounded wait is unbounded whichever
+                // branch arrives at it, and "already on an error path" changes
+                // the frequency rather than the risk.
+                let _ = reap_bounded(&mut child);
                 return Err(SandboxError::Spawn(format!("waiting on the child: {e}")));
             }
         }
         if Instant::now() >= deadline {
             timed_out = true;
             platform::kill_tree(&child, &containment);
-            break child
-                .wait()
-                .map_err(|e| SandboxError::Spawn(format!("reaping the killed child: {e}")))?;
+            // Bounded, because `kill_tree` cannot report failure: it discards
+            // `TerminateJobObject`'s return. A blocking `wait()` here trusted a
+            // kill that might not have taken, and turned the lane's ordinary
+            // failure into a hang with no upper bound.
+            break reap_bounded(&mut child).map_err(|e| match e {
+                ReapFailure::Wait(e) => {
+                    SandboxError::Spawn(format!("reaping the killed child: {e}"))
+                }
+                // Loud rather than silent. The child may still be running, so
+                // claiming a clean timeout would be a measurement that outlived
+                // what it measured — and the sandbox's worktree may still be
+                // being written to by something the record calls stopped.
+                ReapFailure::StillAlive => SandboxError::Spawn(format!(
+                    "the command exceeded its {}ms timeout and did not stop within {}s of \
+                     being killed; the sandbox could not contain it and this \
+                     measurement is abandoned rather than reported",
+                    spec.timeout_ms,
+                    REAP_GRACE.as_secs()
+                )),
+            })?;
         }
         std::thread::sleep(POLL);
     };

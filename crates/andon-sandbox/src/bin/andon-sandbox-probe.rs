@@ -45,6 +45,28 @@ fn main() {
         Some("orphan-and-exit") => {
             spawn_heartbeat(&args[1]);
         }
+        Some("allocate") => {
+            // Commit memory in chunks, TOUCHING each page rather than only
+            // reserving it: a job-object memory limit counts committed pages, so
+            // an untouched allocation can sit under the cap forever and the
+            // probe would prove nothing.
+            //
+            // Chunked so the process grows visibly instead of asking for the
+            // whole amount at once, which an allocator may refuse outright
+            // without the cap ever being the thing that stopped it.
+            let target_mb: usize = args[1].parse().expect("megabytes");
+            let mut held: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..target_mb {
+                let mut chunk = vec![0u8; 1024 * 1024];
+                for page in chunk.chunks_mut(4096) {
+                    page[0] = 1;
+                }
+                held.push(chunk);
+            }
+            // Read it back so nothing above can be optimised away.
+            let live: usize = held.iter().map(|c| c[0] as usize).sum();
+            println!("allocated {target_mb}MiB live={live}");
+        }
         Some("exit") => {
             std::process::exit(args[1].parse().expect("an exit code"));
         }
