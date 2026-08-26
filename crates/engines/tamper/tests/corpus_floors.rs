@@ -359,4 +359,64 @@ fn the_language_census_the_claims_disclose_is_the_measured_one() {
             "a TSX should-pass case appeared under {detector}; three claims state there is none"
         );
     }
+
+    // ---- and now the half that actually matters ----------------------------
+    //
+    // Everything above compares the corpus against literals written HERE, which
+    // catches a corpus that moves and is blind to prose that moves. The bug that
+    // shipped was the second one: nothing changed in the corpus, the numbers were
+    // hand-typed into `registry/tamper.toml` wrong. A guard against the failure
+    // that did not happen, while the one that did walked past it.
+    //
+    // So read the registry and assert it carries the freshly-counted numbers, the
+    // way `the_published_table_is_the_measured_one` asserts the README carries the
+    // freshly-measured row. Every number below is computed above; none is typed
+    // twice. Reword these sentences freely — transpose a digit in one and this
+    // fails.
+    let registry = std::fs::read_to_string(repo_root().join("registry/tamper.toml"))
+        .expect("the tamper registry is readable");
+    let mut owed: Vec<String> = Vec::new();
+    {
+        let mut want = |phrase: String| {
+            if !registry.contains(&phrase) {
+                owed.push(phrase);
+            }
+        };
+        want(format!(
+            "it is {} TypeScript cases for `test-removal`",
+            got("test-removal", "ts")
+        ));
+        want(format!(
+            "{} TypeScript beside {} Python for `assertion-free-test`",
+            got("assertion-free-test", "ts"),
+            got("assertion-free-test", "py")
+        ));
+        want(format!(
+            "{} TypeScript beside {} Python for `suppression-density`",
+            got("suppression-density", "ts"),
+            got("suppression-density", "py")
+        ));
+        want(format!(
+            "{} TypeScript beside {} JavaScript and {} Rust for `parse-error-delta`",
+            got("parse-error-delta", "ts"),
+            got("parse-error-delta", "js"),
+            got("parse-error-delta", "rs")
+        ));
+        let lookup_total: usize = census["lookup-table-blowup"].values().sum();
+        want(format!(
+            "{} should-pass cases, {} are TypeScript",
+            lookup_total,
+            got("lookup-table-blowup", "ts")
+        ));
+    }
+    assert!(
+        owed.is_empty(),
+        "registry/tamper.toml's does_not_predict lines no longer state the measured \
+         census. Either the corpus moved and the prose was not updated, or the \
+         prose was edited into disagreement with it. Missing:\n  {}\n\nMeasured:\n{census:#?}",
+        owed.join(
+            "
+  "
+        )
+    );
 }
