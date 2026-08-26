@@ -438,6 +438,48 @@ pub fn fp_report(git: &Git, since: &str, until: Option<&str>) -> Result<String, 
         }
     );
 
+    // The regime line exists for the same reason the policy line does, and was
+    // missing for longer. `policy_hashes` witnesses that one policy governed the
+    // window; nothing witnessed that one set of DETECTOR BEHAVIOURS did, and a
+    // rule-pack or grammar bump moves that without touching policy at all.
+    //
+    // This matters because the number below feeds the P10b entry gate. Pooling
+    // records measured under two detector behaviours into one false-positive
+    // rate is exactly what `ledger stats` refuses to do without an explicit flag
+    // (PREMORTEM S4) — so the surface authorising a release was doing silently
+    // what the anti-gaming surface treats as a hazard.
+    let regimes: Vec<String> = window
+        .regimes
+        .iter()
+        .map(|(label, n)| format!("{label} ({n})"))
+        .collect();
+    let _ = writeln!(
+        out,
+        "  regimes     {}",
+        if regimes.is_empty() {
+            "none — no record in window".to_string()
+        } else {
+            regimes.join(" · ")
+        }
+    );
+    // Loud, and stated as a consequence rather than a note: a split window means
+    // the rate above is not a measurement of one system.
+    if !window.split_families.is_empty() {
+        let split: Vec<String> = window
+            .split_families
+            .iter()
+            .map(|(family, n)| format!("{family} ({n} regimes)"))
+            .collect();
+        let _ = writeln!(
+            out,
+            "    !! SPLIT WINDOW: {} — one engine family measured more than one way
+                    inside this window. The MED+ rate above pools records produced under
+                    different detector behaviour, which `ledger stats` refuses without
+                    --across-regimes (PREMORTEM S4). The P10b entry gate must split this
+                    window or justify the pool; it cannot read the rate as one number.",
+            split.join(" · ")
+        );
+    }
     // The B8 half: what is in force now, against the conservative defaults.
     let in_force = crate::measure::load_policy(git, &crate::measure::PolicySource::Worktree)
         .map_err(|e| e.to_string())?;

@@ -278,6 +278,24 @@ pub fn slice(entries: &[LedgerEntry], dimension: Dimension) -> BTreeMap<String, 
     out
 }
 
+/// Which engine family a regime belongs to, from the enum rather than from its
+/// label text.
+///
+/// Exhaustive for the same reason [`regime_label`] is: a new variant must fail
+/// compilation here rather than fall through to a family that hides it. Parsing
+/// the family back out of a label would be a restated fact — correct until the
+/// label format moves, and silently wrong after.
+pub fn regime_family(regime: &MeasurementRegime) -> &'static str {
+    match regime {
+        MeasurementRegime::Static { .. } => "static",
+        MeasurementRegime::Clones { .. } => "clones",
+        MeasurementRegime::Tamper { .. } => "tamper",
+        MeasurementRegime::Process { .. } => "process",
+        MeasurementRegime::Artifacts { .. } => "artifacts",
+        MeasurementRegime::Tests { .. } => "tests",
+    }
+}
+
 /// A one-line human label for a regime, naming every field of its variant.
 ///
 /// Exhaustive on purpose: a new regime variant must fail compilation here
