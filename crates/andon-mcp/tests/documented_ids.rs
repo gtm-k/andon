@@ -66,6 +66,34 @@ const SCANNED: &[(&str, &str)] = &[
     ("main.rs", include_str!("../src/main.rs")),
 ];
 
+/// Every `.rs` file under `dir`, **recursively**, relative to it with `/` separators.
+///
+/// Recursive because `read_dir` is not, and the first version of this guard used
+/// the flat form: a nested `src/tools/mod.rs` escaped the scan *and* escaped the
+/// check meant to catch exactly that, with both tests staying green. Demonstrated
+/// rather than reasoned about — the Codex gate on `be2b423` created that file and
+/// watched nothing notice.
+///
+/// A coverage check that under-covers in the same shape as the thing it guards is
+/// worse than no check, because it reports success while doing it.
+fn rs_files_under(dir: &std::path::Path, prefix: &str, out: &mut Vec<String>) {
+    let entries = std::fs::read_dir(dir).expect("a readable directory");
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        let rel = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if path.is_dir() {
+            rs_files_under(&path, &rel, out);
+        } else if name.ends_with(".rs") {
+            out.push(rel);
+        }
+    }
+}
+
 #[test]
 fn no_source_file_escapes_the_scan() {
     // A coverage list with nothing checking it is the failure this whole file is
@@ -73,12 +101,8 @@ fn no_source_file_escapes_the_scan() {
     // holds every documented id and `main.rs` holds none, but a new module
     // carrying tool descriptions would slip past a scan that trusts this list.
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut on_disk: Vec<String> = std::fs::read_dir(&src)
-        .expect("the crate has a src directory")
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".rs"))
-        .collect();
+    let mut on_disk = Vec::new();
+    rs_files_under(&src, "", &mut on_disk);
     on_disk.sort();
 
     let mut scanned: Vec<String> = SCANNED.iter().map(|(n, _)| (*n).to_string()).collect();
