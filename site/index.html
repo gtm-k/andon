@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Andon — the signal that stops the line, for code an agent just wrote</title>
+<meta name="description" content="Andon measures a code change and returns a verdict that carries its evidence: the claim behind each number, its tier, and what it does not predict. Self-reports count for nothing until an independent recompute confirms them.">
+<meta name="color-scheme" content="light dark">
+<!-- No canonical-URL tag and no Open Graph URL on purpose: the site must not name a domain (it serves from GitHub Pages first and a domain later). -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<script>
+  // Theme and motion, before first paint. A stored choice sets data-theme;
+  // nothing stored means the system preference decides. `?motion=off` takes
+  // the same code path as prefers-reduced-motion so a screenshot of the final
+  // frame is a screenshot of what a reduced-motion reader gets.
+  (function () {
+    var html = document.documentElement;
+    try {
+      var t = localStorage.getItem("andon-theme");
+      if (t === "light" || t === "dark") html.setAttribute("data-theme", t);
+    } catch (e) {}
+    if (/[?&]motion=off(&|$)/.test(location.search)) html.setAttribute("data-motion", "off");
+  })();
+</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="container">
+    <nav class="nav" aria-label="Primary">
+      <a class="wordmark" href="#top" aria-label="Andon, home">
+        <svg class="mark" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><rect x="1" y="1" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="5" y="5" width="8" height="8" rx="1" fill="currentColor"/></svg>
+        andon
+      </a>
+      <ul class="nav-links">
+        <li><a href="#trust">Trust</a></li>
+        <li><a href="#measures">Measures</a></li>
+        <li><a href="#verdict">Verdict</a></li>
+        <li><a href="#miss-rate">Miss rate</a></li>
+        <li><a href="#install">Install</a></li>
+      </ul>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Theme: system. Change theme">theme: system</button>
+      <a class="nav-repo" href="https://github.com/gtm-k/andon">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<section class="hero" id="top" aria-labelledby="hero-title">
+  <div class="board">
+    <div class="container">
+      <div class="lamp" id="lamp" data-state="divergent" role="status" aria-live="polite" aria-atomic="true">
+        <div class="lamp-face">
+          <svg class="lamp-glyph" viewBox="0 0 22 22" aria-hidden="true" focusable="false">
+            <circle class="g g-idle" cx="11" cy="11" r="7.5" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 3"/>
+            <circle class="g g-hollow" cx="11" cy="11" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/>
+            <circle class="g g-filled" cx="11" cy="11" r="8.5" fill="currentColor"/>
+            <rect class="g g-stop" x="3" y="3" width="16" height="16" rx="2" fill="currentColor"/>
+          </svg>
+          <div class="lamp-text">
+            <span class="lamp-label">line stopped · divergent</span>
+            <span class="lamp-sub">counts downstream: no — the recompute disagreed, and named where</span>
+          </div>
+        </div>
+        <div class="lamp-track" aria-hidden="true"></div>
+      </div>
+    </div>
+    <div class="cord">
+      <button class="cord-handle" id="demo-replay" type="button">pull — replay the demo</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">andon · 行灯 · the cord that stops the line</p>
+        <h1 id="hero-title">The signal that stops the line, for code an agent just wrote.</h1>
+        <p class="lead">Andon measures a change and returns a verdict that carries its evidence: the claim each number stands on, the tier of that claim, and what the number does not predict. An agent calls it mid-loop over MCP; a person runs <code>andon measure</code>.</p>
+        <p class="lead">Every measurement is a self-report until an independent recompute confirms it. A forged one comes back <strong>divergent</strong>, with the disagreeing metrics named — the transcript on the right is that happening.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#install">Install</a>
+          <a class="btn btn-secondary" href="#miss-rate">Read the miss rate</a>
+        </div>
+        <p class="hero-note">verdicts pass · advise · block · escalate_to_human — exit codes 0 · 0 · 2 · 3. Rust, one binary, no server, no accounts.</p>
+      </div>
+
+      <figure class="terminal" aria-labelledby="term-cap">
+        <div class="term-bar">
+          <span class="term-title">$ andon demo tamper</span>
+          <span class="term-status" id="demo-status" aria-live="polite">Transcript</span>
+          <button class="term-btn" id="demo-skip" type="button">Skip to end</button>
+        </div>
+        <pre class="term-screen" id="demo-screen" tabindex="0" hidden></pre>
+        <pre class="term-screen" id="demo-source" tabindex="0"><!-- demo:begin -->
+  ANDON DEMO — a forged measurement, caught. Everything below happens in a
+  throwaway repository under %TEMP%\andon-demo-26308-1787870809251363600; nothing else is touched.
+
+  LEG 1 — an honest change.
+
+  The agent measured its change (35e5e38e188d → e9b7844f9954) and recorded the result as a git note —
+  a self-report. Verdict: PASS, 35 finding(s). Trust so far: unwitnessed — counts
+  downstream: no. A self-report is a claim; nothing has checked it yet.
+
+  Now the verifier recomputes the same change from the repository's own
+  objects and compares per-result digests:
+
+  attestation   confirmed
+  meaning       CI recomputed this change independently and every compared digest matched
+  counts        yes — a record with this value counts as evidence downstream
+  self-report   found, measured against 35e5e38e188d (Equal relative to the base this verifier resolved)
+  digests       35 matched, 0 disagreed, 0 unpaired
+
+  verifier's own verdict on this change, from its own recompute: PASS
+    measurement-incomplete     this measurement is unwitnessed: some of what it set out to measure was not measured, and the results say which
+  The two are reported side by side and not combined. Composing them is P9's two-axis rule, and it is not implemented here.
+
+  THIS IS A STUB. It recomputed the change and compared digests. It did NOT run a hermetic version-matched recompute, did NOT run held-out verification sampling, did NOT compose the verifier's own verdict with this attestation, and did NOT write an attestation record to refs/notes/andon-attest. P9 builds the verifier; treat this output as a demonstration of the compare path, not as an attestation anyone should rely on.
+
+  LEG 2 — a forged self-report.
+
+  The second change is just as ordinary (35 finding(s) when measured honestly).
+  The lie is not in the diff — it is about to be written into the ledger.
+
+  A DIFFERENT program — the adversary binary, andon-spike-forge.exe —
+  rewrote the note: every count one higher than measured, every digest
+  re-sealed. The forged record is internally consistent and false; no
+  inspection of the record alone can catch it. (`andon` ships no forging
+  path of its own: the forging logic lives in one file compiled only into
+  the adversary, a build-failing test guards that file's crate, and the
+  rest of the workspace this binary links is kept clean by review, not by the scan.)
+
+    adversary: forged 1 record(s) on b7218bcc340d903696ddec03d46b95bf120a5e8f (inflate-metric)
+
+  The same verifier, on the forged report:
+
+  attestation   divergent
+  meaning       CI recomputed this change and the numbers disagree, or a tamper signal fired
+  counts        no — this record does not count as attested evidence downstream
+  self-report   found, measured against 35e5e38e188d (Equal relative to the base this verifier resolved)
+  digests       0 matched, 35 disagreed, 0 unpaired
+                  disagreed: clones.clone-groups
+                  disagreed: clones.duplicated-token-ratio
+                  disagreed: clones.duplicated-tokens
+                  disagreed: clones.file-duplicated-tokens
+                  disagreed: clones.largest-clone-tokens
+                  disagreed: process.change-coupling
+                  disagreed: process.churn-commits
+                  disagreed: process.churn-lines
+                  disagreed: process.code-age-days
+                  disagreed: process.hotspot
+                  disagreed: process.ownership-entropy
+                  disagreed: static.cognitive-complexity.typescript
+                  disagreed: static.cognitive-complexity.typescript
+                  disagreed: static.cyclomatic-complexity.typescript
+                  disagreed: static.cyclomatic-complexity.typescript
+                  disagreed: static.parse-errors
+                  disagreed: static.parse-missing
+                  disagreed: static.sloc
+                  disagreed: static.sloc
+                  disagreed: static.sloc
+                  disagreed: static.unmeasured-files
+                  disagreed: tamper.assertion-free-test
+                  disagreed: tamper.assertion-free-test.magnitude
+                  disagreed: tamper.coverage-exclusion-drift
+                  disagreed: tamper.coverage-exclusion-drift.magnitude
+                  disagreed: tamper.lookup-table-blowup
+                  disagreed: tamper.lookup-table-blowup.magnitude
+                  disagreed: tamper.parse-error-delta
+                  disagreed: tamper.parse-error-delta.magnitude
+                  disagreed: tamper.suppression-density
+                  disagreed: tamper.suppression-density.magnitude
+                  disagreed: tamper.test-removal
+                  disagreed: tamper.test-removal.magnitude
+                  disagreed: tamper.threshold-config-edit
+                  disagreed: tamper.threshold-config-edit.magnitude
+
+  verifier's own verdict on this change, from its own recompute: PASS
+    measurement-incomplete     this measurement is unwitnessed: some of what it set out to measure was not measured, and the results say which
+  The two are reported side by side and not combined. Composing them is P9's two-axis rule, and it is not implemented here.
+
+  THIS IS A STUB. It recomputed the change and compared digests. It did NOT run a hermetic version-matched recompute, did NOT run held-out verification sampling, did NOT compose the verifier's own verdict with this attestation, and did NOT write an attestation record to refs/notes/andon-attest. P9 builds the verifier; treat this output as a demonstration of the compare path, not as an attestation anyone should rely on.
+
+  WHAT THIS SHOWED
+  Both legs wrote the same kind of self-report. Inspection could not tell
+  them apart — the forged one is correctly formatted and self-consistent.
+  The independent recompute told them apart: confirmed on the honest one,
+  divergent on the forged one, with the disagreeing metrics named. Until
+  that recompute runs, a measurement is self-reported and counts for
+  nothing downstream. In real use the recompute is CI's job — `andon init
+  --ci` prints the recipe — and this command exists so you can watch the
+  distinction work without setting any of that up.<!-- demo:end --></pre>
+        <figcaption class="term-cap" id="term-cap">Real output of <code>andon demo tamper</code> (andon 0.1.0, a development build), captured 2026-08-27 on Windows and reproduced verbatim — except that the temp directory is shown as <code>%TEMP%</code>. The demo stages a throwaway repository, measures an honest change and a forged self-report, and asserts both outcomes rather than narrating them. This is a typed replay of the captured text, not a screen recording; a <code>.cast</code> recording is deferred.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="trust" aria-labelledby="trust-title">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow">the trust boundary</p>
+      <h2 id="trust-title">A measurement is a claim until something you do not control recomputes it.</h2>
+      <p class="lead">Two channels, and the difference between them is the design. The agent's binary measures from git blob bytes named by OID — never from the working tree — and appends a self-report to <code>refs/notes/andon-measure</code>. The verifier resolves the base for itself, checks out the exact head SHA, recomputes the same deterministic set from the same objects, and compares per-result digests byte for byte.</p>
+    </div>
+
+    <figure class="figure" aria-labelledby="fig1-cap">
+      <svg class="diagram" viewBox="0 0 1050 430" role="img" aria-label="The agent measures blob bytes by OID and writes a self-report note; the verifier recomputes from the same OIDs, compares digests in a fixed order, and writes one of six attestation values to a separate notes ref." xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker>
+        </defs>
+        <text x="20" y="22" class="head">agent side</text>
+        <text x="380" y="22" class="head">git objects — the only shared truth</text>
+        <text x="740" y="22" class="head">verifier (ci)</text>
+
+        <rect x="20" y="40" width="290" height="44" rx="6" class="box"/>
+        <text x="32" y="58">agent or harness</text>
+        <text x="32" y="74" class="dim">measure_change (MCP) · hook · CLI</text>
+
+        <line x1="165" y1="84" x2="165" y2="118" class="edge" marker-end="url(#arr)"/>
+        <text x="173" y="106" class="dim">one change</text>
+
+        <rect x="20" y="120" width="290" height="60" rx="6" class="box"/>
+        <text x="32" y="140">andon measure</text>
+        <text x="32" y="156" class="dim">reads blobs by OID, never the tree</text>
+        <text x="32" y="171" class="dim">one digest per result, fixed order</text>
+
+        <line x1="165" y1="180" x2="165" y2="228" class="edge" marker-end="url(#arr)"/>
+        <text x="173" y="208" class="dim">self-report</text>
+
+        <rect x="20" y="230" width="290" height="60" rx="6" class="box"/>
+        <text x="32" y="250">refs/notes/andon-measure</text>
+        <text x="32" y="266" class="dim">record_kind: self-report</text>
+        <text x="32" y="281" class="dim">counts downstream: no</text>
+
+        <rect x="380" y="120" width="290" height="60" rx="6" class="box-store"/>
+        <text x="392" y="140">blobs, named by OID</text>
+        <text x="392" y="156" class="dim">same bytes on every OS —</text>
+        <text x="392" y="171" class="dim">a CRLF checkout changes nothing</text>
+
+        <rect x="380" y="230" width="290" height="60" rx="6" class="box-store"/>
+        <text x="392" y="250">notes refs</text>
+        <text x="392" y="266" class="dim">andon-measure · andon-attest</text>
+        <text x="392" y="281" class="dim">several reports? the worst counts</text>
+
+        <line x1="380" y1="150" x2="312" y2="150" class="edge" marker-end="url(#arr)"/>
+        <text x="326" y="144" class="dim">reads</text>
+        <line x1="312" y1="260" x2="378" y2="260" class="edge" marker-end="url(#arr)"/>
+        <text x="318" y="254" class="dim">appends</text>
+
+        <line x1="670" y1="150" x2="738" y2="150" class="edge" marker-end="url(#arr)"/>
+        <text x="672" y="144" class="dim">same OIDs</text>
+        <line x1="670" y1="260" x2="738" y2="260" class="edge" marker-end="url(#arr)"/>
+        <text x="680" y="254" class="dim">reports</text>
+
+        <rect x="740" y="40" width="290" height="60" rx="6" class="box"/>
+        <text x="752" y="60">base = merge-base(main, head)</text>
+        <text x="752" y="76" class="dim">resolved by the verifier itself;</text>
+        <text x="752" y="91" class="dim">checkout pinned to the head SHA</text>
+
+        <line x1="885" y1="100" x2="885" y2="118" class="edge" marker-end="url(#arr)"/>
+
+        <rect x="740" y="120" width="290" height="60" rx="6" class="box"/>
+        <text x="752" y="140">recompute the deterministic set</text>
+        <text x="752" y="156" class="dim">compare set: the verifier's own</text>
+        <text x="752" y="171" class="dim">registry flag, never the record's</text>
+
+        <line x1="885" y1="180" x2="885" y2="228" class="edge" marker-end="url(#arr)"/>
+
+        <rect x="740" y="230" width="290" height="60" rx="6" class="box"/>
+        <text x="752" y="250">compare, in this order</text>
+        <text x="752" y="266" class="dim">1 tuple  2 regime  3 digests</text>
+        <text x="752" y="281" class="dim">4 a confirmation has to be earned</text>
+
+        <line x1="885" y1="290" x2="885" y2="318" class="edge" marker-end="url(#arr)"/>
+
+        <rect x="740" y="320" width="290" height="90" rx="6" class="box-outcome"/>
+        <text x="752" y="340"><tspan class="blue">confirmed</tspan> · confirmed-static</text>
+        <text x="752" y="356"><tspan class="red">divergent</tspan></text>
+        <text x="752" y="372" class="dim">unwitnessed · -version-skew</text>
+        <text x="752" y="387" class="dim">unwitnessed-base-mismatch</text>
+        <text x="752" y="402" class="dim">→ refs/notes/andon-attest</text>
+
+        <path d="M740 390 H705 V275 H672" class="edge-dim" marker-end="url(#arr)"/>
+        <text x="700" y="335" class="dim" text-anchor="end">writes</text>
+      </svg>
+      <figcaption id="fig1-cap">What the compare reads, and in what order. An unequal base/head tuple is classified before anything else — an ancestor of the trusted branch is a stale base and demotes to <code>unwitnessed-base-mismatch</code>; an OID the repository has never seen is <code>base-fabrication</code> and <code>divergent</code>. A different engine, grammar or git version is <code>unwitnessed-version-skew</code>, never an accusation. Values that legitimately differ between two honest machines — <code>freshness.*</code>, <code>invocation.*</code>, <code>policy_hash</code>, <code>tool.version</code> — are recorded and never compared.</figcaption>
+    </figure>
+
+    <figure class="figure" aria-labelledby="fig2-cap">
+      <svg class="diagram" viewBox="0 0 1050 250" role="img" aria-label="One change is measured in two lanes: the fast lane runs the content engines in under a second and its deterministic results enter the digest compare; the async lane defers the declared test command to a job that andon wait runs, and its results are reported but never digest-compared." xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker>
+        </defs>
+        <rect x="20" y="100" width="170" height="60" rx="6" class="box"/>
+        <text x="32" y="123">one change</text>
+        <text x="32" y="139" class="dim">base → head, by OID</text>
+
+        <text x="260" y="22" class="head">fast lane · sub-second</text>
+        <path d="M190 123 H225 V68 H258" class="edge lane-fast" marker-end="url(#arr2)"/>
+        <rect x="260" y="30" width="390" height="76" rx="6" class="box"/>
+        <text x="272" y="50">static · clones · tamper · process · artifacts</text>
+        <text x="272" y="66" class="dim">content read from blob OIDs; a cold cap says</text>
+        <text x="272" y="81" class="dim">when a content engine may still start —</text>
+        <text x="272" y="96" class="dim">past it, it spills (completeness: partial)</text>
+
+        <line x1="650" y1="68" x2="708" y2="68" class="edge lane-fast" marker-end="url(#arr2)"/>
+        <rect x="710" y="30" width="320" height="76" rx="6" class="box-outcome"/>
+        <text x="722" y="50">lane: fast</text>
+        <text x="722" y="66" class="dim">deterministic = true → digest-compared</text>
+        <text x="722" y="81" class="dim">the verifier can recompute every one</text>
+        <text x="722" y="96" class="dim">and compare it byte for byte</text>
+
+        <text x="260" y="147" class="head">async lane · deferred</text>
+        <path d="M190 137 H225 V193 H258" class="edge lane-async" marker-end="url(#arr2)"/>
+        <rect x="260" y="155" width="390" height="76" rx="6" class="box"/>
+        <text x="272" y="175">the repository's own test command</text>
+        <text x="272" y="191" class="dim">sandboxed in a cold worktree of the snapshot;</text>
+        <text x="272" y="206" class="dim">never in the fast budget — measure leaves a</text>
+        <text x="272" y="221" class="dim">job file and andon wait runs it, then merges</text>
+
+        <line x1="650" y1="193" x2="708" y2="193" class="edge lane-async" marker-end="url(#arr2)"/>
+        <rect x="710" y="155" width="320" height="76" rx="6" class="box-outcome"/>
+        <text x="722" y="175">lane: async</text>
+        <text x="722" y="191" class="dim">deterministic = false → reported, never</text>
+        <text x="722" y="206" class="dim">digest-compared; a failing suite still</text>
+        <text x="722" y="221" class="dim">blocks under the default policy</text>
+      </svg>
+      <figcaption id="fig2-cap">The two lanes of one measurement. The fast lane is the agent's sub-second answer, and everything in it that is seed-free and byte-reproducible enters the compare. The async lane holds what no fast budget can contain — the test suite, sandboxed — and the content engines when a cold, very large repository would blow the cap. Nothing in the async lane is silently dropped: a spill is named as <code>completeness: partial</code>, and <code>andon wait</code> reports what the lane still owes.</figcaption>
+    </figure>
+
+    <div class="table-scroll">
+    <table class="outcomes">
+      <caption class="visually-hidden">Attestation values and whether each counts as evidence downstream</caption>
+      <thead><tr><th scope="col">attestation</th><th scope="col">means</th><th scope="col">counts downstream</th></tr></thead>
+      <tbody>
+        <tr><td>confirmed</td><td>CI recomputed the deterministic set; every digest matched.</td><td class="yes">yes</td></tr>
+        <tr><td>confirmed-static</td><td>Fork tier: recomputed from an unprivileged job with no self-report to compare against. A pass, labelled as the weaker one it is.</td><td class="yes">yes</td></tr>
+        <tr><td>divergent</td><td>Digests disagreed on an equal tuple at an equal regime, or a tamper signal fired.</td><td class="no">no</td></tr>
+        <tr><td>unwitnessed</td><td>No CI recompute, or nothing was actually compared. Neutral, not negative.</td><td class="no">no</td></tr>
+        <tr><td>unwitnessed-version-skew</td><td>The regimes differed, so the digests were never comparable.</td><td class="no">no</td></tr>
+        <tr><td>unwitnessed-base-mismatch</td><td>The claimed base is an ancestor of the trusted branch — a stale base or a rebase.</td><td class="no">no</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout">
+      <h3>What the attestation does not prove.</h3>
+      <p>In v1, attestation trust is GitHub Actions provenance, not cryptography. <code>refs/notes/andon-attest</code> is an ordinary git ref: anyone with push access can write a record by hand, claiming any value including <code>confirmed</code>, and nothing in v1 can tell it from one the workflow produced. What a genuine attestation establishes is that the numbers were recomputed by a process the measured party did not control, from a clean checkout pinned to the head SHA, against a base the verifier resolved itself. Treat <code>confirmed</code> from a repository whose push access you do not already trust as unverified. Keyless signing of the record is the named v1.5 hardening.</p>
+      <p>One more open hole, stated rather than hidden: <code>engine_version</code> is self-asserted and the regime check runs before any digest is compared, so a forger can buy <em>silence</em> — an <code>unwitnessed-version-skew</code> that looks like a stale binary. It cannot buy a pass; the record stays self-reported, repeated skew on one head escalates to a person, and a hermetic version-matched recompute is what closes it.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="measures" aria-labelledby="measures-title">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow">the evidence registry</p>
+      <h2 id="measures-title">Every number stands on a claim, and every claim says what it does not predict.</h2>
+      <p class="lead">There is no composite score anywhere in the system. Each metric names the claim it rests on — a tuple of measurement, version, language and predicted outcome — and each claim carries a tier, a citation, a population, and a <code>does_not_predict</code> list that <code>andon explain</code> prints beside the number. The section below is generated from the registry files, not written by hand.</p>
+    </div>
+
+    <!-- registry:begin -->
+<p class="derived">Derived from <code>registry/*.toml</code> at <code>d81ca68</code>: <strong>39 metrics</strong> in <strong>6 families</strong>, standing on <strong>20 claims</strong>. 36 of the 39 are deterministic and enter the digest compare; the other 3 are reported and never compared.</p>
+<figure class="tiers" aria-labelledby="tiers-cap">
+  <svg class="tier-svg" viewBox="0 0 1000 60" role="img" aria-label="Claims by evidence tier: 3 at tier A, 9 at tier B, 1 at tier C, 0 at tier D, 7 at tier N." xmlns="http://www.w3.org/2000/svg">
+    <rect class="seg tier-A" x="0.0" y="0" width="141.6" height="60" rx="4"/>
+    <text class="seg-letter tier-A-ink" x="12.0" y="28">A</text>
+    <text class="seg-count tier-A-ink" x="12.0" y="46">3</text>
+    <rect class="seg tier-B" x="144.6" y="0" width="424.8" height="60" rx="4"/>
+    <text class="seg-letter tier-B-ink" x="156.6" y="28">B</text>
+    <text class="seg-count tier-B-ink" x="156.6" y="46">9</text>
+    <rect class="seg tier-C" x="572.4" y="0" width="47.2" height="60" rx="4"/>
+    <text class="seg-letter tier-C-ink" x="584.4" y="28">C</text>
+    <text class="seg-count tier-C-ink" x="584.4" y="46">1</text>
+    <rect class="seg tier-D" x="622.6" y="0" width="44.0" height="60" rx="4"/>
+    <text class="seg-letter tier-D-ink" x="634.6" y="28">D</text>
+    <text class="seg-count tier-D-ink" x="634.6" y="46">0</text>
+    <rect class="seg tier-N" x="669.6" y="0" width="330.4" height="60" rx="4"/>
+    <text class="seg-letter tier-N-ink" x="681.6" y="28">N</text>
+    <text class="seg-count tier-N-ink" x="681.6" y="46">7</text>
+  </svg>
+  <figcaption id="tiers-cap">Claims by evidence tier, A to N. <b>A</b> validated against outcomes at scale · <b>B</b> published validation, narrower population or weaker linkage · <b>C</b> weak or contested on its own · <b>D</b> critiqued; not to be used as a headline · <b>N</b> novel and unvalidated — motivated by evidence, not yet supported by it. Tier N carries every tamper detector: they are calibrated on Andon's own corpus, not a study.</figcaption>
+</figure>
+<ul class="families">
+  <li class="family">
+    <h3><code>artifacts</code> <span class="engine">engine <code>artifacts</code></span></h3>
+    <dl class="facts"><div><dt>metrics</dt><dd>1</dd></div><div><dt>claims</dt><dd>1</dd></div><div><dt>tier</dt><dd><span class="tier-chip tier-C">C</span></dd></div><div><dt>compared</dt><dd>0 of 1</dd></div></dl>
+    <p class="dnp"><span class="dnp-label">does not predict</span> test quality — a line executed by a test with no assertion counts as covered</p>
+    <p class="claim-id"><code>andon.artifacts.diff-coverage@1|any|test-gap</code></p>
+  </li>
+  <li class="family">
+    <h3><code>clones</code> <span class="engine">engine <code>clones</code></span></h3>
+    <dl class="facts"><div><dt>metrics</dt><dd>5</dd></div><div><dt>claims</dt><dd>1</dd></div><div><dt>tier</dt><dd><span class="tier-chip tier-N">N</span></dd></div><div><dt>compared</dt><dd>5 of 5</dd></div></dl>
+    <p class="dnp"><span class="dnp-label">does not predict</span> that removing the duplication would improve anything — the literature reports prevalence and co-change, not remediation benefit, and an extracted abstraction can be worse than the repetition it replaces</p>
+    <p class="claim-id"><code>andon.clones.token-duplication@1|any|token-duplication</code></p>
+  </li>
+  <li class="family">
+    <h3><code>process</code> <span class="engine">engine <code>process</code></span></h3>
+    <dl class="facts"><div><dt>metrics</dt><dd>6</dd></div><div><dt>claims</dt><dd>5</dd></div><div><dt>tiers</dt><dd><span class="tier-chip tier-A">A</span> <span class="tier-chip tier-B">B</span></dd></div><div><dt>compared</dt><dd>6 of 6</dd></div></dl>
+    <p class="dnp"><span class="dnp-label">does not predict</span> that this file will fail — the studies rank metric families for prediction, not individual files for outcomes</p>
+    <p class="claim-id"><code>andon.process.churn@1|any|defect-proneness</code></p>
+  </li>
+  <li class="family">
+    <h3><code>static</code> <span class="engine">engine <code>static-metrics</code></span></h3>
+    <dl class="facts"><div><dt>metrics</dt><dd>11</dd></div><div><dt>claims</dt><dd>8</dd></div><div><dt>tiers</dt><dd><span class="tier-chip tier-A">A</span> <span class="tier-chip tier-B">B</span> <span class="tier-chip tier-N">N</span></dd></div><div><dt>compared</dt><dd>11 of 11</dd></div></dl>
+    <p class="dnp"><span class="dnp-label">does not predict</span> that a smaller file is a better file — size is the confound to control for, not the thing to reduce</p>
+    <p class="claim-id"><code>andon.static.sloc@1|any|maintenance-effort</code></p>
+  </li>
+  <li class="family">
+    <h3><code>tamper</code> <span class="engine">engine <code>tamper</code></span></h3>
+    <dl class="facts"><div><dt>metrics</dt><dd>14</dd></div><div><dt>claims</dt><dd>4</dd></div><div><dt>tier</dt><dd><span class="tier-chip tier-N">N</span></dd></div><div><dt>compared</dt><dd>14 of 14</dd></div></dl>
+    <p class="dnp"><span class="dnp-label">does not predict</span> that the removal was illegitimate — deleting the tests for a deleted feature is correct, and this signal cannot tell the two apart</p>
+    <p class="claim-id"><code>andon.tamper.test-evidence@1|any|test-evidence-withdrawal</code></p>
+  </li>
+  <li class="family">
+    <h3><code>tests</code> <span class="engine">engine <code>tests</code></span></h3>
+    <dl class="facts"><div><dt>metrics</dt><dd>2</dd></div><div><dt>claims</dt><dd>1</dd></div><div><dt>tier</dt><dd><span class="tier-chip tier-N">N</span></dd></div><div><dt>compared</dt><dd>0 of 2</dd></div></dl>
+    <p class="dnp"><span class="dnp-label">does not predict</span> that the suite exercises the changed code — an empty or trivial test_command passes everything, and declaring one is visible in policy, not prevented by it</p>
+    <p class="claim-id"><code>andon.tests.suite@1|any|regression-signal</code></p>
+  </li>
+</ul>
+<!-- registry:end -->
+
+    <div class="scope">
+      <h3>Which languages, and which not.</h3>
+      <p>Four grammars are read: JavaScript, TypeScript, TSX and Python — plus Rust for size only, with no complexity and no parse health. The <code>process</code> and <code>artifacts</code> families are language-independent because they read git history and report files. <strong>A file in any other language is not measured</strong>: a change touching only Go, Java, Ruby, PHP, C, C++, C#, Swift or Kotlin can return <code>pass</code> because nothing looked at it, not because nothing was wrong. Andon is not a security scanner and ships no SAST family; it will not find an injection or a hard-coded credential in any language.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="verdict" aria-labelledby="verdict-title">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow">the agent profile</p>
+      <h2 id="verdict-title">The verdict carries its evidence.</h2>
+      <p class="lead">This is the bounded profile an agent receives — <code>andon measure --profile agent-mode</code>, the same shape the MCP <code>measure_change</code> tool returns — for a change that added bulk-pricing tiers, deleted one failing test instead of fixing it, and left another test calling the function without asserting anything. Findings come worst-first. Nothing is added up.</p>
+    </div>
+
+    <div class="split">
+      <div>
+        <pre class="json" tabindex="0"><!-- profile:begin -->{
+  "schema_version": 2,
+  "profile": "agent-mode",
+  "attestation": "unwitnessed",
+  "counts_downstream": <span class="hi">false</span>,
+  "completeness": "unwitnessed",
+  "base_oid": "25241e8397ad23a51739a31f48eaa76e1ebcb5af",
+  "head_oid": "8991206123cfb7b7e23929240647aad823e08440",
+  "verdict": <span class="hi-red">"block"</span>,
+  "reasons": [
+    {
+      <span class="hi-red">"code": "tamper-signal"</span>,
+      "message": "tamper.assertion-free-test fired: the line stops",
+      "severity": "critical"
+    },
+    {
+      <span class="hi-red">"code": "tamper-signal"</span>,
+      "message": "tamper.test-removal fired: the line stops",
+      "severity": "critical"
+    },
+    {
+      "code": "measurement-incomplete",
+      "message": "this measurement is unwitnessed: some of what it set out to measure was not measured, and the results say which",
+      "severity": "info"
+    }
+  ],
+  "findings": [
+    {
+      <span class="hi">"claim_id": "andon.tamper.test-evidence@1|any|test-evidence-withdrawal"</span>,
+      "delta": null,
+      <span class="hi">"diff_actionable": true</span>,
+      "evidence_stale": false,
+      <span class="hi">"evidence_tier": "N"</span>,
+      "metric_id": "tamper.assertion-free-test",
+      "scope": "change",
+      "severity": "low",
+      "value": {
+        "kind": "flag",
+        "value": true
+      }
+    },
+    {
+      <span class="hi">"claim_id": "andon.tamper.test-evidence@1|any|test-evidence-withdrawal"</span>,
+      "delta": null,
+      <span class="hi">"diff_actionable": true</span>,
+      "evidence_stale": false,
+      <span class="hi">"evidence_tier": "N"</span>,
+      "metric_id": "tamper.test-removal",
+      "scope": "change",
+      "severity": "low",
+      "value": {
+        "kind": "flag",
+        "value": true
+      }
+    },
+    <span class="elide">/* … 9 findings elided: clones, artifacts, process … */</span>
+    {
+      <span class="hi">"claim_id": "andon.process.churn@1|any|defect-proneness"</span>,
+      "delta": null,
+      <span class="hi">"diff_actionable": false</span>,
+      "evidence_stale": false,
+      <span class="hi">"evidence_tier": "A"</span>,
+      "metric_id": "process.churn-commits",
+      "scope": "src/cart.ts",
+      "severity": "info",
+      "value": {
+        "kind": "count",
+        "value": 2
+      }
+    }
+  ],
+  "total_findings": 52,
+  "truncated": true,
+  "iteration": {
+    "cap": 3,
+    "count": 1,
+    "escalated": false
+  }
+}<!-- profile:end --></pre>
+        <p class="json-cap">Real output, 2026-08-27, against a two-commit scratch repository; an excerpt of the 52-finding profile with nine findings and a few scalar fields elided, marked where they are. The full record is <code>andon measure --json</code>.</p>
+      </div>
+      <dl class="fields">
+        <div><dt>verdict: block</dt><dd>The line stops. Reserved for tamper signals, test failures, and medium-or-worse findings on metrics the agent can fix inside its own change. Exit code 2.</dd></div>
+        <div><dt>reasons[].code</dt><dd>Why the verdict is what it is, in the tool's own vocabulary — here two tamper signals, and the note that the record is unwitnessed. An agent acts on <code>reasons</code>; a person reads the findings.</dd></div>
+        <div><dt>claim_id</dt><dd>The evidence tuple a number stands on: <code>andon.tamper.test-evidence</code> at version 1, for any language, predicting <code>test-evidence-withdrawal</code>. Pass it to <code>explain_finding</code> and the citation, population, effect and re-review date come back.</dd></div>
+        <div><dt>evidence_tier: N</dt><dd>Novel and unvalidated — calibrated on Andon's own corpus, not on a study. Stated on the wire so a consumer can weigh it, rather than implied by the severity.</dd></div>
+        <div><dt>diff_actionable: true</dt><dd>The agent can fix this inside the change it just made. A <code>false</code> here is the signal not to grind: the finding is real, and it is not this change's to fix.</dd></div>
+        <div><dt>counts_downstream: false</dt><dd>A self-report. Until CI recomputes the change, every rendering says so.</dd></div>
+      </dl>
+    </div>
+
+    <div class="dnp-list">
+      <p class="from">andon explain tamper.test-removal — "What this number does NOT tell you"</p>
+      <h3>What the number that stopped the line does not tell you.</h3>
+      <!-- explain:begin -->
+      <ul>
+        <li>that the removal was illegitimate — deleting the tests for a deleted feature is correct, and this signal cannot tell the two apart</li>
+        <li>that an assertion-free case is worthless — a smoke test that checks a call does not throw is a real test</li>
+        <li>defect density, or the quality of the tests that remain</li>
+        <li>anything about tests in languages this engine has no grammar for, which are not counted at all</li>
+        <li>how it behaves on a language this claim's own corpus barely covers. The should-pass half is the only source of the false-positive rate, and for these two detectors it is 8 TypeScript cases for `test-removal` — every case it has — and 6 TypeScript beside 1 Python for `assertion-free-test`. No JavaScript case, no TSX case, for either. The claim tuple says `any` because the rules are written on node kinds rather than per-language branches, and the four grammars are read the same way; that is a statement about the MECHANISM. The precision figure is a statement about the EVIDENCE, and the evidence is one language</li>
+        <li>anything about test cases the parser could not read — a case inside an ERROR region is not counted on either side, so a removal there is reported as no removal at all. Results over a file the parser did not finish are marked `parse-degraded` and the count is a lower bound (PREMORTEM T3)</li>
+      </ul>
+      <!-- explain:end -->
+    </div>
+
+    <div class="callout">
+      <h3>One thing to weigh before trusting a block.</h3>
+      <p>The two findings above are <code>severity: low</code> — tier N is not admitted to the blocking band under the default policy — and the verdict is still <code>block</code>. A tamper signal stops the line regardless of tier. That is deliberate: a gaming signal that could only advise would not be a gaming signal. It also means the one verdict class not capped by evidence tier rests on the project's own constructed corpus rather than on external study. The next section is what that corpus can and cannot show.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="miss-rate" aria-labelledby="miss-title">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow">the tamper suite, measured</p>
+      <h2 id="miss-title">The miss rate, published.</h2>
+      <p class="lead">Seven detectors answer four questions: has the suite stopped verifying things, is there code the static engines can no longer read, did the quality bar move instead of the code, was an implementation replaced by its expected answers. The precision and recall floors were set before the corpus was measured, and a set of evasions is withheld from the repository to measure whether the public cases have been fitted to. Here is what both say.</p>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <span class="stat-n">102</span>
+        <p class="stat-l">constructed changes in the public corpus — 51 that must fire, 51 that must not — frozen before measurement.</p>
+        <span class="stat-src">fixtures/adversarial · corpus v1, 2026-08-17</span>
+      </div>
+      <div class="stat">
+        <span class="stat-n">7 <small>of 7</small></span>
+        <p class="stat-l">detectors clear the ex-ante floors on that corpus: precision ≥ 0.80, recall ≥ 0.70. A build-failing test keeps the published table equal to the one the code produces.</p>
+        <span class="stat-src">tests/corpus_floors.rs</span>
+      </div>
+      <div class="stat">
+        <span class="stat-n">3 <small>caught · </small>8 <small>evading</small></span>
+        <ol class="cells" aria-label="eleven withheld cases: three caught, eight evading">
+          <li class="caught"></li><li class="caught"></li><li class="caught"></li>
+          <li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li>
+        </ol>
+        <p class="stat-l">on the eleven withheld cases, re-run against the shipped detectors. Filled squares caught; hollow squares evaded.</p>
+        <span class="stat-src">held-back set · re-run 2026-08-25</span>
+      </div>
+      <div class="stat">
+        <span class="stat-n">6 <small>of 7</small></span>
+        <p class="stat-l">detectors sit below the 0.70 recall floor on the withheld cases — four of them at 0.00 — against 0.88 or better on the public corpus.</p>
+        <span class="stat-src">same re-run</span>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div>
+        <h3>Evasions the suite is known to miss.</h3>
+        <p>Written down rather than discovered, with the detector each one walks past. None needs insider knowledge; these are the first moves anyone probing a rule-based detector tries. Closing each is a named piece of work — reachability, constant folding, a config graph, data flow — not a threshold.</p>
+        <ul class="evasions">
+          <li>an <code>extends</code> swapped to a looser base config <span class="det">threshold-config-edit</span></li>
+          <li>real cases replaced by differently-named tautologies <span class="det">assertion-free-test · test-removal</span></li>
+          <li>a rule deleted rather than downgraded <span class="det">threshold-config-edit</span></li>
+          <li>an option raised inside an array-form rule whose name does not say "ceiling" <span class="det">threshold-config-edit</span></li>
+          <li>a rule value spread across several lines, then downgraded <span class="det">threshold-config-edit</span></li>
+          <li>an eslint severity written as a number, <code>2</code> → <code>0</code> <span class="det">threshold-config-edit</span></li>
+          <li>a runtime early return in every test case <span class="det">test-removal</span></li>
+          <li>one blanket file-level <code>eslint-disable</code> <span class="det">suppression-density</span></li>
+          <li>an exclusion pattern replaced by one not anchored above it <span class="det">coverage-exclusion-drift</span></li>
+          <li>a lookup table assembled at run time <span class="det">lookup-table-blowup</span></li>
+          <li>logic moved into a string and evaluated <span class="det">parse-error-delta</span></li>
+        </ul>
+      </div>
+      <div>
+        <h3>What these numbers mean, and what they do not.</h3>
+        <p><strong>They are not field precision and recall.</strong> The public table describes how the detectors do on 102 changes written by the same person who wrote the detectors. The perfect columns in it were the weakest evidence: a first pass scored 1.00 everywhere and was a corpus restating its own implementation, until boundary cases were added and found four real bugs.</p>
+        <p><strong>The withheld count conflates two kinds of case.</strong> Some are overfitting probes the detectors have never been shown in any form; some are regression specimens for shapes a detector was fixed for. Only the first kind measures generalisation, and the figure above does not separate them — so read it as an upper bound on what the suite catches, not a rate.</p>
+        <p><strong>The number that would mean something</strong> is the false-positive rate on real, honest changes. That is measured in a running window — at least thirty changes over at least fourteen days — and gates the public release; it is not a corpus figure.</p>
+        <p><strong>The defensible claim is narrow:</strong> these detectors catch the patterns they enumerate. They are not a general defence against a determined adversary, and the project does not claim they are. The public corpus is refreshed quarterly precisely because a published list of what fires is also a list of what to avoid.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="install" aria-labelledby="install-title">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow">install</p>
+      <h2 id="install-title">One binary. Pick a channel.</h2>
+      <p class="lead">Each command installs the same <code>andon</code> executable. No server, no account, no configuration file to write before the first measurement.</p>
+    </div>
+
+    <div class="install-grid">
+      <div class="cmd">
+        <span class="cmd-label">shell</span>
+        <pre><code>curl -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-cli-installer.sh | sh</code></pre>
+      </div>
+      <div class="cmd">
+        <span class="cmd-label">homebrew</span>
+        <pre><code>brew install gtm-k/tap/andon-cli</code></pre>
+      </div>
+      <div class="cmd">
+        <span class="cmd-label">npm</span>
+        <pre><code>npx @gtm-k/andon-cli</code></pre>
+      </div>
+    </div>
+    <p class="install-note">The package is <code>andon-cli</code>; the command it installs is <code>andon</code>.</p>
+
+    <div class="cmd-then">
+      <div>
+        <h3>Then, in a repository.</h3>
+        <p><code>andon init</code> installs a gate-shaped hook for your harness, removably, and <code>andon init --ci</code> prints the recipe that turns self-reports into attestations. <code>andon measure</code> measures the change in flight — with uncommitted work in the tree it measures the working tree, and the report says which it used. <code>andon explain &lt;metric-id&gt;</code> prints the claim behind any number, and what it does not predict.</p>
+      </div>
+      <div class="cmd">
+        <span class="cmd-label">first measurement</span>
+        <pre><code>andon init
+andon measure</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-row">
+      <span class="lic">Apache-2.0</span>
+      <a href="https://github.com/gtm-k/andon">github.com/gtm-k/andon</a>
+      <a href="https://github.com/gtm-k/andon/blob/main/SECURITY.md">Security policy</a>
+      <a href="https://github.com/gtm-k/andon/blob/main/docs/trust-boundary.md">The trust boundary</a>
+      <a href="https://github.com/gtm-k/andon/blob/main/fixtures/adversarial/README.md">The adversarial corpus</a>
+      <a href="https://github.com/gtm-k/andon/tree/main/registry">The evidence registry</a>
+    </div>
+    <p class="footer-note">Named for the andon cord on a production line: pulled, it lights a lamp and stops the line until the problem is understood.</p>
+  </div>
+</footer>
+
+<script src="assets/demo-playback.js"></script>
+<script>
+  // Theme toggle: system → light → dark → system. Stored per browser; the
+  // page renders correctly with nothing stored.
+  (function () {
+    var html = document.documentElement;
+    var btn = document.getElementById("theme-toggle");
+    if (!btn) return;
+    function current() {
+      return html.getAttribute("data-theme") || "system";
+    }
+    function paint() {
+      var c = current();
+      btn.textContent = "theme: " + c;
+      btn.setAttribute("aria-label", "Theme: " + c + ". Change theme");
+    }
+    btn.addEventListener("click", function () {
+      var next = { system: "light", light: "dark", dark: "system" }[current()];
+      if (next === "system") html.removeAttribute("data-theme");
+      else html.setAttribute("data-theme", next);
+      try {
+        if (next === "system") localStorage.removeItem("andon-theme");
+        else localStorage.setItem("andon-theme", next);
+      } catch (e) {}
+      paint();
+    });
+    paint();
+  })();
+</script>
+</body>
+</html>
