@@ -1,0 +1,85 @@
+# cargo-dist configuration (PLAN P10a-adoption, packaging). `dist generate` renders
+# `.github/workflows/release.yml` from this file; `dist plan` refuses to run while the
+# two disagree, so the workflow is never hand-edited — change this file and regenerate.
+#
+# This file exists so that packaging never touches the root Cargo.toml, which is P0-owned.
+# The one thing dist cannot read from here is its build profile: it hard-codes
+# `--profile dist` (cargo-dist src/build/cargo.rs, PROFILE_DIST) and offers no override,
+# so `[profile.dist]` lives in Cargo.toml under ruling E70, identical to `release`.
+#
+# packaging/README.md is the reader's guide: what each installer is, what is late-bound,
+# and which acts belong to the flip.
+
+[workspace]
+members = ["cargo:."]
+# Every crate inherits `publish = false` from the workspace, which dist reads as "do not
+# distribute". This list is the override (axoproject generic.rs `workspace.packages`): it
+# forces distribution for exactly the two product binaries and leaves every probe, spike,
+# and lint binary out — without a `dist = true` in any crate's Cargo.toml.
+packages = ["andon-cli", "andon-mcp"]
+
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "npm", "homebrew"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Where to host releases
+hosting = "github"
+# Whether to install an updater program
+install-updater = false
+
+# ---- npm: LATE-BOUND -------------------------------------------------------------------
+# The bare `andon` name on npm is dormant and needs a user claim or dispute (PREMORTEM A5)
+# before any artifact may embed it. Until that lands the packages publish under the scope
+# below, as `@gtm-k/andon-cli` and `@gtm-k/andon-mcp`. This is the ONE line to change when
+# the name is bound. (The unscoped bare-name form is `npm-package`, a per-package setting
+# that lives in the crate's own manifest, not here.) No npm publish job is wired: publishing
+# is P10a-dist's, after the claim.
+npm-scope = "@gtm-k"
+
+# ---- Homebrew: formula generation only -------------------------------------------------
+# `dist build` renders a formula per app (`andon-cli.rb`, `andon-mcp.rb`) into the release
+# artifacts. Creating the tap repository, its HOMEBREW_TAP_TOKEN secret, and adding
+# "homebrew" to `publish-jobs` so the release pushes the formula there are flip acts — the
+# tap named here is where they will land. Until then `dist plan` prints a one-line warning
+# that the tap is set but the publish job is not; that warning is the staged state, on
+# purpose.
+tap = "gtm-k/homebrew-tap"
+
+# ---- CI triggers: workflow_dispatch ONLY during development ----------------------------
+# The project's Actions rule while private: no push- or tag-triggered runs. dist renders
+# the trigger from these two keys, so the generated workflow is dispatch-only by
+# construction rather than by a hand edit that `dist plan` would then reject.
+#   dispatch-releases = true   → `on: workflow_dispatch` with a `tag` input (default
+#                                `dry-run`, which plans and builds but publishes nothing);
+#                                the tag-push trigger is NOT rendered.
+#   pr-run-mode = "skip"       → no `pull_request` trigger.
+# ENABLED AT FLIP (P10b): set `dispatch-releases = false` to restore the tag-push trigger
+# (or keep dispatch and release by dispatching with the real tag), set `pr-run-mode` to
+# "plan", then `dist generate` and commit the regenerated workflow.
+dispatch-releases = true
+pr-run-mode = "skip"
+
+# ---- Actions pinned by commit SHA -------------------------------------------------------
+# `.github/workflows/ci.yml` pins every third-party action by commit, never by tag: a tag is
+# a mutable pointer, and these run with a token. dist's template defaults to tags; this map
+# substitutes the commit for each action it renders. The tag each SHA was recorded from is
+# the comment, so an upgrade is legible in a diff. Recorded 2026-08-27 via
+# `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`; recompute when bumping.
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803"          # v6
+"actions/upload-artifact" = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"   # v7
+"actions/download-artifact" = "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" # v8
+"actions/setup-node" = "249970729cb0ef3589644e2896645e5dc5ba9c38"        # v6
+"swatinem/rust-cache" = "6323deb102c322ba6fcbdcafc7e3dddab59af2b6"       # v2, same pin as ci.yml
