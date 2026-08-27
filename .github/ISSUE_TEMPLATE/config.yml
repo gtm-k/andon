@@ -1,0 +1,8 @@
+# Blank issues are off so that every report arrives through a template, and so
+# that the one kind of report that must NOT be an issue — a detector evasion —
+# is routed to the private channel before a form is ever shown.
+blank_issues_enabled: false
+contact_links:
+  - name: Detector evasion, forged attestation, or anything that gets a change past Andon
+    url: https://github.com/gtm-k/andon/blob/main/SECURITY.md
+    about: A security report, not an issue. SECURITY.md says what to include and where the private reporting form is. Do not describe an evasion in a public issue.
