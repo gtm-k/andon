@@ -22,3 +22,17 @@
 # live outside the repo under the project's `wt/` directory instead — see
 # gowtham-workflow/docs/PROJECT-LAYOUT.md. Never symlink or junction this path.
 /.claude/worktrees/
+
+# Git-for-Windows crash dumps. A crashing Git Bash drops `bash.exe.stackdump` in
+# whatever directory it died in, which for this repository is the checkout root.
+#
+# This pattern is here rather than in `.git/info/exclude` because that file is
+# per-machine and does not travel: it protected exactly one working copy while
+# every fresh clone — a contributor's, a CI runner's, and after the flip the
+# public mirror's — had none. The exclusion existing locally made it read as
+# repository-wide, which is the same shape as the missing LICENSE (D35): a
+# protection that is real where you are standing and absent everywhere else.
+#
+# Glob, not the one filename, because the dump is named after whichever binary
+# died — `bash.exe.stackdump` is just the one we happened to produce.
+*.stackdump
