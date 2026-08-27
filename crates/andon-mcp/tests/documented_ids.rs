@@ -76,7 +76,26 @@ const SCANNED: &[(&str, &str)] = &[
 ///
 /// A coverage check that under-covers in the same shape as the thing it guards is
 /// worse than no check, because it reports success while doing it.
-fn rs_files_under(dir: &std::path::Path, prefix: &str, out: &mut Vec<String>) {
+/// Deeper than any real module tree in this crate, shallower than a stack
+/// overflow. A self-referential symlink under `src/` recurses forever: the Codex
+/// gate on `2e90c03` created one and watched the walk go 14 levels deep before a
+/// Windows path-length wall stopped it — a wall CI's Linux runners do not have,
+/// so the same loop there would keep going until the stack gave out. Sixteen is
+/// a bound, not a target; the crate is two files deep today.
+const MAX_DEPTH: usize = 16;
+
+fn rs_files_under(dir: &std::path::Path, prefix: &str, depth: usize, out: &mut Vec<String>) {
+    // Loud, not silent. A walk that quietly stopped at the cap would under-cover
+    // in exactly the shape this guard exists to catch, and report success while
+    // doing it. Either the crate grew a module tree sixteen deep (raise the cap,
+    // on purpose) or something under `src/` points back at itself (remove it).
+    assert!(
+        depth <= MAX_DEPTH,
+        "`src/` is more than {MAX_DEPTH} directories deep at `{prefix}` — a symlink \
+         loop, or a module tree nobody expected. This is a hard stop rather than a \
+         truncated scan, because a scan that silently under-covers is the failure \
+         this file exists to prevent."
+    );
     let entries = std::fs::read_dir(dir).expect("a readable directory");
     for entry in entries.filter_map(|e| e.ok()) {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -87,7 +106,7 @@ fn rs_files_under(dir: &std::path::Path, prefix: &str, out: &mut Vec<String>) {
             format!("{prefix}/{name}")
         };
         if path.is_dir() {
-            rs_files_under(&path, &rel, out);
+            rs_files_under(&path, &rel, depth + 1, out);
         } else if name.ends_with(".rs") {
             out.push(rel);
         }
@@ -102,7 +121,7 @@ fn no_source_file_escapes_the_scan() {
     // carrying tool descriptions would slip past a scan that trusts this list.
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut on_disk = Vec::new();
-    rs_files_under(&src, "", &mut on_disk);
+    rs_files_under(&src, "", 0, &mut on_disk);
     on_disk.sort();
 
     let mut scanned: Vec<String> = SCANNED.iter().map(|(n, _)| (*n).to_string()).collect();
