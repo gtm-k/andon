@@ -94,12 +94,18 @@
     running = false;
   }
 
+  // The final frame derives its lamp state from the transcript the same way
+  // playback does: the last line that names an outcome wins. Hardcoding
+  // "divergent" here would let the lamp claim an outcome a changed transcript
+  // never reached.
   function renderAll() {
     stop();
     screen.textContent = "";
-    var last = "divergent";
+    var last = "idle";
     for (var i = 0; i < lines.length; i++) {
       appendLine(lines[i], classify(lines[i]));
+      var state = lampFor(lines[i]);
+      if (state) last = state;
     }
     setLamp(last);
     screen.scrollTop = screen.scrollHeight;

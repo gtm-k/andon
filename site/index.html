@@ -581,12 +581,12 @@
           <li class="caught"></li><li class="caught"></li><li class="caught"></li>
           <li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li><li class="evaded"></li>
         </ol>
-        <p class="stat-l">on the eleven withheld cases, re-run against the shipped detectors. Filled squares caught; hollow squares evaded.</p>
-        <span class="stat-src">held-back set · re-run 2026-08-25</span>
+        <p class="stat-l">on the eleven withheld cases, re-run against this build. The three caught (filled) are shapes a detector has since been fixed for; the eight (hollow) the detectors have never been shown all evade — <strong>0 of 8</strong>.</p>
+        <span class="stat-src">held-back set · re-run 2026-08-27</span>
       </div>
       <div class="stat">
         <span class="stat-n">6 <small>of 7</small></span>
-        <p class="stat-l">detectors sit below the 0.70 recall floor on the withheld cases — four of them at 0.00 — against 0.88 or better on the public corpus.</p>
+        <p class="stat-l">detectors sit below the 0.70 recall floor on the withheld cases — four of them at 0.00 — against 0.88 or better on the public corpus. The one that clears it does so on a single case.</p>
         <span class="stat-src">same re-run</span>
       </div>
     </div>
@@ -612,7 +612,7 @@
       <div>
         <h3>What these numbers mean, and what they do not.</h3>
         <p><strong>They are not field precision and recall.</strong> The public table describes how the detectors do on 102 changes written by the same person who wrote the detectors. The perfect columns in it were the weakest evidence: a first pass scored 1.00 everywhere and was a corpus restating its own implementation, until boundary cases were added and found four real bugs.</p>
-        <p><strong>The withheld count conflates two kinds of case.</strong> Some are overfitting probes the detectors have never been shown in any form; some are regression specimens for shapes a detector was fixed for. Only the first kind measures generalisation, and the figure above does not separate them — so read it as an upper bound on what the suite catches, not a rate.</p>
+        <p><strong>The withheld set holds two kinds of case, and they are given separately.</strong> Overfitting probes are evasions the detectors have never been shown in any form; regression specimens are shapes a detector was fixed for, kept so the fix stays proven. Only the first kind measures generalisation. On this build the probes stand at <strong>0 of 8</strong> caught and the specimens at 3 of 3 — a combined "3 of 11" would rise with every bug fixed while the property it appears to measure stayed flat, which is why it is not the headline.</p>
         <p><strong>The number that would mean something</strong> is the false-positive rate on real, honest changes. That is measured in a running window — at least thirty changes over at least fourteen days — and gates the public release; it is not a corpus figure.</p>
         <p><strong>The defensible claim is narrow:</strong> these detectors catch the patterns they enumerate. They are not a general defence against a determined adversary, and the project does not claim they are. The public corpus is refreshed quarterly precisely because a published list of what fires is also a list of what to avoid.</p>
       </div>
