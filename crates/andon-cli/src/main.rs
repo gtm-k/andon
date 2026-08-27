@@ -58,6 +58,7 @@ andon — measurement that carries its evidence.
   andon init          install a gate-shaped hook for a harness, removably
   andon hook          what an installed hook runs (see `andon init`)
   andon demo          watch a forged self-report get caught, locally, in a minute
+  andon doctor        write the redacted self-report bundle a false-positive issue needs
 
 Run `andon <command> --help` for one command's options.
 
@@ -160,6 +161,7 @@ fn run() -> Result<ExitCode, String> {
         }
         "hook" => Ok(ExitCode::from(andon_cli::init::hook::cmd_hook(&flags)?)),
         "demo" => Ok(ExitCode::from(andon_cli::demo::cmd_demo(&flags)?)),
+        "doctor" => Ok(ExitCode::from(andon_cli::doctor::cmd_doctor(&flags)?)),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
 }
