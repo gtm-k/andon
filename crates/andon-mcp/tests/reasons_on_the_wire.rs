@@ -26,6 +26,76 @@ mod common;
 use common::{scratch_repo, Server};
 use serde_json::{json, Value};
 
+/// The reason class F1 was actually about — which the first test cannot reach.
+///
+/// The Codex gate on this file proved the gap structurally rather than arguing
+/// it. `severity-med-plus` is built with `metric_ids: blocking_metrics`, a real
+/// backing result that was always plumbed. `policy-change` and
+/// `policy-change-loosening` are built with `metric_ids: Vec::new()`
+/// (`verdict/mod.rs:413`, `:432`): no backing `MeasurementResult`, and before D1
+/// no path into the agent JSON at all. They fire only when the change touches
+/// `.andon.toml` (`detect_policy_change` in `measure.rs`), which `scratch_repo()`
+/// never does. So `a_blocking_verdict_reaches_the_agent_with_its_reasons_attached`
+/// pins the field on the wire and the easy classes inside it; the test below pins
+/// the class the finding named.
+const POLICY_CHANGE_LOOSENING: &str = "policy-change-loosening";
+
+#[test]
+fn a_policy_loosening_reaches_the_agent_as_the_reason_it_was_blocked_for() {
+    // The E61 repro: an agent edits policy mid-change to make its own gate
+    // easier. `block_on_test_failure` defaults to `true` and is classified
+    // `RelaxesWhenFalse`, so writing `false` into a change that has no ledgered
+    // justification is a loosening with nothing to excuse it — the exact
+    // scenario B6's rule exists to police, and the one that produced a bare
+    // `"verdict":"block"` over MCP.
+    let repo = scratch_repo();
+    std::fs::write(
+        repo.path().join(".andon.toml"),
+        "[severity]\nblock_on_test_failure = false\n",
+    )
+    .expect("policy edit joins the change in flight");
+
+    let mut server = Server::start(repo.path());
+    server.initialize("2025-11-25");
+    let result = server.call_tool("measure_change", json!({}));
+    assert_ne!(result["isError"], true, "{result}");
+    let payload = result["content"][0]["text"].as_str().expect("text content");
+    let profile: Value = serde_json::from_str(payload).expect("one JSON document");
+
+    let reasons = profile["reasons"]
+        .as_array()
+        .expect("`reasons` is absent from the agent payload — this is F1 exactly");
+    let codes: Vec<&str> = reasons.iter().filter_map(|r| r["code"].as_str()).collect();
+
+    // Not "some reason is present": THIS reason. The whole point of F1 was that
+    // this class had no route to the agent while others did, so a test that
+    // accepted any reason would pass on exactly the payload F1 complained about.
+    let loosening = reasons
+        .iter()
+        .find(|r| r["code"].as_str() == Some(POLICY_CHANGE_LOOSENING))
+        .unwrap_or_else(|| {
+            panic!(
+                "the agent loosened its own gate and was not told so. Reason codes on \
+                 the wire: {codes:?}. If the loosening fired, this is F1 for the class \
+                 it was raised about; if it did not fire, the fixture no longer reaches \
+                 `detect_policy_change` and must be repaired rather than this relaxed.\n\
+                 {profile}"
+            )
+        });
+
+    let message = loosening["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.is_empty(),
+        "`{POLICY_CHANGE_LOOSENING}` reached the wire with no message, so the agent \
+         is told it loosened something and not what: {loosening}"
+    );
+    assert!(
+        message.contains("block_on_test_failure"),
+        "the loosening's message does not name the knob that moved, so an agent \
+         cannot act on it: {message:?}"
+    );
+}
+
 #[test]
 fn a_blocking_verdict_reaches_the_agent_with_its_reasons_attached() {
     let repo = scratch_repo();
