@@ -51,3 +51,12 @@ andon-core = { path = "crates/andon-core" }
 [profile.release]
 # Determinism-relevant: no incremental codegen in release artifacts.
 incremental = false
+
+# cargo-dist builds `--profile dist` and provides no override (build/cargo.rs, PROFILE_DIST).
+# Deliberately identical to `release`, not cargo-dist's `lto = "thin"` default: the shipped
+# and attested binary must be the same profile `scripts/self-measure.sh` builds, or the
+# self-report and the artifact measure different bytes. This is the one edit to a P0-owned
+# file since P0 closed — a build profile is not workspace membership, which the glob rule
+# governs. Ruled E70.
+[profile.dist]
+inherits = "release"

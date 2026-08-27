@@ -1,0 +1,285 @@
+==== stranger path ====
+when      2026-08-27T23:07:08Z
+host      MINGW64_NT-10.0-26200 x86_64
+git       git version 2.39.0.windows.1
+mode      local validation: ANDON_BIN=C:/Users/gowth/AppData/Local/Temp/claude/C--Users-gowth-Documents-andon/a8afd9cb-cff7-4d71-a243-39a40d7b472b/scratchpad/extracted/andon.exe
+andon     /tmp/claude/C--Users-gowth-Documents-andon/a8afd9cb-cff7-4d71-a243-39a40d7b472b/scratchpad/extracted/andon (andon 0.1.0)
+andon-mcp /tmp/claude/C--Users-gowth-Documents-andon/a8afd9cb-cff7-4d71-a243-39a40d7b472b/scratchpad/extracted/andon-mcp
+
+==== Block 1 as a stranger runs it (not executed here: resolves at flip) ====
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-mcp-installer.sh | sh
+export PATH="$HOME/.cargo/bin:$PATH"
+andon --version
+
+==== Block 1: install (local validation: PATH prepend of ANDON_BIN) ====
+export PATH="/tmp/claude/C--Users-gowth-Documents-andon/a8afd9cb-cff7-4d71-a243-39a40d7b472b/scratchpad/extracted:$PATH"
+andon --version
+---- output ----
+andon 0.1.0
+  ok    block 1: andon runs and reports a version
+
+==== Block 2: a fresh repository, the hook, one source file in flight ====
+mkdir andon-stranger && cd andon-stranger && git init -q -b main
+git config user.name stranger && git config user.email stranger@example.com
+andon init --claude
+git add -A && git commit -q -m "andon: gate-shaped hook, removable"
+mkdir src && cat > src/duration.ts <<'EOF'
+/** Parse a duration like "10s", "5m", or "2h" into seconds; null when it is not one. */
+export function parseDuration(input: string): number | null {
+  const text = input.trim();
+  if (text.length < 2) {
+    return null;
+  }
+  const unit = text.slice(-1);
+  const amount = Number(text.slice(0, -1));
+  if (!Number.isInteger(amount) || amount < 0) {
+    return null;
+  }
+  switch (unit) {
+    case "s":
+      return amount;
+    case "m":
+      return amount * 60;
+    case "h":
+      return amount * 3600;
+    default:
+      return null;
+  }
+}
+EOF
+andon measure
+---- output ----
+
+Claude Code integration installed.
+
+  wrote      C:/Users/gowth/AppData/Local/Temp/tmp.mhMCEGfnPN/andon-stranger\.claude\settings.json — a Stop hook running `andon hook claude-stop`: blocks the agent's stop on a `block` verdict and feeds it the findings
+  wrote      C:/Users/gowth/AppData/Local/Temp/tmp.mhMCEGfnPN/andon-stranger\.mcp.json — registers the andon MCP server (measure_change, get_results, await_results, explain_finding, get_ledger)
+
+Both entries need `andon` and `andon-mcp` on PATH for the account Claude Code runs as. The Stop hook blocks only on a `block` verdict and says nothing when no change is in flight. Undo everything with `andon init --claude --remove`.
+
+
+ PASS  nothing above the advisory floor. The line keeps moving.
+ change   d0f01101f408 → your uncommitted working tree (fork point against main)
+ reading  1 file(s) changed · 5 engine(s) · 33 result(s) · record unwitnessed
+ trust    measured against your uncommitted working tree, so no CI recompute is possible — not now and not later, because CI cannot check out your working tree. Real, useful, and outside the trust boundary by construction. Commit the change to make it attestable
+ note     1 unstaged path(s) were read by writing their working-tree content to this repository's object database as unreferenced blobs, without touching your index. `git gc` removes them. Where a path declares a `filter` attribute these are NOT the objects `git add` would create, because the filter is a program this repository defines and it was not run — the note below names those paths.
+
+ WHY
+  · measurement-incomplete    this measurement is unwitnessed: some of what it set out to measure was not measured, and the results say which
+
+ No finding rose above the advisory floor. 28 measured number(s) are in the record; `andon report --full` prints them.
+
+ NOT MEASURED 5 result(s) have no number, and say why. `andon report --full` names each.
+
+ Every number above stands on a claim you can read: `andon explain <metric-id>`.
+
+  ok    block 2: the gate-shaped hook installed
+  ok    block 2: a non-empty change was read (A1)
+  ok    block 2: results were produced with zero configuration
+  ok    block 2: differentiator -- the verdict states where its trust ends (A3)
+  ok    block 2: differentiator -- every number carries its evidence (A3)
+
+==== Block 3: commit, measure the clean tree, explain one number ====
+git add -A && git commit -q -m "parse durations"
+andon measure --full
+andon explain tamper.test-removal
+---- output ----
+
+ PASS  nothing above the advisory floor. The line keeps moving.
+ change   d0f01101f408 → 8ed541c45225 (last merged change)
+ reading  1 file(s) changed · 5 engine(s) · 33 result(s) · record unwitnessed
+ trust    self-reported. No CI recompute has witnessed it, so nothing here counts as attested evidence yet
+
+ NOTE these numbers are not about your working change
+   asked for  the working change against main
+   measured   the last merged change, d0f01101f408..8ed541c45225
+   nothing is in flight in this checkout, so there was no working change to measure. These numbers describe the most recent commit, not uncommitted work.
+
+ WHY
+  · measurement-incomplete    this measurement is unwitnessed: some of what it set out to measure was not measured, and the results say which
+
+ FINDINGS (worst first; a sort, not a score — nothing here is added up)
+  · INFO  clones.clone-groups  this change
+       0
+       evidence  tier N · Novel. Motivated by Juergens, Deissenboeck, Hummel and Wagner, 'Do Code Clones Matter?', ICSE 2009, which found inconsistent changes to cloned code associated with faults. That finding is about clones in general and about their study's systems; no study evaluates this detector, and none of the clone literature establishes that removing a given clone improves anything.
+       does not predict  that removing the duplication would improve anything — the literature reports prevalence and co-change, not remediation benefit, and an extracted abstraction can be worse than the repetition it replaces
+  · INFO  clones.duplicated-token-ratio  this change
+       0.0000
+       evidence  tier N · Novel. Motivated by Juergens, Deissenboeck, Hummel and Wagner, 'Do Code Clones Matter?', ICSE 2009, which found inconsistent changes to cloned code associated with faults. That finding is about clones in general and about their study's systems; no study evaluates this detector, and none of the clone literature establishes that removing a given clone improves anything.
+       does not predict  that removing the duplication would improve anything — the literature reports prevalence and co-change, not remediation benefit, and an extracted abstraction can be worse than the repetition it replaces
+  · INFO  clones.duplicated-tokens  this change
+       0
+       evidence  tier N · Novel. Motivated by Juergens, Deissenboeck, Hummel and Wagner, 'Do Code Clones Matter?', ICSE 2009, which found inconsistent changes to cloned code associated with faults. That finding is about clones in general and about their study's systems; no study evaluates this detector, and none of the clone literature establishes that removing a given clone improves anything.
+       does not predict  that removing the duplication would improve anything — the literature reports prevalence and co-change, not remediation benefit, and an extracted abstraction can be worse than the repetition it replaces
+  · INFO  clones.file-duplicated-tokens  src/duration.ts
+       0
+       evidence  tier N · Novel. Motivated by Juergens, Deissenboeck, Hummel and Wagner, 'Do Code Clones Matter?', ICSE 2009, which found inconsistent changes to cloned code associated with faults. That finding is about clones in general and about their study's systems; no study evaluates this detector, and none of the clone literature establishes that removing a given clone improves anything.
+       does not predict  that removing the duplication would improve anything — the literature reports prevalence and co-change, not remediation benefit, and an extracted abstraction can be worse than the repetition it replaces
+  · INFO  clones.largest-clone-tokens  this change
+       0
+       evidence  tier N · Novel. Motivated by Juergens, Deissenboeck, Hummel and Wagner, 'Do Code Clones Matter?', ICSE 2009, which found inconsistent changes to cloned code associated with faults. That finding is about clones in general and about their study's systems; no study evaluates this detector, and none of the clone literature establishes that removing a given clone improves anything.
+       does not predict  that removing the duplication would improve anything — the literature reports prevalence and co-change, not remediation benefit, and an extracted abstraction can be worse than the repetition it replaces
+  · INFO  static.cognitive-complexity.typescript  src/duration.ts:2 parseDuration
+       4
+       evidence  tier B · Munoz Baron, Wyrich & Wagner, ESEM 2020
+       does not predict  defect density
+  · INFO  static.cyclomatic-complexity.typescript  src/duration.ts:2 parseDuration
+       7
+       evidence  tier B · Landman, Serebrenik, Bouwers & Vinju, J. Software: Evolution and Process 28(7):589-618, 2016
+       does not predict  defect density
+  · INFO  static.parse-errors  src/duration.ts
+       0
+       evidence  tier N · None. An instrument reading, introduced by PREMORTEM T3.
+       does not predict  code quality, in any direction
+  · INFO  static.parse-missing  src/duration.ts
+       0
+       evidence  tier N · None. An instrument reading, introduced by PREMORTEM T3.
+       does not predict  code quality, in any direction
+  · INFO  tamper.assertion-free-test  this change
+       did not fire
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1 (fixtures/adversarial, frozen 2026-08-17, digest 9aa97c6d), not against a study. Motivated by PREMORTEM S1 — a measured system whose tests are also the measurement's subject can be improved by removing the subject — and, for the assertion half, by the test-smell literature (van Deursen, Moonen, van den Bergh and Kok, 'Refactoring Test Code', XP 2001), which describes smells qualitatively and validates nothing about this detector.
+       does not predict  that the removal was illegitimate — deleting the tests for a deleted feature is correct, and this signal cannot tell the two apart
+  · INFO  tamper.assertion-free-test.magnitude  this change
+       0
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1 (fixtures/adversarial, frozen 2026-08-17, digest 9aa97c6d), not against a study. Motivated by PREMORTEM S1 — a measured system whose tests are also the measurement's subject can be improved by removing the subject — and, for the assertion half, by the test-smell literature (van Deursen, Moonen, van den Bergh and Kok, 'Refactoring Test Code', XP 2001), which describes smells qualitatively and validates nothing about this detector.
+       does not predict  that the removal was illegitimate — deleting the tests for a deleted feature is correct, and this signal cannot tell the two apart
+  · INFO  tamper.coverage-exclusion-drift  this change
+       did not fire
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. Motivated by the arithmetic: excluding a path raises a coverage percentage without testing anything, and lowering a threshold turns a red build green without changing the code that made it red. Both edits are one line in a file review rarely reaches.
+       does not predict  that the loosening was unjustified — most are deliberate, which is why this outcome is reported advisory rather than blocking (round-1 B6)
+  · INFO  tamper.coverage-exclusion-drift.magnitude  this change
+       0
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. Motivated by the arithmetic: excluding a path raises a coverage percentage without testing anything, and lowering a threshold turns a red build green without changing the code that made it red. Both edits are one line in a file review rarely reaches.
+       does not predict  that the loosening was unjustified — most are deliberate, which is why this outcome is reported advisory rather than blocking (round-1 B6)
+  · INFO  tamper.lookup-table-blowup  this change
+       did not fire
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. Motivated by the shape a test-satisfying non-implementation takes: a table of the exact inputs the suite uses, consulted where a computation was expected. It passes every test and generalises to nothing.
+       does not predict  that the table is wrong — precomputed tables are a legitimate optimisation
+  · INFO  tamper.lookup-table-blowup.magnitude  this change
+       0
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. Motivated by the shape a test-satisfying non-implementation takes: a table of the exact inputs the suite uses, consulted where a computation was expected. It passes every test and generalises to nothing.
+       does not predict  that the table is wrong — precomputed tables are a legitimate optimisation
+  · INFO  tamper.parse-error-delta  this change
+       did not fire
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. The parse half is named in Andon's own pre-mortem (PREMORTEM T3): tree-sitter ERROR and MISSING nodes hide code from every static engine, so a rising count is a rising blind spot. The suppression half rests on arithmetic rather than literature — a directive in a comment is the cheapest way to make a finding disappear without changing the code it is about.
+       does not predict  that either was deliberate — a documented suppression is normal practice, and a grammar older than a language feature produces parse faults on correct code
+  · INFO  tamper.parse-error-delta.magnitude  this change
+       0
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. The parse half is named in Andon's own pre-mortem (PREMORTEM T3): tree-sitter ERROR and MISSING nodes hide code from every static engine, so a rising count is a rising blind spot. The suppression half rests on arithmetic rather than literature — a directive in a comment is the cheapest way to make a finding disappear without changing the code it is about.
+       does not predict  that either was deliberate — a documented suppression is normal practice, and a grammar older than a language feature produces parse faults on correct code
+  · INFO  tamper.suppression-density  this change
+       did not fire
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. The parse half is named in Andon's own pre-mortem (PREMORTEM T3): tree-sitter ERROR and MISSING nodes hide code from every static engine, so a rising count is a rising blind spot. The suppression half rests on arithmetic rather than literature — a directive in a comment is the cheapest way to make a finding disappear without changing the code it is about.
+       does not predict  that either was deliberate — a documented suppression is normal practice, and a grammar older than a language feature produces parse faults on correct code
+  · INFO  tamper.suppression-density.magnitude  this change
+       0
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. The parse half is named in Andon's own pre-mortem (PREMORTEM T3): tree-sitter ERROR and MISSING nodes hide code from every static engine, so a rising count is a rising blind spot. The suppression half rests on arithmetic rather than literature — a directive in a comment is the cheapest way to make a finding disappear without changing the code it is about.
+       does not predict  that either was deliberate — a documented suppression is normal practice, and a grammar older than a language feature produces parse faults on correct code
+  · INFO  tamper.test-removal  this change
+       did not fire
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1 (fixtures/adversarial, frozen 2026-08-17, digest 9aa97c6d), not against a study. Motivated by PREMORTEM S1 — a measured system whose tests are also the measurement's subject can be improved by removing the subject — and, for the assertion half, by the test-smell literature (van Deursen, Moonen, van den Bergh and Kok, 'Refactoring Test Code', XP 2001), which describes smells qualitatively and validates nothing about this detector.
+       does not predict  that the removal was illegitimate — deleting the tests for a deleted feature is correct, and this signal cannot tell the two apart
+  · INFO  tamper.test-removal.magnitude  this change
+       0
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1 (fixtures/adversarial, frozen 2026-08-17, digest 9aa97c6d), not against a study. Motivated by PREMORTEM S1 — a measured system whose tests are also the measurement's subject can be improved by removing the subject — and, for the assertion half, by the test-smell literature (van Deursen, Moonen, van den Bergh and Kok, 'Refactoring Test Code', XP 2001), which describes smells qualitatively and validates nothing about this detector.
+       does not predict  that the removal was illegitimate — deleting the tests for a deleted feature is correct, and this signal cannot tell the two apart
+  · INFO  tamper.threshold-config-edit  this change
+       did not fire
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. Motivated by the arithmetic: excluding a path raises a coverage percentage without testing anything, and lowering a threshold turns a red build green without changing the code that made it red. Both edits are one line in a file review rarely reaches.
+       does not predict  that the loosening was unjustified — most are deliberate, which is why this outcome is reported advisory rather than blocking (round-1 B6)
+  · INFO  tamper.threshold-config-edit.magnitude  this change
+       0
+       evidence  tier N · Novel. Calibrated against Andon's own adversarial corpus v1, not against a study. Motivated by the arithmetic: excluding a path raises a coverage percentage without testing anything, and lowering a threshold turns a red build green without changing the code that made it red. Both edits are one line in a file review rarely reaches.
+       does not predict  that the loosening was unjustified — most are deliberate, which is why this outcome is reported advisory rather than blocking (round-1 B6)
+  · INFO  process.change-coupling  src/duration.ts
+       0
+       evidence  tier B · D'Ambros, Lanza & Robbes, 'On the Relationship Between Change Coupling and Software Defects', WCRE 2009
+       does not predict  that the absent files should have been changed; co-change history is not a specification
+  · INFO  process.churn-commits  src/duration.ts
+       1
+       evidence  tier A · Rahman & Devanbu, 'How, and why, process metrics are better', ICSE 2013; replicated at scale by Majumder, Mody & Menzies, 'Revisiting process versus product metrics: a large scale analysis', Empirical Software Engineering (online 2021, issue 2022)
+       does not predict  that this file will fail — the studies rank metric families for prediction, not individual files for outcomes
+  · INFO  process.churn-lines  src/duration.ts
+       22
+       evidence  tier A · Rahman & Devanbu, 'How, and why, process metrics are better', ICSE 2013; replicated at scale by Majumder, Mody & Menzies, 'Revisiting process versus product metrics: a large scale analysis', Empirical Software Engineering (online 2021, issue 2022)
+       does not predict  that this file will fail — the studies rank metric families for prediction, not individual files for outcomes
+  · INFO  process.code-age-days  src/duration.ts
+       0
+       evidence  tier B · Moser, Pedrycz & Succi, 'A comparative analysis of the efficiency of change metrics and static code attributes for defect prediction', ICSE 2008 (origin of the AGE change metric); family evidence from Rahman & Devanbu, ICSE 2013
+       does not predict  that recently changed code is defective — recency is a risk indicator, not a fault
+  · INFO  process.hotspot  src/duration.ts
+       4
+       evidence  tier B · Tornhill, 'Your Code as a Crime Scene' (Pragmatic Bookshelf, 2015) for the churn-x-complexity formulation; the change half is evidenced by Rahman & Devanbu, ICSE 2013
+       does not predict  defect density, or any outcome — the product of two indicators is not itself a validated predictor
+  · INFO  process.ownership-entropy  src/duration.ts
+       0.0000
+       evidence  tier A · Rahman & Devanbu, ICSE 2013 (ownership metrics OWN/MINOR/MAJOR in the ranked suite); Bird, Nagappan, Murphy, Gall & Devanbu, 'Don't touch my code! Examining the effects of ownership on software quality', ESEC/FSE 2011
+       does not predict  that diffused ownership caused anything; the studies report association, not causation
+  · INFO  static.sloc  src/duration.ts
+       21
+       evidence  tier A · Sjoberg, Yamashita, Anda, Mockus & Dyba, IEEE Trans. Software Engineering 39(8):1144-1156, 2013
+       does not predict  that a smaller file is a better file — size is the confound to control for, not the thing to reduce
+  · INFO  static.sloc  src/duration.ts:2 parseDuration
+       21
+       evidence  tier A · Sjoberg, Yamashita, Anda, Mockus & Dyba, IEEE Trans. Software Engineering 39(8):1144-1156, 2013
+       does not predict  that a smaller file is a better file — size is the confound to control for, not the thing to reduce
+  · INFO  static.unmeasured-files  this change
+       0
+       evidence  tier N · None. An instrument reading, introduced by PREMORTEM T3.
+       does not predict  code quality, in any direction
+
+ NOT MEASURED (an absence, never a zero)
+  artifacts.uncovered-changed-lines  this change
+       unwitnessed: no coverage report found
+
+ Every number above stands on a claim you can read: `andon explain <metric-id>`.
+
+
+  tamper.test-removal
+  ────────────────────────
+  emitted by      tamper
+  class           diff-actionable — an agent can fix this inside its own change, so policy may let it stop the line
+  compare set     yes — seed-free and byte-reproducible, so the CI verifier recomputes it and compares digests
+  policy in force MED+ is admitted for tiers A, B, and only on diff-actionable metrics
+
+  How its numbers become a severity
+    Ranked per result by the detector that produced it, rather than by a threshold on the value.
+    A number computed over a file the parser could not fully read is capped below the blocking band whatever this ladder says.
+
+  The claim this number stands on
+    id            andon.tamper.test-evidence@1|any|test-evidence-withdrawal
+    tuple         andon.tamper.test-evidence at version 1 · any · predicts test-evidence-withdrawal
+    tier          N — novel and unvalidated — motivated by evidence, not yet supported by it
+    citation      Novel. Calibrated against Andon's own adversarial corpus v1 (fixtures/adversarial, frozen 2026-08-17, digest 9aa97c6d), not against a study. Motivated by PREMORTEM S1 — a measured system whose tests are also the measurement's subject can be improved by removing the subject — and, for the assertion half, by the test-smell literature (van Deursen, Moonen, van den Bergh and Kok, 'Refactoring Test Code', XP 2001), which describes smells qualitatively and validates nothing about this detector.
+    population    102 constructed changes: 51 written to exhibit the behaviour and 51 written to look like it and not be. Not a field population, and not a sample of anything — the cases were chosen to test the rules, so the corpus says whether the rules do what they say and nothing about how often the behaviour occurs.
+    effect        none claimed beyond detection. Two counts: the net test cases the change removes plus those it newly marks skipped, and the test cases it adds or edits into asserting nothing. Both detectors clear the ex-ante floors of 0.80 precision and 0.70 recall on corpus v1 — the measured table is in fixtures/adversarial/README.md and is gated by tests/corpus_floors.rs.
+    owner         gtm-k
+    re-reviewed   2027-05-17
+
+  What this number does NOT tell you
+    · that the removal was illegitimate — deleting the tests for a deleted feature is correct, and this signal cannot tell the two apart
+    · that an assertion-free case is worthless — a smoke test that checks a call does not throw is a real test
+    · defect density, or the quality of the tests that remain
+    · anything about tests in languages this engine has no grammar for, which are not counted at all
+    · how it behaves on a language this claim's own corpus barely covers. The should-pass half is the only source of the false-positive rate, and for these two detectors it is 8 TypeScript cases for `test-removal` — every case it has — and 6 TypeScript beside 1 Python for `assertion-free-test`. No JavaScript case, no TSX case, for either. The claim tuple says `any` because the rules are written on node kinds rather than per-language branches, and the four grammars are read the same way; that is a statement about the MECHANISM. The precision figure is a statement about the EVIDENCE, and the evidence is one language
+    · anything about test cases the parser could not read — a case inside an ERROR region is not counted on either side, so a removal there is reported as no removal at all. Results over a file the parser did not finish are marked `parse-degraded` and the count is a lower bound (PREMORTEM T3)
+
+  The strongest this finding can be
+    its own ladder reaches at most        Critical
+    the policy in force caps it at       Low
+    so in this repository, at most       Low — this can advise; it cannot stop the line
+      because tier N is not among the tiers this policy admits to the blocking band
+      and a number computed over input the parser could not fully read is capped below the band whatever else is true
+
+  In the last measurement of this checkout (d0f01101f408 → 8ed541c45225)
+    INFO    this change                                  did not fire
+
+  ok    block 3: a clean tree measures the last merged change and says so (A1)
+  ok    block 3: the source file was measured
+  ok    block 3: a number is printed with its evidence tier
+  ok    block 3: every number says what it does not predict
+  ok    block 3: the claim behind a tamper detector, and its limits, are readable
+
+==== done in 4s: three blocks, every assertion held ====
+undo the hook with: andon init --claude --remove
