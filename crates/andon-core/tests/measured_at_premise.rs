@@ -73,9 +73,24 @@ fn engine_crate_srcs(root: &Path) -> Vec<(String, PathBuf)> {
 }
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
+    // Loud, not silent. The first version returned quietly on an unreadable
+    // directory. A whole unreadable crate would still trip the
+    // `crates_with_a_site` assertion below — but an unreadable *nested*
+    // subdirectory beside a readable sibling would not: the sibling satisfies
+    // `found_here`, and an offending `measured_at:` inside the skipped subtree
+    // goes unflagged with neither assertion firing. That is the walk
+    // under-covering in exactly the shape it guards (D43, the Codex gate on
+    // D42). A directory this test cannot read is a failure of the test's
+    // premise, not a thing to step around.
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!(
+            "cannot read `{}` while checking the measured_at premise: {e}. \
+             An unreadable directory here means the scan is incomplete, and an \
+             incomplete scan that reports success is the failure this test exists \
+             to prevent.",
+            dir.display()
+        )
+    });
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         if path.is_dir() {
