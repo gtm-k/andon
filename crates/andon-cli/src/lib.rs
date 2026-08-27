@@ -38,6 +38,7 @@
 pub mod args;
 pub mod attest;
 pub mod demo;
+pub mod doctor;
 pub mod explain;
 pub mod init;
 pub mod jobs;
