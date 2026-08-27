@@ -1,0 +1,104 @@
+# The registry pull-request gate.
+#
+# WHY A SEPARATE WORKFLOW
+#
+# The evidence registry's review ethos — a primary source per claim, a stated
+# `does_not_predict`, a staggered expiry — is the product, and it is also how a
+# contribution funnel dies under one maintainer: every registry pull request
+# would wait on the same person reading the same fields by hand. This workflow
+# takes the mechanical half of that reading off the human, so that human review
+# of a registry change is a sampling audit of what the machine cannot check.
+# registry/REVIEW-POLICY.md says which is which.
+#
+# WHAT IT DOES
+#
+# Runs `andon-registry-lint` over `registry/` with the repository's own policy,
+# with the same arguments as ci.yml's `registry-lint` job, and puts the lint's
+# output — errors, notices, and the claim and metric counts against the budget —
+# in the job summary where a reviewer sees it without opening a log. On a pull
+# request it also lists which registry files the change touches.
+#
+# WHAT IT DOES NOT DO
+#
+# It does not resolve `citation_ref`, check that a citation is a primary
+# source, or judge whether a `does_not_predict` is specific. The lint has no
+# network and no judgement; those checks are the reviewer's, per
+# registry/REVIEW-POLICY.md. A green run here means the registry is well-formed,
+# every metric cites a declared claim, and the budget holds — not that the
+# evidence is good.
+#
+# Every third-party action is pinned by commit SHA with the tag in a trailing
+# comment, for the reason ci.yml gives: a tag is a pointer whoever controls it
+# can move.
+
+name: registry-pr
+
+on:
+  # workflow_dispatch only during development: the repository runs on free-tier
+  # Actions minutes, and every workflow is dispatch-only until release.
+  workflow_dispatch:
+  #
+  # Enabled at flip (Phase 10 item 6). Uncomment to make this the check every
+  # registry pull request gets:
+  #
+  # pull_request:
+  #   paths:
+  #     - 'registry/**'
+  #     - '.andon.toml'
+  #     - '.github/workflows/registry-pr.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  registry-lint:
+    name: evidence registry (pull request)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Which registry files the pull request touches, for the reviewer. The
+      # base SHA reaches the script through `env:` rather than `${{ }}`
+      # interpolation, as ci.yml's engines-change gate explains: through the
+      # environment the script only ever sees it as data.
+      - name: Changed registry files
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          {
+            echo '## Registry files in this pull request'
+            echo
+            git diff --name-only "$BASE_SHA" HEAD -- registry/ .andon.toml | sed 's/^/- /'
+            echo
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # The lint's arguments are ci.yml's. `--quiet` here is cargo's, not the
+      # lint's: it keeps compile progress out of the captured output, while the
+      # lint itself stays verbose so staleness and unused-claim notices reach
+      # the reviewer — a notice that only appears on failure is one nobody
+      # reads. `pipefail` so the lint's exit code survives the tee.
+      - name: Registry lint
+        run: |
+          set -euo pipefail
+          cargo run --quiet -p andon-registry-lint -- --policy .andon.toml registry/ 2>&1 | tee registry-lint.txt
+
+      # Always, so a failing lint is in the summary and not only in the log a
+      # contributor has to go and find.
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Registry lint'
+            echo
+            echo '```'
+            cat registry-lint.txt 2>/dev/null || echo '(the lint did not run)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
