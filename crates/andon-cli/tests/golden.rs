@@ -15,7 +15,11 @@
 //!    against these committed reference payloads, which detects the same class
 //!    of change with one fewer party.
 //! 2. **The cross-environment determinism study** (VISION §6): byte-identical
-//!    per-result digests over the deterministic compare set.
+//!    per-result digests over the deterministic compare set. Within-regime for
+//!    the process family, per P4's matrix semantics: its regime carries the
+//!    machine's git version, so two environments with different gits are two
+//!    regimes by design, and the digest comparison here says exactly that — see
+//!    [`RECORDED_GIT_VERSION`].
 //! 3. **P10a's stability study.**
 //!
 //! # The tolerance, fixed ex ante and not negotiable after the fact
@@ -50,8 +54,11 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use andon_core::schema::enums::InvocationSource;
-use andon_core::schema::payload::{MeasurementRecord, MeasurementResult, MetricValue};
+use andon_core::schema::enums::{EngineFamily, InvocationSource};
+use andon_core::schema::payload::{
+    CompareContext, MeasurementRecord, MeasurementResult, MetricValue,
+};
+use andon_core::schema::regime::MeasurementRegime;
 
 /// One result, reduced to the facts a reference payload pins.
 ///
@@ -199,6 +206,114 @@ fn within_band(expected: f64, actual: f64) -> bool {
     (expected - actual).abs() <= tolerance
 }
 
+/// The `git --version` line of the machine that last ran
+/// `ANDON_RERECORD_GOLDEN` — the one environment-supplied field inside the
+/// process family's `measurement_regime`, and therefore the one digest input
+/// that may legitimately differ between the recording machine and the machine
+/// running this suite. Every other regime field is pinned twice over:
+/// `engine_version` comes from the crate that is being tested, and
+/// `history_window_days` from the policy whose `policy_hash` is asserted above
+/// the results.
+///
+/// A restated fact, but one that cannot drift silently: on any environment
+/// whose git differs, [`assert_digest_agrees`] accepts the difference only
+/// after re-hashing the recomputed result with THIS value substituted in and
+/// getting the recorded digest back byte for byte. A wrong value here is a
+/// loud failure naming this constant, never a quiet pass. After re-recording
+/// on a machine with a different git, update it to that machine's
+/// `git --version` line — `record_reference_payloads` prints the value to use.
+const RECORDED_GIT_VERSION: &str = "git version 2.39.0.windows.1";
+
+/// The digest comparison, made exactly as regime-aware as the design promises.
+///
+/// The product refuses to promise cross-regime digest equality: the process
+/// family's regime carries the machine's git version (P4 — "a version change
+/// cannot pass as an equal measurement"), the regime sits inside
+/// `ResultDigestInput`, and the verifier classifies a regime difference as
+/// `unwitnessed-version-skew` rather than as tampering. So this suite asserts:
+///
+/// - **Equal digests**: agreement, nothing more to check.
+/// - **Unequal, any family but process**: hard failure. Those regimes are
+///   pinned by Cargo.lock and carry nothing environment-supplied, so their
+///   digests are byte-identical across machines and a difference is a real
+///   change to a digest-covered fact.
+/// - **Unequal, process, git equal to [`RECORDED_GIT_VERSION`]**: hard
+///   failure. Same regime means byte-exact comparison, tamper detection at
+///   full strength — this is what the recording machine always runs.
+/// - **Unequal, process, git differs**: accepted only on proof. The
+///   recomputed result's digest must hash from its own digest input, and
+///   substituting `git_version` — that field alone — with the recorded value
+///   must reproduce the recorded digest exactly. SHA-256 then witnesses that
+///   every other digest-covered fact is byte-identical to the recording;
+///   anything else, including an engine version bump that should have forced a
+///   re-record, stays a hard failure.
+fn assert_digest_agrees(
+    where_: &str,
+    expected_digest: &Option<String>,
+    actual_digest: &Option<String>,
+    result: &MeasurementResult,
+    ctx: &CompareContext,
+) {
+    if expected_digest == actual_digest {
+        return;
+    }
+    let MeasurementRegime::Process { git_version, .. } = &result.measurement_regime else {
+        panic!(
+            "{where_}: per-result digest {expected_digest:?} vs {actual_digest:?}. This \
+             family's regime is pinned by Cargo.lock and carries nothing \
+             environment-supplied, so its digest is byte-identical across machines and a \
+             difference is a real change to a digest-covered fact."
+        );
+    };
+    if git_version == RECORDED_GIT_VERSION {
+        panic!(
+            "{where_}: per-result digest {expected_digest:?} vs {actual_digest:?} under \
+             the same git the reference was recorded with ({RECORDED_GIT_VERSION:?}). \
+             This is not version skew; a digest-covered fact changed."
+        );
+    }
+    let (Some(expected_digest), Some(actual_digest)) = (expected_digest, actual_digest) else {
+        panic!(
+            "{where_}: digest presence differs ({expected_digest:?} vs {actual_digest:?}) \
+             — compare-set membership moved."
+        );
+    };
+    let self_computed = andon_core::canonical::digest(&result.digest_input(ctx))
+        .unwrap_or_else(|e| panic!("{where_}: canonicalizing the digest input: {e}"));
+    assert_eq!(
+        &self_computed, actual_digest,
+        "{where_}: the recomputed result's digest does not hash from its own digest \
+         input, so the mismatch with the reference is not regime skew — the digest \
+         itself is unsound"
+    );
+    let recorded_regime = {
+        let mut regime = result.measurement_regime.clone();
+        let MeasurementRegime::Process { git_version, .. } = &mut regime else {
+            unreachable!("matched Process above");
+        };
+        *git_version = RECORDED_GIT_VERSION.to_string();
+        regime
+    };
+    let mut input = result.digest_input(ctx);
+    input.measurement_regime = &recorded_regime;
+    let reconstructed = andon_core::canonical::digest(&input)
+        .unwrap_or_else(|e| panic!("{where_}: canonicalizing the substituted input: {e}"));
+    assert_eq!(
+        &reconstructed, expected_digest,
+        "{where_}: the digest differs from the reference and git version skew alone \
+         does not explain it. Substituting git_version {RECORDED_GIT_VERSION:?} (the \
+         recording) for {git_version:?} (this environment) yields a digest that is not \
+         the recorded one. Either some other digest-covered fact changed too — a hard \
+         failure — or the references were re-recorded under a different git and \
+         RECORDED_GIT_VERSION in this file must be updated to match."
+    );
+    eprintln!(
+        "{where_}: accepted git-version skew — recorded under {RECORDED_GIT_VERSION:?}, \
+         recomputed under {git_version:?}; substituting only git_version reproduces the \
+         recorded digest, so every other digest-covered fact is byte-identical."
+    );
+}
+
 /// Measure one built fixture with every shipped engine.
 fn measure(built: &common::Built) -> MeasurementRecord {
     andon_cli_measure(built).expect("the fixture measures")
@@ -269,7 +384,23 @@ fn record_reference_payloads() {
         let expected = reference_of(&record);
         let text = serde_json::to_string_pretty(&expected).expect("serializes");
         std::fs::write(dir.join("expected.json"), format!("{text}\n")).expect("writes");
-        eprintln!("re-recorded {}", case.name);
+        // The recorded process digests bind this machine's git version, so the
+        // constant the comparison substitutes must name it.
+        let process_git = record
+            .results
+            .iter()
+            .find_map(|r| match &r.measurement_regime {
+                MeasurementRegime::Process { git_version, .. } => Some(git_version.clone()),
+                _ => None,
+            });
+        match process_git {
+            Some(git) if git != RECORDED_GIT_VERSION => eprintln!(
+                "re-recorded {} under {git:?} — update RECORDED_GIT_VERSION in this file \
+                 to that value, or every other environment fails loudly against it",
+                case.name
+            ),
+            _ => eprintln!("re-recorded {}", case.name),
+        }
     }
 }
 
@@ -307,11 +438,11 @@ fn every_case_agrees_with_its_reference_payload() {
         let expected: Expected =
             serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
 
-        compare(&case.name, &expected, &actual);
+        compare(&case.name, &expected, &actual, &record);
     }
 }
 
-fn compare(name: &str, expected: &Expected, actual: &Expected) {
+fn compare(name: &str, expected: &Expected, actual: &Expected, record: &MeasurementRecord) {
     // The fixture build itself is pinned first. Everything below is a function
     // of these two OIDs — they are inside `ResultDigestInput` — so a drift here
     // would produce a wall of digest failures whose real cause is that the
@@ -347,6 +478,14 @@ fn compare(name: &str, expected: &Expected, actual: &Expected) {
     let key = |r: &Reference| (r.metric_id.clone(), r.scope.clone());
     let expected_by: BTreeMap<_, _> = expected.results.iter().map(|r| (key(r), r)).collect();
     let actual_by: BTreeMap<_, _> = actual.results.iter().map(|r| (key(r), r)).collect();
+    // The full recomputed results, for the digest comparison: deciding whether
+    // a digest difference is regime skew takes the result's actual
+    // `measurement_regime`, which the reduced `Reference` deliberately omits.
+    let result_by: BTreeMap<_, &MeasurementResult> = record
+        .results
+        .iter()
+        .map(|r| ((r.metric_id.clone(), scope_key(r)), r))
+        .collect();
 
     let missing: Vec<_> = expected_by
         .keys()
@@ -394,12 +533,21 @@ fn compare(name: &str, expected: &Expected, actual: &Expected) {
             (a, b) => assert_eq!(a.is_some(), b.is_some(), "{where_}: delta presence"),
         }
         // The strongest assertion in the file, and the one VISION §6 actually
-        // claims: for a metric in the compare set, the digest itself is pinned.
-        // A tolerance on the value would still pass a change that moved the
-        // bytes the verifier compares.
-        assert_eq!(
-            expected.digest, actual.digest,
-            "{where_}: per-result digest"
+        // claims: for a metric in the compare set, the digest itself is pinned
+        // — within-regime, which for every family except process means
+        // unconditionally. Last in the loop on purpose: every separately
+        // compared fact above has already agreed by the time a digest is
+        // judged, so a skew acceptance can never swallow a value, severity,
+        // completeness, class, or membership disagreement.
+        let source = result_by
+            .get(id)
+            .unwrap_or_else(|| panic!("{where_}: no recomputed result carries this reference key"));
+        assert_digest_agrees(
+            &where_,
+            &expected.digest,
+            &actual.digest,
+            source,
+            &record.compare_context,
         );
     }
 }
@@ -507,6 +655,105 @@ fn a_kind_change_is_never_within_tolerance() {
         &MetricValue::Integer(1),
         false
     ));
+}
+
+/// A sealed process-family result under the given git version, for the digest
+/// comparison's own controls.
+fn process_result_under(git_version: &str, ctx: &CompareContext) -> MeasurementResult {
+    let mut result = andon_core::testing::sample_result();
+    result.engine_id = "process".to_string();
+    result.family = EngineFamily::Process;
+    result.measurement_regime = MeasurementRegime::Process {
+        engine_version: "0.1.0".to_string(),
+        git_version: git_version.to_string(),
+        history_window_days: 365,
+    };
+    result.seal(ctx).expect("the control result seals");
+    result
+}
+
+#[test]
+fn a_pure_git_version_skew_is_accepted_because_the_recorded_digest_reconstructs() {
+    // The skew path's positive control. Recorded and recomputed differ in
+    // git_version and nothing else; the comparison must accept, and must have
+    // had something real to accept — the two digests genuinely differ, because
+    // the regime is inside the digest input.
+    let ctx = andon_core::testing::sample_compare_context();
+    let recorded = process_result_under(RECORDED_GIT_VERSION, &ctx);
+    let recomputed = process_result_under("git version 0.0.0-control", &ctx);
+    assert_ne!(
+        recorded.digest, recomputed.digest,
+        "a git version change must move the digest, or this control checks nothing"
+    );
+    assert_digest_agrees(
+        "positive control",
+        &Some(recorded.digest.clone()),
+        &Some(recomputed.digest.clone()),
+        &recomputed,
+        &ctx,
+    );
+}
+
+#[test]
+#[should_panic(expected = "not version skew")]
+fn a_digest_mismatch_under_the_recorded_git_is_a_hard_failure() {
+    // Within-regime comparison is byte-exact tamper detection: with the
+    // regime's git equal to the recording's, the skew acceptance must be
+    // unreachable and a digest difference must red.
+    let ctx = andon_core::testing::sample_compare_context();
+    let result = process_result_under(RECORDED_GIT_VERSION, &ctx);
+    let forged = "f".repeat(64);
+    assert_digest_agrees(
+        "within-regime control",
+        &Some(forged),
+        &Some(result.digest.clone()),
+        &result,
+        &ctx,
+    );
+}
+
+#[test]
+#[should_panic(expected = "does not explain")]
+fn a_skew_with_a_second_changed_fact_is_a_hard_failure() {
+    // Reconstruction must refuse when anything besides git_version moved. The
+    // reference here was recorded with a different value AND a different git,
+    // so substituting git alone cannot reproduce its digest. In the real flow
+    // the value assertion above the digest already reds first; this pins that
+    // the reconstruction itself binds even where it is the only line of
+    // defence.
+    let ctx = andon_core::testing::sample_compare_context();
+    let mut recorded = process_result_under(RECORDED_GIT_VERSION, &ctx);
+    recorded.value = MetricValue::Count(17);
+    recorded.seal(&ctx).expect("reseals");
+    let mut recomputed = process_result_under("git version 0.0.0-control", &ctx);
+    recomputed.value = MetricValue::Count(18);
+    recomputed.seal(&ctx).expect("reseals");
+    assert_digest_agrees(
+        "second-fact control",
+        &Some(recorded.digest.clone()),
+        &Some(recomputed.digest.clone()),
+        &recomputed,
+        &ctx,
+    );
+}
+
+#[test]
+#[should_panic(expected = "its own digest input")]
+fn a_skewed_result_whose_digest_is_not_its_own_hash_is_a_hard_failure() {
+    // The skew path's first proof obligation: the recomputed digest must hash
+    // from the recomputed input. A digest that does not is unsound on its own
+    // terms and can never be excused as skew.
+    let ctx = andon_core::testing::sample_compare_context();
+    let recorded = process_result_under(RECORDED_GIT_VERSION, &ctx);
+    let mut recomputed = process_result_under("git version 0.0.0-control", &ctx);
+    recomputed.digest = "0".repeat(64);
+    assert_digest_agrees(
+        "unsound-digest control",
+        &Some(recorded.digest.clone()),
+        &Some(recomputed.digest.clone()),
+        &recomputed,
+        &ctx,
+    );
 }
 
 #[test]

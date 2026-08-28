@@ -156,17 +156,26 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # Two commits is enough to diff a push against its parent.
-          fetch-depth: 2
+          # Full history, so `github.event.before` is fetched even when a push
+          # carries several commits. At depth 2 only HEAD and its parent were
+          # present, so a multi-commit push fell back to HEAD~1 below and the
+          # earlier commits in the push escaped the engines diff.
+          fetch-depth: 0
 
       # Changed paths are computed with plain git rather than a third-party
       # path-filter action, for the same reason cargo-deny is not one.
       #
-      # Fail-closed: when the base is unknown or unreachable — a first push, a
-      # force push, a multi-commit push whose parent was not fetched — this runs
-      # the gate rather than skipping it. Skipping is the expensive mistake: an
-      # engine change would slip past the check silently, whereas a needless run
-      # only costs minutes.
+      # Base preference: `github.event.before` when it is a real, fetched
+      # commit — with full history that covers ordinary pushes, multi-commit
+      # ones included, so every commit in the push is inside the diff. When
+      # `before` is unusable — a force push that discarded it, a first push
+      # to a branch, a workflow_dispatch with no push payload — the fallback
+      # is HEAD~1, which diffs only the tip commit: an under-diff for a
+      # multi-commit push of those shapes, stated here rather than claimed
+      # away. Only a parentless root commit reaches the unknown-base branch,
+      # which runs the gate rather than skipping it — an engine change
+      # slipping past silently is the expensive mistake; a needless run only
+      # costs minutes.
       #
       # `github.event.before` reaches the script through `env:` rather than
       # `${{ }}` interpolation. Direct interpolation pastes the value into the
@@ -248,4 +257,7 @@ jobs:
           echo "      The two-binary half is unavailable: no attested release exists yet"
           echo "      (override bootstrap-no-attested-release, docs/self-measure.md)."
           cargo test -p andon-cli --test golden -- --nocapture
-          cargo test --workspace
+          # `--no-fail-fast` for the same reason as the checks job: one red
+          # suite must not hide every suite after it. The golden run above
+          # still gates this line — its failure ends the step first.
+          cargo test --workspace --no-fail-fast
