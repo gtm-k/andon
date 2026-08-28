@@ -365,7 +365,7 @@
     </div>
 
     <!-- registry:begin -->
-<p class="derived">Derived from <code>registry/*.toml</code>, last changed in <code>a21465b</code>: <strong>39 metrics</strong> in <strong>6 families</strong>, standing on <strong>20 claims</strong>. 36 of the 39 are deterministic and enter the digest compare; the other 3 are reported and never compared.</p>
+<p class="derived">Derived from <code>registry/*.toml</code>, last changed in <code>429034d</code>: <strong>39 metrics</strong> in <strong>6 families</strong>, standing on <strong>20 claims</strong>. 36 of the 39 are deterministic and enter the digest compare; the other 3 are reported and never compared.</p>
 <figure class="tiers" aria-labelledby="tiers-cap">
   <svg class="tier-svg" viewBox="0 0 1000 60" role="img" aria-label="Claims by evidence tier: 3 at tier A, 9 at tier B, 1 at tier C, 0 at tier D, 7 at tier N." xmlns="http://www.w3.org/2000/svg">
     <rect class="seg tier-A" x="0.0" y="0" width="141.6" height="60" rx="4"/>
@@ -625,7 +625,7 @@
     <div class="section-head">
       <p class="eyebrow">install</p>
       <h2 id="install-title">Two binaries. Pick a channel.</h2>
-      <p class="lead">Two executables ship together: <code>andon</code>, the command line, and <code>andon-mcp</code>, the MCP server that <code>andon init</code> registers for an agent's harness. The shell and Homebrew lines install both; npm carries them as <code>@gtm-k/andon-cli</code> and <code>@gtm-k/andon-mcp</code>. Nothing hosted, no account, no configuration file to write before the first measurement.</p>
+      <p class="lead">Two executables ship together: <code>andon</code>, the command line, and <code>andon-mcp</code>, the MCP server that <code>andon init</code> registers for an agent's harness. The shell and PowerShell installers take one line per executable; the Homebrew line installs both; npm carries them as <code>@gtm-k/andon-cli</code> and <code>@gtm-k/andon-mcp</code>. Nothing hosted, no account, no configuration file to write before the first measurement.</p>
     </div>
 
     <div class="install-grid">
@@ -633,6 +633,11 @@
         <span class="cmd-label">shell</span>
         <pre><code>curl --proto '=https' --tlsv1.2 -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-cli-installer.sh | sh
 curl --proto '=https' --tlsv1.2 -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-mcp-installer.sh | sh</code></pre>
+      </div>
+      <div class="cmd">
+        <span class="cmd-label">powershell</span>
+        <pre><code>powershell -ExecutionPolicy Bypass -c "irm https://github.com/gtm-k/andon/releases/latest/download/andon-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/gtm-k/andon/releases/latest/download/andon-mcp-installer.ps1 | iex"</code></pre>
       </div>
       <div class="cmd">
         <span class="cmd-label">homebrew</span>
