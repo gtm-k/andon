@@ -88,7 +88,8 @@ pub struct Claim {
     pub tier: EvidenceTier,
     /// Human-readable citation.
     pub citation: String,
-    /// DOI or stable URL, checked for resolution by the P10a registry-PR gate.
+    /// DOI or stable URL. The lint does not resolve it; a reviewer does
+    /// (`registry/REVIEW-POLICY.md`, "What the lint does not check").
     pub citation_ref: Option<String>,
     /// The studied population, e.g. "17.6M Java methods".
     pub population: String,

@@ -31,13 +31,17 @@
 //!
 //! ## The property the whole design rests on
 //!
-//! Two runs of the same measurement, on different operating systems, in
-//! different checkouts, must produce byte-identical digests. Everything else is
-//! downstream of that: without it the verifier reports `divergent` on honest
-//! work and the tool is finished (PREMORTEM Story 1). The rules are in
-//! [`canonical`], the compare-set boundary is documented on
-//! [`schema::payload::ResultDigestInput`], and P1.5 wires the cross-OS matrix
-//! that proves it.
+//! Two runs of the same measurement in the same regime — on different
+//! operating systems, in different checkouts — must produce byte-identical
+//! digests. A regime is what a family declares it cannot hold constant and
+//! therefore names instead of hiding: for the process family, the git version
+//! ([`schema::regime::MeasurementRegime`]). Across regimes the verifier reports
+//! the skew by name before any digest is compared; within one, a digest that
+//! differs is a real difference. Everything else is downstream of that: without
+//! it the verifier reports `divergent` on honest work and the tool is finished
+//! (PREMORTEM Story 1). The rules are in [`canonical`], the compare-set boundary
+//! is documented on [`schema::payload::ResultDigestInput`], and P1.5 wires the
+//! cross-OS matrix that proves it.
 
 #![deny(missing_docs)]
 #![warn(clippy::all)]

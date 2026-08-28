@@ -120,7 +120,9 @@ Both are pull requests against the engine's registry file.
   month with room under the stagger limit. A re-review that only moves the date
   is not a re-review, and the diff should show what was checked.
 
-From P10a the schema, DOI resolution, quoted-passage existence, and fingerprint
-consistency are checked automatically, and human review becomes a sampling
-audit. That automation is a flip precondition rather than a nicety: it is the
-answer to the contribution funnel dying under its own review ethos.
+A pull request that touches `registry/` runs `andon-registry-lint` and nothing
+else (`.github/workflows/registry-pr.yml`). The lint has no network and no
+judgement: `REVIEW-POLICY.md` tables what it checks and lists what it does not —
+whether a `citation_ref` resolves, whether the source is primary, whether the
+quoted terms are the source's own — all of which stay with the reviewer. Nothing
+resolves a DOI or checks a quoted passage automatically.
