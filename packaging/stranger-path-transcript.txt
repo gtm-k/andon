@@ -2,9 +2,9 @@
 when      2026-08-27T23:07:08Z
 host      MINGW64_NT-10.0-26200 x86_64
 git       git version 2.39.0.windows.1
-mode      local validation: ANDON_BIN=C:/Users/gowth/AppData/Local/Temp/claude/C--Users-gowth-Documents-andon/a8afd9cb-cff7-4d71-a243-39a40d7b472b/scratchpad/extracted/andon.exe
-andon     /tmp/claude/C--Users-gowth-Documents-andon/a8afd9cb-cff7-4d71-a243-39a40d7b472b/scratchpad/extracted/andon (andon 0.1.0)
-andon-mcp /tmp/claude/C--Users-gowth-Documents-andon/a8afd9cb-cff7-4d71-a243-39a40d7b472b/scratchpad/extracted/andon-mcp
+mode      local validation: ANDON_BIN=<scratch>/extracted/andon.exe
+andon     <scratch>/extracted/andon (andon 0.1.0)
+andon-mcp <scratch>/extracted/andon-mcp
 
 ==== Block 1 as a stranger runs it (not executed here: resolves at flip) ====
 curl --proto '=https' --tlsv1.2 -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-cli-installer.sh | sh
@@ -13,7 +13,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 andon --version
 
 ==== Block 1: install (local validation: PATH prepend of ANDON_BIN) ====
-export PATH="/tmp/claude/C--Users-gowth-Documents-andon/a8afd9cb-cff7-4d71-a243-39a40d7b472b/scratchpad/extracted:$PATH"
+export PATH="<scratch>/extracted:$PATH"
 andon --version
 ---- output ----
 andon 0.1.0
@@ -53,8 +53,8 @@ andon measure
 
 Claude Code integration installed.
 
-  wrote      C:/Users/gowth/AppData/Local/Temp/tmp.mhMCEGfnPN/andon-stranger\.claude\settings.json — a Stop hook running `andon hook claude-stop`: blocks the agent's stop on a `block` verdict and feeds it the findings
-  wrote      C:/Users/gowth/AppData/Local/Temp/tmp.mhMCEGfnPN/andon-stranger\.mcp.json — registers the andon MCP server (measure_change, get_results, await_results, explain_finding, get_ledger)
+  wrote      %TEMP%/tmp.mhMCEGfnPN/andon-stranger\.claude\settings.json — a Stop hook running `andon hook claude-stop`: blocks the agent's stop on a `block` verdict and feeds it the findings
+  wrote      %TEMP%/tmp.mhMCEGfnPN/andon-stranger\.mcp.json — registers the andon MCP server (measure_change, get_results, await_results, explain_finding, get_ledger)
 
 Both entries need `andon` and `andon-mcp` on PATH for the account Claude Code runs as. The Stop hook blocks only on a `block` verdict and says nothing when no change is in flight. Undo everything with `andon init --claude --remove`.
 
