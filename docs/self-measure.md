@@ -46,11 +46,13 @@ app alone, as `scripts/self-measure.sh` does, rather than `--workspace`, where
 cargo unifies dependency features across packages. Without the second, the
 Windows `andon.exe` a release ships and the one self-measure builds were
 different bytes under the same profile; without the third, they still were.
-One axis stays open and is recorded rather than hidden: cargo-dist always
-passes `--target`, `scripts/self-measure.sh` does not, and a host-kind build
-lays its code out differently from a target-kind build of the same recipe.
-Until the script's build line changes, the self-measured binary is the release
-recipe minus that flag.
+The last axis was `--target` itself: cargo-dist always passes one, and a
+host-kind build lays its code out differently from a target-kind build of the
+same recipe, so `scripts/self-measure.sh` now passes the host triple too and
+reads the binary from `target/<triple>/release/` (ruling E72). What remains
+between the self-measured binary and the shipped one is link-time noise — a
+handful of timestamps and the PDB GUID — which is where the cross-environment
+determinism study starts.
 
 Dogfood switch-on is P5b. Phases P0 through P5a carry a placeholder in CI —
 `scripts/self-measure.sh`, which announces that no measurement was performed.
