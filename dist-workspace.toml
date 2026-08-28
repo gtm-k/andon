@@ -51,6 +51,21 @@ install-updater = false
 # setting this to false would silently bypass the pin for the release build alone.
 msvc-crt-static = true
 
+# ---- Per-package builds, so the shipped bytes are the self-measured bytes -------------
+# dist's default is one `cargo build --workspace`, and cargo unifies dependency features
+# across every package it builds together: with andon-mcp in the same invocation, serde,
+# serde_json, memchr, indexmap, syn, regex, schemars, toml and their dependents compile
+# with features andon-cli alone never asks for, and the `andon.exe` that comes out is a
+# different binary from the `cargo build --release -p andon-cli` that
+# `scripts/self-measure.sh` measures with — same profile, same C runtime, different
+# bytes. Per-package builds are the package selection self-measure makes; a per-package
+# `--target` build then matches the artifact down to link-time noise (the PE timestamps
+# and the PDB GUID). What still separates the artifact from the script's own invocation
+# is that dist always passes `--target` and `scripts/self-measure.sh` does not, which
+# alone changes the bytes: cargo keys every unit's metadata hash on the compile kind.
+# That is the script's line to change, not this file's. Ruled with E71.
+precise-builds = true
+
 # ---- npm: LATE-BOUND -------------------------------------------------------------------
 # The bare `andon` name on npm is dormant and needs a user claim or dispute (PREMORTEM A5)
 # before any artifact may embed it. Until that lands the packages publish under the scope
