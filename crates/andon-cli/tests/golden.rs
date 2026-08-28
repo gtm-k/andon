@@ -774,3 +774,33 @@ fn every_case_describes_what_it_is_for() {
         );
     }
 }
+
+#[test]
+#[should_panic(expected = "byte-identical across machines")]
+fn a_digest_mismatch_in_any_other_family_is_a_hard_failure_whatever_the_git() {
+    // The first branch of `assert_digest_agrees`, which the four regime
+    // controls above never reach: only the process family declares a regime it
+    // cannot hold constant, so for every other family an unequal digest is a
+    // real difference. There is no git version to substitute and no proof path
+    // to take. `sample_result` is a static-family result; its recorded digest
+    // is forged so the two genuinely differ.
+    let ctx = andon_core::testing::sample_compare_context();
+    let mut result = andon_core::testing::sample_result();
+    assert!(
+        !matches!(result.measurement_regime, MeasurementRegime::Process { .. }),
+        "this control must not be a process result, or it tests the skew path instead"
+    );
+    result.seal(&ctx).expect("the control result seals");
+    let forged = "0".repeat(64);
+    assert_ne!(
+        result.digest, forged,
+        "the forged digest must differ, or this control checks nothing"
+    );
+    assert_digest_agrees(
+        "non-process control",
+        &Some(forged),
+        &Some(result.digest.clone()),
+        &result,
+        &ctx,
+    );
+}

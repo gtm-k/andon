@@ -14,7 +14,13 @@ would make.
    `.github/workflows/ci.yml`.
 2. **The cross-environment determinism study** (VISION §6): byte-identical
    per-result digests over the deterministic compare set, across operating
-   systems.
+   systems, *within one measurement regime*. The process family names the git
+   version it ran under as its regime; a run under a different git is compared
+   by reconstruction — substitute the recorded git version, re-hash, and the
+   recorded digest must come back — rather than by equality. Every other family
+   has no regime to substitute, and an unequal digest there is a real
+   difference. `crates/andon-cli/tests/golden.rs` is the rule, with a control
+   test for each branch.
 3. **P10a's stability study.**
 
 ## Layout
