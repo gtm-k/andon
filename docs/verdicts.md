@@ -125,11 +125,14 @@ four test cases:
 The severity label is `LOW`; the verdict is `BLOCK`. Both are correct: the label is
 the capped severity and the flag is what stopped the line.
 
-One surface does not yet say this. `andon explain <metric-id>` has a section, "The
-strongest this finding can be", computed from the ceilings alone — so for a tamper
-metric or for `tests.suite-failure` it prints *"this can advise; it cannot stop the
-line"*, which is true of the severity and false of the verdict. Read that sentence
-as being about the label. The flag route above is what decides.
+`andon explain <metric-id>` says the same thing. Its section "The strongest this
+finding can be" reports the capped severity — the label — and then answers whether
+the finding can stop the line by asking the verdict's own predicate about the
+finding at full strength, so the flag routes above are consulted before the
+ceilings are read. For a tamper detector or for `tests.suite-failure` under the
+shipped policy it prints *at most Low — this can stop the line*, and names the flag
+that decides. (It once computed that sentence from the ceilings alone and said the
+opposite of the verdict; a test now pins the two surfaces to one fixture.)
 
 ### What the uncapped route rests on
 

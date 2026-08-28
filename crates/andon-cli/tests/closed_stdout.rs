@@ -11,11 +11,8 @@
 //! The probe closes the read end of the child's stdout immediately after
 //! spawning it — before the child has finished starting, let alone written —
 //! so the child's first write meets a closed pipe. This test went red against
-//! the unfixed binary (exit 101, "panicked" on stderr), which is the evidence
-//! that the close won the race on those runs.
-//!
-//! `hook` and `demo` are not probed: they still print for themselves, and are
-//! the rule's one known gap (`main.rs` says so beside their dispatch).
+//! the unfixed binary (exit 101, "panicked" on stderr), which is what proves
+//! the close wins the race.
 
 use std::process::{Command, Stdio};
 
@@ -70,10 +67,52 @@ fn the_usage_pages_exit_quietly_when_the_reader_is_gone() {
         &["ledger"],
         &["attest-stub", "--help"],
         &["init", "--help"],
+        &["hook", "--help"],
+        &["demo", "--help"],
         &["doctor", "--help"],
     ] {
         assert_quiet_exit(args);
     }
+}
+
+#[test]
+fn the_demo_exits_quietly_when_the_reader_is_gone() {
+    // The largest stdout the binary produces, and the first command a stranger
+    // pipes into `head`. The demo's forgery is performed by a separate
+    // adversary binary (`tests/demo.rs` says why); it is located the same way
+    // and its absence fails loudly rather than skipping the subject.
+    let name = format!("andon-spike-forge{}", std::env::consts::EXE_SUFFIX);
+    let forge = std::path::Path::new(EXE)
+        .parent()
+        .expect("the andon binary has a directory")
+        .join(&name);
+    assert!(
+        forge.is_file(),
+        "{} is not built; build it first (`cargo build -p andon-ledger-min --bins`) or run \
+         the full workspace suite, which builds it.",
+        forge.display()
+    );
+    let mut child = Command::new(EXE)
+        .args(["demo", "tamper"])
+        .env("ANDON_SPIKE_FORGE_BIN", &forge)
+        .env("RUST_BACKTRACE", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("andon spawns");
+    drop(child.stdout.take());
+    let output = child.wait_with_output().expect("andon exits");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "andon demo tamper panicked on a closed stdout:\n{stderr}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "andon demo tamper on a closed stdout: expected a quiet exit 0\nstderr:\n{stderr}"
+    );
 }
 
 #[test]

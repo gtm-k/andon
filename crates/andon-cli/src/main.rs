@@ -43,12 +43,17 @@
 //! same way, as an error on the write rather than as a signal, so this is one
 //! rule on every platform and not a Unix `SIGPIPE` reset. Any other refusal
 //! from stdout — a full disk behind a redirect — is a failure, said on stderr
-//! with exit 1. `init` and `doctor` return what they have to print rather than
-//! printing it, so that this rule has one place to live; `hook` and `demo`
-//! still print for themselves, and until they return their text the same way
-//! a closed pipe reaches them as a panic — the rule's one known gap. stderr
-//! is written as a run goes: it is the operator's channel, and the notices on
-//! it are about the run, not the pipe.
+//! with exit 1. The library commands that have something to print return it
+//! (`init`, `hook`, `demo`, `doctor`) rather than printing it, so that this
+//! rule has one place to live.
+//!
+//! The rule is uniform: a closed pipe exits 0 whatever the run would otherwise
+//! have exited — a `block` that was going to exit 2, and the no-argument
+//! `USAGE` page that ordinarily exits 1. The reader left before the verdict or
+//! the usage error could reach them, and there is nobody left to fail for; the
+//! exit code is a message, and a message needs a reader. stderr is written as
+//! a run goes: it is the operator's channel, and the notices on it are about
+//! the run, not the pipe.
 
 #![warn(clippy::all)]
 
@@ -232,11 +237,15 @@ fn run(out: &mut dyn Write) -> Outcome {
             writeln!(out)?;
             Ok(ExitCode::SUCCESS)
         }
-        // `hook` and `demo` still print for themselves, so a closed pipe
-        // reaches them as a panic rather than as this file's quiet exit — the
-        // one part of the rule in the module docs that does not yet hold.
-        "hook" => Ok(ExitCode::from(andon_cli::init::hook::cmd_hook(&flags)?)),
-        "demo" => Ok(ExitCode::from(andon_cli::demo::cmd_demo(&flags)?)),
+        "hook" => {
+            let hook = andon_cli::init::hook::cmd_hook(&flags)?;
+            write!(out, "{}", hook.stdout)?;
+            Ok(ExitCode::from(hook.code))
+        }
+        "demo" => {
+            write!(out, "{}", andon_cli::demo::cmd_demo(&flags)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
         "doctor" => {
             writeln!(out, "{}", andon_cli::doctor::cmd_doctor(&flags)?)?;
             Ok(ExitCode::SUCCESS)
