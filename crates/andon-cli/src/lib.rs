@@ -26,6 +26,8 @@
 //! - [`lanes`] — what the async lane still owes a measurement.
 //! - [`init`] — gate-shaped hooks installed, said aloud, and removable.
 //! - [`demo`] — the trust story staged locally: a forged self-report, caught.
+//! - [`doctor`] — the redacted self-report bundle a false-positive issue is
+//!   filed with.
 //! - [`ledger`] — records in the commit.
 //! - [`attest`] — the verifier's shape, and nothing hardened.
 //! - [`store`] — where the tool keeps its own state, which is never the working

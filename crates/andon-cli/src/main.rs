@@ -1,7 +1,7 @@
 //! `andon` — the command line.
 //!
-//! Six subcommands over one measurement: `measure`, `wait`, `report`, `explain`,
-//! `ledger`, `attest-stub`.
+//! The subcommands are the ones `USAGE` lists — enumerated there, and only
+//! there.
 //!
 //! # Exit codes are part of the contract
 //!
@@ -33,9 +33,31 @@
 //!
 //! `--exit-zero` turns every verdict into a 0 for the caller who wants the
 //! report without the gate.
+//!
+//! # A reader that stops reading is not a failure
+//!
+//! Every byte this binary puts on stdout goes through one fallible writer, and
+//! a `BrokenPipe` from it — `head` took what it wanted, `grep -m1` matched, an
+//! agent truncated its read — is a quiet exit 0 at the top level rather than a
+//! panic in whichever `println!` came next. Windows reports a closed pipe the
+//! same way, as an error on the write rather than as a signal, so this is one
+//! rule on every platform and not a Unix `SIGPIPE` reset. Any other refusal
+//! from stdout — a full disk behind a redirect — is a failure, said on stderr
+//! with exit 1. The library commands that have something to print return it
+//! (`init`, `hook`, `demo`, `doctor`) rather than printing it, so that this
+//! rule has one place to live.
+//!
+//! The rule is uniform: a closed pipe exits 0 whatever the run would otherwise
+//! have exited — a `block` that was going to exit 2, and the no-argument
+//! `USAGE` page that ordinarily exits 1. The reader left before the verdict or
+//! the usage error could reach them, and there is nobody left to fail for; the
+//! exit code is a message, and a message needs a reader. stderr is written as
+//! a run goes: it is the operator's channel, and the notices on it are about
+//! the run, not the pipe.
 
 #![warn(clippy::all)]
 
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use andon_core::git::Git;
@@ -99,13 +121,69 @@ andon measure [OPTIONS]
   --no-color           never emit ANSI escapes
   --exit-zero          always exit 0, whatever the verdict";
 
+/// Why a run stopped short of an exit code.
+enum Failure {
+    /// The tool could not do its job. Said on stderr; exit 1.
+    Message(String),
+    /// stdout refused a write. What that means depends on why — see
+    /// [`stdout_failed`].
+    Stdout(io::Error),
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Failure::Message(message)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        Failure::Message(message.to_string())
+    }
+}
+
+impl From<io::Error> for Failure {
+    fn from(error: io::Error) -> Self {
+        Failure::Stdout(error)
+    }
+}
+
+/// A run's result: the exit code it earned, or why it has none.
+type Outcome = Result<ExitCode, Failure>;
+
 fn main() -> ExitCode {
-    match run() {
+    let mut out = io::stdout();
+    let code = match run(&mut out) {
         Ok(code) => code,
-        Err(message) => {
+        Err(Failure::Message(message)) => {
             eprintln!("andon: {message}");
             ExitCode::from(1)
         }
+        Err(Failure::Stdout(error)) => return stdout_failed(&error),
+    };
+    // stdout is line-buffered, so a final partial line is still in the buffer
+    // here. Flushed explicitly rather than left to the runtime's exit, which
+    // flushes too but discards the error — and the one thing this binary must
+    // not do is drop bytes it was asked for and exit as if it had written them.
+    match out.flush() {
+        Ok(()) => code,
+        Err(error) => stdout_failed(&error),
+    }
+}
+
+/// The exit when stdout refused a write.
+///
+/// A closed pipe is the reader's decision, not a failure of this tool: `head`
+/// read what it wanted, or an agent truncated its read. The process exits 0
+/// and says nothing — a message would go to a stderr the same pager may have
+/// closed, and a non-zero exit would fail a pipeline for having been read.
+/// Everything else stdout can refuse is a real failure and is reported as one.
+fn stdout_failed(error: &io::Error) -> ExitCode {
+    if error.kind() == io::ErrorKind::BrokenPipe {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("andon: stdout: {error}");
+        ExitCode::from(1)
     }
 }
 
@@ -131,38 +209,48 @@ const SWITCHES: &[&str] = &[
     "keep",
 ];
 
-fn run() -> Result<ExitCode, String> {
+fn run(out: &mut dyn Write) -> Outcome {
     let mut argv = std::env::args().skip(1);
     let Some(command) = argv.next() else {
-        println!("{USAGE}");
+        writeln!(out, "{USAGE}")?;
         return Ok(ExitCode::from(1));
     };
     if command == "--help" || command == "-h" || command == "help" {
-        println!("{USAGE}");
+        writeln!(out, "{USAGE}")?;
         return Ok(ExitCode::SUCCESS);
     }
     if command == "--version" {
-        println!("andon {}", env!("CARGO_PKG_VERSION"));
+        writeln!(out, "andon {}", env!("CARGO_PKG_VERSION"))?;
         return Ok(ExitCode::SUCCESS);
     }
 
     let flags = Flags::parse(argv, SWITCHES)?;
     match command.as_str() {
-        "measure" => cmd_measure(&flags),
-        "report" => cmd_report(&flags),
-        "explain" => cmd_explain(&flags),
-        "wait" => cmd_wait(&flags),
-        "ledger" => cmd_ledger(&flags),
-        "attest-stub" => cmd_attest(&flags),
+        "measure" => cmd_measure(out, &flags),
+        "report" => cmd_report(out, &flags),
+        "explain" => cmd_explain(out, &flags),
+        "wait" => cmd_wait(out, &flags),
+        "ledger" => cmd_ledger(out, &flags),
+        "attest-stub" => cmd_attest(out, &flags),
         "init" => {
-            print!("{}", andon_cli::init::cmd_init(&flags)?);
-            println!();
+            write!(out, "{}", andon_cli::init::cmd_init(&flags)?)?;
+            writeln!(out)?;
             Ok(ExitCode::SUCCESS)
         }
-        "hook" => Ok(ExitCode::from(andon_cli::init::hook::cmd_hook(&flags)?)),
-        "demo" => Ok(ExitCode::from(andon_cli::demo::cmd_demo(&flags)?)),
-        "doctor" => Ok(ExitCode::from(andon_cli::doctor::cmd_doctor(&flags)?)),
-        other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
+        "hook" => {
+            let hook = andon_cli::init::hook::cmd_hook(&flags)?;
+            write!(out, "{}", hook.stdout)?;
+            Ok(ExitCode::from(hook.code))
+        }
+        "demo" => {
+            write!(out, "{}", andon_cli::demo::cmd_demo(&flags)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        "doctor" => {
+            writeln!(out, "{}", andon_cli::doctor::cmd_doctor(&flags)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        other => Err(format!("unknown command '{other}'\n\n{USAGE}").into()),
     }
 }
 
@@ -194,9 +282,9 @@ fn code_for(verdict: Verdict, exit_zero: bool) -> ExitCode {
     }
 }
 
-fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
+fn cmd_measure(out: &mut dyn Write, flags: &Flags) -> Outcome {
     if flags.on("help") {
-        println!("{MEASURE_USAGE}");
+        writeln!(out, "{MEASURE_USAGE}")?;
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&[
@@ -229,33 +317,36 @@ fn cmd_measure(flags: &Flags) -> Result<ExitCode, String> {
     let saved = store::write_last(&git, &measurement.record);
 
     if let Some(name) = flags.get("profile") {
-        println!(
+        writeln!(
+            out,
             "{}",
             render::profile(&measurement.record, name, &request.repo)?
-        );
+        )?;
     } else if flags.on("json") {
-        println!(
+        writeln!(
+            out,
             "{}",
             andon_core::canonical::to_canonical_string(&measurement.record)
                 .map_err(|e| e.to_string())?
-        );
+        )?;
         say_if_verdict_contradicted(&measurement.record);
     } else {
-        print!(
+        write!(
+            out,
             "{}",
             render::terminal::render(&measurement, colour(flags), detail(flags))
-        );
+        )?;
     }
 
     if let Some(path) = flags.get("html") {
         let html = render::html::render(&measurement);
         std::fs::write(path, html).map_err(|e| format!("{path}: {e}"))?;
-        say(flags, &format!(" report written to {path}\n"));
+        say(out, flags, &format!(" report written to {path}\n"))?;
     }
 
     if flags.on("record") {
         let note = ledger::record(&git, &measurement.record, &measurement.ledger_anchor)?;
-        say(flags, &format!(" {note}\n"));
+        say(out, flags, &format!(" {note}\n"))?;
     }
 
     if let Err(e) = saved {
@@ -306,11 +397,12 @@ fn stdout_is_machine_readable(flags: &Flags) -> bool {
 /// the operator can only answer from what the tool says, and a machine surface
 /// that silently stopped reporting its own side effects would be trading one
 /// actor's problem for another's.
-fn say(flags: &Flags, line: &str) {
+fn say(out: &mut dyn Write, flags: &Flags, line: &str) -> io::Result<()> {
     if stdout_is_machine_readable(flags) {
         eprintln!("{}", line.trim_end());
+        Ok(())
     } else {
-        println!("{line}");
+        writeln!(out, "{line}")
     }
 }
 
@@ -349,13 +441,14 @@ fn covers_less_than_asked(record: &MeasurementRecord) -> bool {
     !record.unreadable_paths.is_empty()
 }
 
-fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
+fn cmd_report(out: &mut dyn Write, flags: &Flags) -> Outcome {
     if flags.on("help") {
-        println!(
+        writeln!(
+            out,
             "andon report [--repo <PATH>] [--input <FILE>] [--html <FILE>] [--json] [--full]\n\
              andon report --profile agent-mode\n\n  \
              Renders the last measurement taken in this checkout, or a record from a file."
-        );
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&["repo", "input", "html", "profile"])?;
@@ -369,21 +462,24 @@ fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
     };
 
     if let Some(name) = flags.get("profile") {
-        println!(
+        writeln!(
+            out,
             "{}",
             render::profile(&record, name, &flags.path("repo", "."))?
-        );
+        )?;
     } else if flags.on("json") {
-        println!(
+        writeln!(
+            out,
             "{}",
             andon_core::canonical::to_canonical_string(&record).map_err(|e| e.to_string())?
-        );
+        )?;
         say_if_verdict_contradicted(&record);
     } else {
-        print!(
+        write!(
+            out,
             "{}",
             render::terminal::render_record(&record, colour(flags), detail(flags))
-        );
+        )?;
     }
 
     // Below the rendering rather than inside it, so `--profile` no longer
@@ -392,33 +488,34 @@ fn cmd_report(flags: &Flags) -> Result<ExitCode, String> {
     if let Some(path) = flags.get("html") {
         std::fs::write(path, render::html::render_record(&record))
             .map_err(|e| format!("{path}: {e}"))?;
-        say(flags, &format!(" report written to {path}\n"));
+        say(out, flags, &format!(" report written to {path}\n"))?;
     }
 
     Ok(code_for_record(&record, flags.on("exit-zero")))
 }
 
-fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
+fn cmd_explain(out: &mut dyn Write, flags: &Flags) -> Outcome {
     if flags.on("help") {
-        println!(
+        writeln!(
+            out,
             "andon explain <METRIC-ID|CLAIM-ID> [--repo <PATH>] [--registry <DIR>]\n\
              andon explain --list\n\n  \
              Prints the claim a number stands on: its tier, citation, population, effect, \
              re-review date,\n  and — the field this tool exists for — what the number does \
              NOT predict."
-        );
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&["repo", "registry"])?;
 
     if flags.on("list") {
-        print!("{}", explain::list());
+        write!(out, "{}", explain::list())?;
         return Ok(ExitCode::SUCCESS);
     }
     let Some(query) = flags.first() else {
         return Err(
             "name a metric or a claim: `andon explain static.sloc`, or `andon explain --list`"
-                .to_string(),
+                .into(),
         );
     };
 
@@ -434,14 +531,15 @@ fn cmd_explain(flags: &Flags) -> Result<ExitCode, String> {
     if let Some(notice) = &explained.notice {
         eprintln!("explain: {notice}");
     }
-    print!("{}", explained.answer);
-    println!();
+    write!(out, "{}", explained.answer)?;
+    writeln!(out)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
+fn cmd_wait(out: &mut dyn Write, flags: &Flags) -> Outcome {
     if flags.on("help") {
-        println!(
+        writeln!(
+            out,
             "andon wait [--repo <PATH>] [--input <FILE>] [--record]\n\n  \
              Completes the last measurement — work the fast lane deferred to the async lane\n  \
              (the user test command, or engines spilled at the cold cap) is executed HERE,\n  \
@@ -449,7 +547,7 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
              still owes. --record appends the merged record to refs/notes/andon-measure.\n  \
              With --input the record is only rendered: a file is not this checkout's\n  \
              measurement, and there is no job of it to run."
-        );
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&["repo", "input"])?;
@@ -483,7 +581,7 @@ fn cmd_wait(flags: &Flags) -> Result<ExitCode, String> {
             }
         }
     };
-    print!("{}", lanes::wait(&record, job_ran));
+    write!(out, "{}", lanes::wait(&record, job_ran))?;
     Ok(code_for_record(&record, flags.on("exit-zero")))
 }
 
@@ -526,9 +624,9 @@ andon ledger <list|show|ack|stats|sync|migrate|trailer> [--repo <PATH>]
     --from <REV>        the branch head that was squash-merged
     --to <REV>          the commit the squash landed (e.g. the new main tip)";
 
-fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
+fn cmd_ledger(out: &mut dyn Write, flags: &Flags) -> Outcome {
     if flags.on("help") || flags.first().is_none() {
-        println!("{LEDGER_USAGE}");
+        writeln!(out, "{LEDGER_USAGE}")?;
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&[
@@ -538,7 +636,7 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
     let git = Git::open(&flags.path("repo", ".")).map_err(|e| e.to_string())?;
 
     match flags.first().unwrap_or("list") {
-        "list" => print!("{}", ledger::list(&git)?),
+        "list" => write!(out, "{}", ledger::list(&git)?)?,
         "show" => {
             let commit = flags
                 .positional()
@@ -547,13 +645,14 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 .unwrap_or("HEAD");
             let records = ledger::show(&git, commit)?;
             if records.is_empty() {
-                println!("\n  No record is recorded against {commit}.\n");
+                writeln!(out, "\n  No record is recorded against {commit}.\n")?;
             }
             for record in &records {
-                print!(
+                write!(
+                    out,
                     "{}",
                     render::terminal::render_record(record, colour(flags), detail(flags))
-                );
+                )?;
             }
             // The coverage rule, and only the coverage rule. `show` is a query
             // over what is already filed, so it does not turn a historical
@@ -573,7 +672,11 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
         "ack" => {
             let policy = measure::load_policy(&git, &measure::PolicySource::Worktree)
                 .map_err(|e| e.to_string())?;
-            print!("\n{}\n", ledger::ack(&git, flags.get("branch"), &policy)?);
+            write!(
+                out,
+                "\n{}\n",
+                ledger::ack(&git, flags.get("branch"), &policy)?
+            )?;
         }
         "stats" => {
             let by = match flags.get("by") {
@@ -599,7 +702,7 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 filter,
             };
             let (report, clustered) = ledger::stats_report(&git, &request)?;
-            print!("{report}");
+            write!(out, "{report}")?;
             // `--check` keys the exit on the finding: 2 is the "the line
             // stops" code, and a clustering signature is a stop-and-look
             // signal for a human, distinguishable from 1 (the tool fell over).
@@ -612,7 +715,11 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 "fp-window needs --since <STAMP>, the ledgered window start \
                  (YYYY-MM-DDTHH:MM:SSZ)",
             )?;
-            print!("{}", ledger::fp_report(&git, since, flags.get("until"))?);
+            write!(
+                out,
+                "{}",
+                ledger::fp_report(&git, since, flags.get("until"))?
+            )?;
         }
         "sync" => {
             let attempts = match flags.get("attempts") {
@@ -621,10 +728,11 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                     format!("--attempts wants a number of push attempts, not '{text}'")
                 })?,
             };
-            print!(
+            write!(
+                out,
                 "\n{}\n",
                 ledger::sync(&git, flags.get("remote").unwrap_or("origin"), attempts)?
-            );
+            )?;
         }
         "migrate" => {
             let from = flags
@@ -633,7 +741,7 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
             let to = flags
                 .get("to")
                 .ok_or("migrate needs --to <REV>, the commit the squash landed")?;
-            print!("\n{}\n", ledger::migrate(&git, from, to)?);
+            write!(out, "\n{}\n", ledger::migrate(&git, from, to)?)?;
         }
         "trailer" => {
             let commit = flags
@@ -643,26 +751,23 @@ fn cmd_ledger(flags: &Flags) -> Result<ExitCode, String> {
                 .unwrap_or("HEAD");
             // Bare trailer lines on stdout, no framing: the output's job is to
             // be appended to a commit message, by a person or by `--trailer`.
-            print!("{}", ledger::trailer(&git, commit)?);
+            write!(out, "{}", ledger::trailer(&git, commit)?)?;
         }
-        other => {
-            return Err(format!(
-                "unknown ledger command '{other}'\n\n{LEDGER_USAGE}"
-            ))
-        }
+        other => return Err(format!("unknown ledger command '{other}'\n\n{LEDGER_USAGE}").into()),
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_attest(flags: &Flags) -> Result<ExitCode, String> {
+fn cmd_attest(out: &mut dyn Write, flags: &Flags) -> Outcome {
     if flags.on("help") {
-        println!(
+        writeln!(
+            out,
             "andon attest-stub --head <SHA> [--repo <PATH>] [--trusted-branch <REF>] \
              [--fork-tier]\n\n  \
              Recomputes a change the way the verifier would, reads the self-report from\n  \
              refs/notes/andon-measure, and classifies the pair. A stub: P9 builds the verifier,\n  \
              and the output says what this did not check."
-        );
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
     flags.reject_unknown(&["repo", "head", "trusted-branch"])?;
@@ -678,7 +783,7 @@ fn cmd_attest(flags: &Flags) -> Result<ExitCode, String> {
             .to_string(),
         fork_tier: flags.on("fork-tier"),
     })?;
-    print!("{}", attest::render(&attested));
+    write!(out, "{}", attest::render(&attested))?;
     // Zero on `divergent`, deliberately, and for the reason `andon-spike verify`
     // gives: a divergence is a *successful* verification. Turning it into a
     // non-zero exit would make the step red for the same reason a crash does,

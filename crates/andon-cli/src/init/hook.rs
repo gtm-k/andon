@@ -71,18 +71,46 @@ impl HookKind {
     }
 }
 
+const HOOK_USAGE: &str = "\
+andon hook <claude-stop|pre-commit> [--self-measure] [--repo <PATH>]
+
+  What an installed hook runs: measure the working change, record it in the ledger,
+  and exit per the harness's gate contract (0 keep going, 2 stop the line, 3 a human
+  decides, 1 the tool or the read failed). Installed by `andon init`; not intended
+  to be run by hand, but harmless if you do.";
+
+/// What `andon hook` leaves for stdout, and the exit code beside it.
+///
+/// stdout is returned rather than printed: the binary writes it through its
+/// one fallible writer, so a harness that closed the pipe gets a quiet exit and
+/// not a panic (`main.rs`). stderr is written here as the run goes — under the
+/// Stop-hook contract it is the agent's channel, and every line on it is about
+/// the measurement.
+#[derive(Debug)]
+pub struct HookRun {
+    /// The exit code, per the kind's gate contract.
+    pub code: u8,
+    /// The transcript line for stdout, when the run has one; empty otherwise.
+    pub stdout: String,
+}
+
+impl HookRun {
+    fn quiet(code: u8) -> Self {
+        HookRun {
+            code,
+            stdout: String::new(),
+        }
+    }
+}
+
 /// `andon hook <kind> [--self-measure] [--repo <PATH>]`: measure, record,
-/// exit per the kind's gate contract. Returns the exit code.
-pub fn cmd_hook(flags: &Flags) -> Result<u8, String> {
+/// exit per the kind's gate contract.
+pub fn cmd_hook(flags: &Flags) -> Result<HookRun, String> {
     if flags.on("help") {
-        println!(
-            "andon hook <claude-stop|pre-commit> [--self-measure] [--repo <PATH>]\n\n  \
-             What an installed hook runs: measure the working change, record it in the \
-             ledger,\n  and exit per the harness's gate contract (0 keep going, 2 stop the \
-             line, 3 a human\n  decides, 1 the tool or the read failed). Installed by `andon \
-             init`; not intended\n  to be run by hand, but harmless if you do."
-        );
-        return Ok(0);
+        return Ok(HookRun {
+            code: 0,
+            stdout: format!("{HOOK_USAGE}\n"),
+        });
     }
     flags.reject_unknown(&["repo"])?;
     let kind = match flags.first() {
@@ -104,7 +132,7 @@ fn drain_stdin() {
     }
 }
 
-fn run(kind: HookKind, repo: PathBuf, self_measure: bool) -> u8 {
+fn run(kind: HookKind, repo: PathBuf, self_measure: bool) -> HookRun {
     let request = measure::Request {
         repo: repo.clone(),
         no_fallback: true,
@@ -125,10 +153,10 @@ fn run(kind: HookKind, repo: PathBuf, self_measure: bool) -> u8 {
         // measures against the root commit fine).
         Err(MeasureError::Resolve(
             ResolveFailure::NoWorkingChange { .. } | ResolveFailure::NoParent { .. },
-        )) => return 0,
+        )) => return HookRun::quiet(0),
         Err(e) => {
             eprintln!("andon: {e}");
-            return 1;
+            return HookRun::quiet(1);
         }
     };
     let record = &measurement.record;
@@ -165,21 +193,21 @@ fn run(kind: HookKind, repo: PathBuf, self_measure: bool) -> u8 {
             record.unreadable_paths.len(),
             record.unreadable_paths.join(", ")
         );
-        return 1;
+        return HookRun::quiet(1);
     }
 
     let verdict = record.verdict.verdict;
     match verdict {
-        Verdict::Pass | Verdict::Advise => {
+        Verdict::Pass | Verdict::Advise => HookRun {
+            code: 0,
             // One transcript line, derived from the record it describes.
-            println!(
-                "andon: {} — {} finding(s) over {}",
+            stdout: format!(
+                "andon: {} — {} finding(s) over {}\n",
                 render::verdict_word(verdict),
                 render::findings(record).len(),
                 crate::resolve::change_line(&record.compare_context)
-            );
-            0
-        }
+            ),
+        },
         Verdict::Block => {
             // The agent's copy: a headline it can read, then the same bounded
             // profile the MCP surface serves, then the way forward. All three
@@ -204,7 +232,7 @@ fn run(kind: HookKind, repo: PathBuf, self_measure: bool) -> u8 {
                  turn again — the gate re-measures. `andon explain <metric-id>` shows the \
                  evidence behind any number."
             );
-            2
+            HookRun::quiet(2)
         }
         Verdict::EscalateToHuman => {
             eprintln!(
@@ -217,7 +245,7 @@ fn run(kind: HookKind, repo: PathBuf, self_measure: bool) -> u8 {
                  human looked, and clears the counter.",
                 record.verdict.iteration.count, record.verdict.iteration.cap
             );
-            3
+            HookRun::quiet(3)
         }
     }
 }

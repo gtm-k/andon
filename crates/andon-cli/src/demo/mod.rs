@@ -73,11 +73,14 @@ andon demo tamper [--keep]
   guards that file's crate, and the rest of the workspace this binary links
   is kept clean by review, not by the scan.";
 
-/// `andon demo <story>`.
-pub fn cmd_demo(flags: &Flags) -> Result<u8, String> {
+/// `andon demo <story>`: the narrative, for the binary to print.
+///
+/// Returned rather than printed, so the binary writes it through its one
+/// fallible stdout writer: `andon demo tamper | head` is the first thing a
+/// stranger runs, and it used to panic the moment `head` left (`main.rs`).
+pub fn cmd_demo(flags: &Flags) -> Result<String, String> {
     if flags.on("help") {
-        println!("{DEMO_USAGE}");
-        return Ok(0);
+        return Ok(format!("{DEMO_USAGE}\n"));
     }
     flags.reject_unknown(&[])?;
     match flags.first() {
@@ -85,9 +88,7 @@ pub fn cmd_demo(flags: &Flags) -> Result<u8, String> {
         Some(other) => return Err(format!("unknown demo '{other}'; the demos are: tamper")),
         None => return Err(format!("which demo? the demos are: tamper\n\n{DEMO_USAGE}")),
     }
-    let narrative = run_tamper(flags.on("keep"))?;
-    print!("{narrative}");
-    Ok(0)
+    run_tamper(flags.on("keep"))
 }
 
 /// The whole story, returned as one narrative so a test can read exactly what a

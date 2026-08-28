@@ -123,11 +123,14 @@ andon doctor [--repo <PATH>]
   Nothing is measured. With no measurement taken in this checkout yet, the
   bundle still writes, with `last_measurement: null`.";
 
-/// `andon doctor`.
-pub fn cmd_doctor(flags: &Flags) -> Result<u8, String> {
+/// `andon doctor`: write the bundle, and return the one line for stdout.
+///
+/// Returned rather than printed, so the binary writes it through its one
+/// fallible stdout writer and a closed pipe is a quiet exit rather than a
+/// panic (`main.rs`).
+pub fn cmd_doctor(flags: &Flags) -> Result<String, String> {
     if flags.on("help") {
-        println!("{DOCTOR_USAGE}");
-        return Ok(0);
+        return Ok(DOCTOR_USAGE.to_string());
     }
     flags.reject_unknown(&["repo"])?;
     let git = Git::open(&flags.path("repo", ".")).map_err(|e| e.to_string())?;
@@ -138,11 +141,10 @@ pub fn cmd_doctor(flags: &Flags) -> Result<u8, String> {
     // The file's name and not its path: the line goes to a terminal whose
     // current directory the person already knows, and printing the absolute
     // path here would put on the screen the one thing the file leaves out.
-    println!(
+    Ok(format!(
         "  wrote {BUNDLE_FILE} — paste it into the false-positive issue. It names files and \
          symbols, never code."
-    );
-    Ok(0)
+    ))
 }
 
 /// The bundle for one checkout, composed and then scrubbed.
@@ -337,9 +339,11 @@ pub struct Finding {
     pub metric_id: String,
     /// Post-policy severity — what actually fired at the operator.
     pub severity: Severity,
-    /// The number itself. A `text` value in this build is an engine's fixed
-    /// sentence (an absence reason, a suite outcome), never content read from
-    /// the tree; the scrub covers a producer that changes that.
+    /// The number itself. A `text` value in this build is an engine's own
+    /// sentence — a fixed absence reason, or the suite outcome, which is a
+    /// template over integers (`exited {code} in {duration_ms} ms`) — never
+    /// content read from the tree; the scrub covers a producer that changes
+    /// that.
     pub value: MetricValue,
     /// Granularity.
     pub scope: ScopeKind,
