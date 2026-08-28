@@ -26,7 +26,7 @@
 //! through `serde_json::to_value`, and `serde_json::Number` cannot hold a
 //! non-finite value at all: `to_value` maps NaN and the infinities to `null`
 //! instead of failing. A `Serialize` type that hands out a NaN therefore arrives
-//! at [`write_value`] as a `null` that hashes perfectly well, producing a valid
+//! at `write_value` as a `null` that hashes perfectly well, producing a valid
 //! digest over a hole where a measurement should be. [`format_es6_double`] does
 //! reject non-finite input, but nothing routed through `to_value` can reach it
 //! with one.

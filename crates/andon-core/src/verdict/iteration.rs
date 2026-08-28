@@ -202,7 +202,7 @@ pub struct Advance {
     /// that silently stops applying, and the actor who needs to know (whoever
     /// reads the verdict) cannot see this file.
     pub recovered: bool,
-    /// True when the lock could not be taken inside [`LOCK_WAIT`], so the
+    /// True when the lock could not be taken inside `LOCK_WAIT`, so the
     /// counter was read and not advanced.
     ///
     /// The measurement is unaffected — the counter is a loop heuristic and not

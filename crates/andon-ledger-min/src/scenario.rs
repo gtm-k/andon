@@ -137,7 +137,7 @@ pub struct Manifest {
 /// deserializes internally-tagged enums through serde's buffering path, which
 /// handles arrays of tables poorly, and a fixture format that fails to parse for
 /// reasons unrelated to the fixture is a bad trade for a tidier type. The
-/// validation in [`Step::check`] gives the same errors a tagged enum would.
+/// validation in `Step::check` gives the same errors a tagged enum would.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Step {

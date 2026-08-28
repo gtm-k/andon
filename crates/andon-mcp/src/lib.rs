@@ -5,9 +5,9 @@
 //! # A thin adapter, and why thinness is the design
 //!
 //! Every tool here is a wrapper over a function `andon-cli` already exposes:
-//! [`measure_change`](AndonMcp::measure_change) runs `measure::measure` and
+//! `measure_change` runs `measure::measure` and
 //! saves through `store::write_last` exactly as `andon measure` does;
-//! [`get_results`](AndonMcp::get_results) reads the same saved record through
+//! `get_results` reads the same saved record through
 //! `store::read_record`; the profile an agent receives comes from
 //! `render::profile`, the function behind `--profile agent-mode`. The MCP
 //! server computes no number of its own. This project's dominant defect class

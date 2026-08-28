@@ -81,7 +81,7 @@ pub const CLUSTER_MIN_SAMPLES: usize = 5;
 /// # What the denominator is
 ///
 /// For the kinds where zero means nothing-found (counts and ratios — see
-/// [`zero_means_nothing_found`]), **the population is the non-zero values**,
+/// `zero_means_nothing_found`), **the population is the non-zero values**,
 /// and both this fraction and [`CLUSTER_MIN_SAMPLES`] are judged against it.
 /// Zeros are not part of a shaved distribution, so they belong neither in the
 /// band nor in the population being judged for shaving: with zeros in the

@@ -13,7 +13,7 @@
 //!
 //! # The wire contract (P9 must reproduce this byte-for-byte)
 //!
-//! The digest is SHA-256 over the canonical JSON of [`TrailerDigestInput`]:
+//! The digest is SHA-256 over the canonical JSON of `TrailerDigestInput`:
 //! the record's `schema_version`, its `(base_oid, head_oid, head_kind)` tuple,
 //! and **every** result row — `(metric_id, canonical scope, per-result digest,
 //! deterministic flag)`, sorted by `(metric_id, scope)`. The rows come from

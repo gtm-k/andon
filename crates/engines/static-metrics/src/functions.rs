@@ -55,7 +55,7 @@
 //! payload whose pairing key names two results — an ambiguous pairing is where a
 //! forged result shadows an honest one
 //! ([`andon_core::payload::AssemblyError::DuplicateResult`]) — so before
-//! [`disambiguate`] existed, one such line ended the whole measurement with exit
+//! `disambiguate` existed, one such line ended the whole measurement with exit
 //! 1 and nothing measured. The refusal is right and is untouched; what was wrong
 //! is that ordinary code reached it.
 //!
@@ -90,7 +90,7 @@ pub struct FunctionSite<'t> {
     pub node: Node<'t>,
     /// Class-qualified where a class is in scope, `<anonymous>` where nothing
     /// names it, and column-qualified where the name and the line span do not
-    /// tell this site apart from another in the same file ([`disambiguate`]).
+    /// tell this site apart from another in the same file (`disambiguate`).
     pub name: String,
     /// First line, 1-based inclusive.
     pub start_line: u32,
