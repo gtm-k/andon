@@ -22,8 +22,11 @@
 //!
 //! And two more that decide what the number can *do*:
 //!
-//! - **Can it stop the line?** — its class, its tier, and the ceiling the policy
-//!   in force puts on that tier.
+//! - **Can it stop the line?** — its class, its tier, the ceiling the policy
+//!   in force puts on that tier, and the routes that stop the line without
+//!   reading a severity at all (a fired tamper detector, a failed suite) —
+//!   answered by the verdict's own predicate, so the two surfaces cannot
+//!   disagree.
 //! - **Is it in the compare set?** — whether the verifier will recompute it and
 //!   compare digests, or whether it is CI-authoritative only.
 //!
@@ -38,13 +41,15 @@
 use std::fmt::Write as _;
 
 use andon_core::date::Date;
+use andon_core::payload::tamper_signals;
 use andon_core::policy::Policy;
 use andon_core::registry::ResolvedClaim;
-use andon_core::schema::enums::{EvidenceTier, MetricClass, Severity};
+use andon_core::schema::enums::{Completeness, EngineFamily, EvidenceTier, MetricClass, Severity};
 use andon_core::schema::payload::MeasurementRecord;
-use andon_core::schema::payload::MeasurementResult;
+use andon_core::schema::payload::{MeasurementResult, MetricValue};
 use andon_core::verdict::ladder::{SeverityLadder, Threshold};
-use andon_core::verdict::severity;
+use andon_core::verdict::policy_change::{Justification, PolicyChange};
+use andon_core::verdict::{severity, VerdictContext};
 
 use crate::measure;
 use crate::shipped;
@@ -220,9 +225,14 @@ pub fn explain(
     claim(&mut out, resolved, registry.as_of);
 
     if let Subject::Metric(metric_id) = subject {
-        let (_, descriptor) = shipped::engine_for_metric(metric_id).expect("resolved above");
+        let (engine, descriptor) = shipped::engine_for_metric(metric_id).expect("resolved above");
+        // The family is the registry's own declaration of it — the file the
+        // roster is checked against — because the flag routes key on family.
+        let family = (engine.registry_file)()?.family;
         reach(
             &mut out,
+            metric_id,
+            family,
             resolved.claim.tier,
             descriptor.class,
             policy,
@@ -384,7 +394,8 @@ fn claim(out: &mut String, resolved: &ResolvedClaim, as_of: Date) {
     }
 }
 
-/// The strongest severity a finding on this metric could reach, and why.
+/// The strongest severity a finding on this metric could reach, and whether
+/// it — or the flag it carries — can stop the line.
 ///
 /// # Computed, never described
 ///
@@ -394,19 +405,52 @@ fn claim(out: &mut String, resolved: &ResolvedClaim, as_of: Date) {
 /// ceiling it does not mention caps them below the band — and a reader acting on
 /// it would be told a tier-A churn count could block, which it cannot.
 ///
-/// So the answer comes from [`severity::ceiling`], the one implementation of the
-/// composition, asked about a result carrying this metric's declared tier, class
-/// and a complete reading. Nothing here restates a rule; a ceiling added to that
-/// function shows up in this output without an edit.
+/// So the severity comes from [`severity::apply`], the one implementation of
+/// the ceilings, run over a result carrying this metric's declared tier, class
+/// and a complete reading — and the answer to "can it stop the line?" comes
+/// from [`severity::stops_the_line`], the one predicate the verdict itself
+/// asks, put to the finding at full strength.
+///
+/// That second call is the one this section used to skip. It read the ceiling
+/// alone, and the ceiling is not the whole verdict: a fired tamper detector and
+/// a failed test suite stop the line by policy *whatever* the ceilings leave
+/// their severity at. Both are tier N, so under the shipped policy their
+/// reported severity is `Low` and the line still stops — and this section
+/// said *"this can advise; it cannot stop the line"* about a metric `andon
+/// measure` had just returned BLOCK on, to an agent reading it to decide
+/// whether the finding mattered. Asking the verdict's predicate is what keeps
+/// the two surfaces from disagreeing again; a route added to it shows up here
+/// without an edit, and so does a ceiling added to `apply`.
 fn reach(
     out: &mut String,
+    metric_id: &str,
+    family: EngineFamily,
     tier: EvidenceTier,
     class: MetricClass,
     policy: &Policy,
     ladder: Option<SeverityLadder>,
 ) {
-    let ceiling = severity::ceiling(&query_result(tier, class), &policy.severity);
     let declared = ladder.map(|l| l.strongest());
+
+    // The finding at full strength: this metric's own id and family, its flag
+    // fired if it is one, its severity at the top of its own ladder.
+    let mut result = query_result(tier, class);
+    result.metric_id = metric_id.to_string();
+    result.family = family;
+    if is_flag(metric_id) {
+        result.value = MetricValue::Flag(true);
+    }
+    if let Some(declared) = declared {
+        result.severity = declared;
+    }
+    let ceiling = severity::ceiling(&result, &policy.severity);
+    // The ceilings, applied the way the assembler applies them. Both halves
+    // bind — a ladder that never reaches Medium is not the same situation as a
+    // policy that will not admit one that does — and what is left is the
+    // strongest this finding can be reported as in this repository.
+    severity::apply(std::slice::from_mut(&mut result), policy);
+    let reachable = result.severity;
+    let stops = severity::stops_the_line(&result, &query_context(policy, None));
 
     let _ = writeln!(out, "\n  The strongest this finding can be");
     if let Some(declared) = declared {
@@ -416,14 +460,10 @@ fn reach(
         );
     }
     let _ = writeln!(out, "    the policy in force caps it at       {ceiling:?}");
-    // Both halves, because either can be the binding one and a reader needs to
-    // know which. A ladder that never reaches Medium is not the same situation
-    // as a policy that will not admit one that does.
-    let reachable = declared.map(|d| d.min(ceiling)).unwrap_or(ceiling);
     let _ = writeln!(
         out,
         "    so in this repository, at most       {reachable:?}{}",
-        if reachable.is_med_plus() {
+        if stops {
             " — this can stop the line"
         } else {
             " — this can advise; it cannot stop the line"
@@ -457,9 +497,94 @@ fn reach(
         "      and a number computed over input the parser could not fully read is capped \
          below the band whatever else is true"
     );
+
+    // The routes that never read the severity, said out loud — each derived
+    // from the same calls the verdict makes, never from the metric's name. A
+    // flag the policy stops the line on stops it whatever the ceilings left;
+    // one the policy has switched off advises whatever the ladder declared.
+    if severity::fired_signal(&result).is_some() {
+        if stops {
+            let _ = writeln!(
+                out,
+                "      yet a fired tamper detector stops the line under this policy whatever \
+                 severity the ceilings leave it — the flag decides, not the number"
+            );
+            // The one conditional route, found by asking again rather than by
+            // naming the detector: if a verified ledgered justification turns
+            // this firing into advice, say so.
+            let justified = PolicyChange {
+                deltas: Vec::new(),
+                justification: Some(Justification::Verified {
+                    reference: String::new(),
+                    summary: String::new(),
+                }),
+            };
+            if !severity::stops_the_line(&result, &query_context(policy, Some(&justified))) {
+                let _ = writeln!(
+                    out,
+                    "      unless a verified ledgered justification covers the change, in \
+                     which case it advises"
+                );
+            }
+        } else {
+            let _ = writeln!(
+                out,
+                "      and this policy does not stop the line on a fired tamper detector \
+                 (block_on_tamper = {}), so the flag advises whatever the ladder says",
+                policy.severity.block_on_tamper
+            );
+        }
+    } else if severity::fired_suite_failure(&result) {
+        if stops {
+            let _ = writeln!(
+                out,
+                "      yet a failed test suite stops the line under this policy whatever \
+                 severity the ceilings leave it — the flag decides, not the number"
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "      and this policy does not stop the line on a failed test suite \
+                 (block_on_test_failure = {}), so the flag advises whatever the ladder says",
+                policy.severity.block_on_test_failure
+            );
+        }
+    }
 }
 
-/// A result carrying nothing but the three facts [`severity::ceiling`] reads.
+/// Whether this metric is a flag, in the verdict's own vocabulary.
+///
+/// A tamper detector's flag is the id that resolves to a `TamperSignal` through
+/// [`tamper_signals::signal_for`] — serde over the enum, no table, so a renamed
+/// detector fails to resolve rather than quietly becoming a count — and the
+/// tests engine's is [`severity::SUITE_FAILURE_METRIC`], the constant the
+/// verdict reads. A flag at full strength is a fired one.
+fn is_flag(metric_id: &str) -> bool {
+    tamper_signals::signal_for(metric_id).is_some() || metric_id == severity::SUITE_FAILURE_METRIC
+}
+
+/// The verdict's context for a question about one repository's policy: a
+/// complete reading, no engine failed, nothing stale — and the policy edit,
+/// when the question is what a justified one would change.
+fn query_context<'a>(
+    policy: &'a Policy,
+    policy_change: Option<&'a PolicyChange>,
+) -> VerdictContext<'a> {
+    VerdictContext {
+        completeness: Completeness::Complete,
+        policy,
+        policy_change,
+        engine_failures: &[],
+        stale_claim_ids: &[],
+        iteration_state_recovered: false,
+        registry_skew: &[],
+        unreadable_paths: &[],
+    }
+}
+
+/// A result carrying nothing but the facts [`severity::ceiling`] and
+/// [`severity::stops_the_line`] read, before [`reach`] stamps the metric's own
+/// id, family and flag onto it.
 ///
 /// A query object, not a measurement. It never enters a payload, it is never
 /// sealed, and it names no engine — `payload::prepare` would refuse it on the
@@ -467,10 +592,8 @@ fn reach(
 /// asks the real function instead of restating its rules, which is the whole
 /// argument of DEFERRED-APPROVALS E21.
 fn query_result(tier: EvidenceTier, class: MetricClass) -> MeasurementResult {
-    use andon_core::schema::enums::{Completeness, EngineClass, EngineFamily};
-    use andon_core::schema::payload::{
-        CacheState, EvidenceRef, Freshness, MetricValue, ResultScope, ScopeKind,
-    };
+    use andon_core::schema::enums::EngineClass;
+    use andon_core::schema::payload::{CacheState, EvidenceRef, Freshness, ResultScope, ScopeKind};
     MeasurementResult {
         metric_id: String::new(),
         claim_id: String::new(),
@@ -487,8 +610,8 @@ fn query_result(tier: EvidenceTier, class: MetricClass) -> MeasurementResult {
         },
         value: MetricValue::Count(0),
         delta: None,
-        // The question is what policy allows at full strength, so the ladder's
-        // own answer is supplied separately and this stands at the top.
+        // The question is what policy allows at full strength, so this stands
+        // at the top; `reach` lowers it to the ladder's own strongest rung.
         severity: Severity::Critical,
         // A complete reading, because the completeness ceiling is reported as a
         // standing caveat rather than folded into the headline number.
