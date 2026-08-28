@@ -23,10 +23,14 @@
 # into a sandbox repository AT RUN TIME. An edit to the real script is what this
 # test measures: reintroduce the old pipeline there and these cases fail.
 #
-# The two expensive steps are stubbed — a `cargo` on PATH that does nothing and a
-# `target/release/andon` that prints a line — because what is under test is the
-# ledger reporting, not the build or the measurement. Nothing else is replaced;
-# the script runs top to bottom and the git notes call is the real one.
+# The expensive steps are stubbed — a `cargo` on PATH that does nothing, a
+# `rustc` on PATH that names a fixed host triple, and an `andon` under
+# `target/<that triple>/release/` that prints a line — because what is under
+# test is the ledger reporting, not the build or the measurement. The script
+# builds with `--target` and reads the binary from the per-target directory
+# (ruling E72), so the sandbox lays the stub where the real script looks.
+# Nothing else is replaced; the script runs top to bottom and the git notes call
+# is the real one.
 #
 # NO PIPELINES IN THE ASSERTIONS, ON PURPOSE
 #
@@ -89,26 +93,38 @@ assert_equals() {
 }
 
 # A sandbox repository with the real script in it and the expensive steps stubbed.
+# The host triple the stub `rustc` reports; the script derives the binary path
+# from it, so the stub binary lives under the same name.
+STUB_TRIPLE="x86_64-stub-none"
+
 build_sandbox() {
     local sandbox="$1"
-    mkdir -p "$sandbox/scripts" "$sandbox/target/release" "$sandbox/stub-bin"
+    mkdir -p "$sandbox/scripts" "$sandbox/target/$STUB_TRIPLE/release" "$sandbox/stub-bin"
 
     cp "$SCRIPT_UNDER_TEST" "$sandbox/scripts/self-measure.sh"
 
-    # `cargo build --release -p andon-cli` — not what is under test.
+    # `cargo build --release -p andon-cli --target <triple>` — not what is under test.
     cat > "$sandbox/stub-bin/cargo" <<'STUB'
 #!/usr/bin/env bash
 exit 0
 STUB
 
+    # `rustc -vV`, which the script reads the host triple from. Only the line
+    # the script's `sed` selects has to be real.
+    cat > "$sandbox/stub-bin/rustc" <<STUB
+#!/usr/bin/env bash
+printf 'rustc 0.0.0-stub\nhost: %s\n' "$STUB_TRIPLE"
+STUB
+
     # The measurement. It does not write the note: each case installs the note it
     # wants first, so the three states are set up rather than hoped for.
-    cat > "$sandbox/target/release/andon" <<'STUB'
+    cat > "$sandbox/target/$STUB_TRIPLE/release/andon" <<'STUB'
 #!/usr/bin/env bash
 echo "stub andon invoked: $*"
 STUB
 
-    chmod +x "$sandbox/stub-bin/cargo" "$sandbox/target/release/andon"
+    chmod +x "$sandbox/stub-bin/cargo" "$sandbox/stub-bin/rustc" \
+        "$sandbox/target/$STUB_TRIPLE/release/andon"
 
     git -c init.defaultBranch=main init --quiet "$sandbox"
 

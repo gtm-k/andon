@@ -624,8 +624,11 @@ mod tests {
         assert!(!is_scrub_root("/"));
         assert!(!is_scrub_root(""));
         assert!(is_scrub_root("/tmp"));
-        assert!(is_scrub_root("C:\\Users\\someone"));
+        // A backslash separates path components only on Windows. Anywhere else
+        // the string below is one component with no parent, and the question
+        // has no meaning — so it is asked only where it does.
         if cfg!(windows) {
+            assert!(is_scrub_root("C:\\Users\\someone"));
             assert!(!is_scrub_root("C:\\"));
         }
     }
