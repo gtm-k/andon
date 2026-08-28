@@ -93,7 +93,7 @@ pub struct CloneReport {
     /// never enumerated.
     ///
     /// The saturation cap pairs an occurrence with a bounded set of partners
-    /// rather than with all of them, and [`bounded_partners`] derives that set
+    /// rather than with all of them, and `bounded_partners` derives that set
     /// from the *regions* the repetition falls into — which costs occurrences
     /// times regions. Above `REGION_PAIR_BUDGET` the region list is sampled
     /// instead of walked, and a sampled search is one that did not look
@@ -109,7 +109,7 @@ pub struct CloneReport {
     /// The budget is spent per file and this holds the files that reached their
     /// own. It used to hold every file that merely shared a hash bucket with
     /// one that did, so a one-region file whose walk cost nothing was told its
-    /// regions had been sampled. See [`Runs::work_by_file`].
+    /// regions had been sampled. See `Runs::work_by_file`.
     pub truncated_paths: BTreeSet<String>,
 }
 

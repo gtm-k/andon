@@ -30,7 +30,7 @@
 //! ```
 //!
 //! The right-hand form is used because it needs logarithms of *integers* only,
-//! which is what [`log2_q32`] can compute exactly enough. Zero for a single
+//! which is what `log2_q32` can compute exactly enough. Zero for a single
 //! author, `log2(k)` for k authors with equal shares.
 
 /// Fractional bits in the fixed-point representation. 2⁻³² ≈ 2.3e-10 bits,

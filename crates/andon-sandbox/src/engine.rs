@@ -17,7 +17,8 @@
 //! A fired flag over a suite that never finished would be a tamper-adjacent
 //! false accusation on possibly-honest code, which is the failure class this
 //! project ranks above missed detection (PREMORTEM T1's discipline, applied to
-//! execution). The distinction is enforced by the type: [`ExecOutcome`] carries
+//! execution). The distinction is enforced by the type:
+//! [`ExecOutcome`](andon_core::engine::ExecOutcome) carries
 //! `timed_out` beside the optional exit code, so conflating them takes effort.
 //!
 //! # Where the block comes from

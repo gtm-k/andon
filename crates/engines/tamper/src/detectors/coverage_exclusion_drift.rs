@@ -28,7 +28,7 @@
 //! which is the confident missed detection the completeness vocabulary exists
 //! to prevent. Files are now matched by the tool's stem, read against the
 //! syntaxes that tool reads ([`config::Tool`]), and keys by what their name says
-//! ([`EXCLUSION_KEY_FRAGMENTS`]), so the eighth spelling of each is covered
+//! (`EXCLUSION_KEY_FRAGMENTS`), so the eighth spelling of each is covered
 //! before it is written.
 //!
 //! # Only widening fires
@@ -49,8 +49,8 @@
 //! file fires correctly when an entry is *added*. The model was wrong — it
 //! measured cardinality where the signal is breadth.
 //!
-//! So a replacement is now ranked as well as counted, by [`covers`], and the
-//! replacements [`covers`] cannot rank are reported as unassessed rather than as
+//! So a replacement is now ranked as well as counted, by `covers`, and the
+//! replacements `covers` cannot rank are reported as unassessed rather than as
 //! nothing (see [`crate::detectors::Outcome::unassessed`]).
 
 use crate::change::ChangeView;

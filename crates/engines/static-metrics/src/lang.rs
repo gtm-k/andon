@@ -16,7 +16,8 @@
 //!
 //! # The grammar tuple is the regime
 //!
-//! Every version below is stamped into [`MeasurementRegime::Static`] and
+//! Every version below is stamped into
+//! [`MeasurementRegime::Static`](andon_core::schema::regime::MeasurementRegime::Static) and
 //! therefore into every per-result digest. Two binaries at different grammar
 //! versions produce `unwitnessed-version-skew` rather than `divergent`
 //! (PREMORTEM S4), which is only true if the versions are actually in the

@@ -25,7 +25,7 @@
 //!
 //! # What the traversal is pinned to, and why that is in the regime
 //!
-//! [`LOG_FLAGS`] is the counting spec. Three of the flags change results rather
+//! `LOG_FLAGS` is the counting spec. Three of the flags change results rather
 //! than formatting:
 //!
 //! - `--no-merges`. `git log --numstat` reports no per-file numbers for a merge
@@ -47,7 +47,8 @@
 //!
 //! What remains version-sensitive is git's own date-limited traversal, which
 //! prunes with a slop heuristic and can therefore *omit* a clock-skewed commit
-//! that a full walk would keep. That is why [`MeasurementRegime::Process`]
+//! that a full walk would keep. That is why
+//! [`MeasurementRegime::Process`](andon_core::schema::regime::MeasurementRegime::Process)
 //! carries `git_version`: two gits are two regimes, and the verifier says
 //! `unwitnessed-version-skew` rather than accusing anyone (PREMORTEM S4). The
 //! Rust-side filter below is belt to that brace — it guarantees no commit
@@ -58,7 +59,7 @@
 //!
 //! Git tracks an author identity as bytes. Entropy needs identity *equality* and
 //! never the name itself, so the raw `name\0email` bytes are hashed into
-//! [`author_key`] and the name is dropped. One exotic byte in one contributor's
+//! `author_key` and the name is dropped. One exotic byte in one contributor's
 //! name would otherwise take the whole engine down with a UTF-8 error, and
 //! rendering it lossily would silently merge two contributors into one — the
 //! same collapse `GitError::UnrepresentablePath` refuses for paths.

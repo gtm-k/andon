@@ -30,7 +30,7 @@
 //!   an honest one.
 //! - **Every engine the measurement expects is accounted for.** Each appears
 //!   exactly once, as an output or as a named failure, and nothing appears that
-//!   the measurement does not expect ([`account_for_every_engine`], over the
+//!   the measurement does not expect (`account_for_every_engine`, over the
 //!   roster [`expected_engines`] derives from the registry and the policy in
 //!   force). "Assembly from all engines" is the phase's own acceptance
 //!   criterion, and until this check existed nothing held it: a payload
@@ -466,7 +466,7 @@ impl Prepared {
     /// than the one it described — the same defect class as the
     /// `ENGINE_UNAVAILABLE` message corrected in [`crate::verdict`], found in a
     /// third place by the phase that inherited it as an entry note. See
-    /// [`record_completeness`], which is where the rule actually lives.
+    /// `record_completeness`, which is where the rule actually lives.
     pub fn completeness(&self) -> Completeness {
         self.completeness
     }

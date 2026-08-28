@@ -137,7 +137,7 @@ impl ChangedSet {
     /// and every OID is real. The dirty segment carries no head-side OID for
     /// anything the working tree has moved off, by construction, which is what
     /// stops uncommitted bytes from acquiring compared-lane identities — see
-    /// [`from_snapshot`] for the three conditions.
+    /// `from_snapshot` for the three conditions.
     ///
     /// A range can contain both, and then it contains both kinds of entry: the
     /// committed ones are readable blobs and the dirty ones are not. That is not
@@ -157,7 +157,7 @@ impl ChangedSet {
     /// mid-loop has commits behind it and edits in front of it. So the changed
     /// set is the **union** of the two segments — `diff-tree` from the base to
     /// the snapshot's anchor, and the snapshot itself — keyed by path. See
-    /// [`compose`] for what happens to a path that appears in both.
+    /// `compose` for what happens to a path that appears in both.
     ///
     /// The `diff-tree` is skipped entirely when the base already *is* the
     /// snapshot's anchor, so the common `HEAD`-to-worktree case costs exactly

@@ -133,7 +133,7 @@ impl DirtyEntry {
     /// relative to the index.
     ///
     /// Porcelain v2's second status character. `.` means "unmodified there",
-    /// which is the case [`super::diff`] needs so that it knows whether the
+    /// which is the case the `diff` module needs so that it knows whether the
     /// index blob still describes what is on disk.
     pub fn is_worktree_modified(&self) -> bool {
         self.status.as_bytes().get(1).copied() == Some(b'M')
