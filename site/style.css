@@ -35,12 +35,18 @@
   --amber-soft: #ffefcf;
   --gray-lamp: #a1a1a1;
 
-  /* tier ladder: one hue, darkest = strongest evidence */
-  --tier-A: #0761d1;
-  --tier-B: #3b8ff5;
-  --tier-C: #7fb5f9;
-  --tier-D: #b3d1fa;
-  --tier-N: #e6effc;
+  /* tier ladder: one hue (the spec's link blue, OKLCH h 257), darkest =
+     strongest evidence. Five steps of OKLCH L 0.48 → 0.76 in 0.07 gaps, so
+     the palest step still clears the canvas at 2:1 and the ladder reads as a
+     ladder without colour vision. Each step's ink is the one that clears
+     WCAG AA on it: white on A 6.69:1 and B 4.92:1, ink on C 4.89:1,
+     D 6.40:1 and N 8.34:1 — verified with the dataviz palette validator
+     (ordinal mode) rather than by eye. */
+  --tier-A: #0159ba;
+  --tier-B: #226fd2;
+  --tier-C: #3a85ea;
+  --tier-D: #539bff;
+  --tier-N: #7db3ff;
   --tier-A-ink: #ffffff;
   --tier-B-ink: #ffffff;
   --tier-C-ink: #171717;
@@ -91,14 +97,17 @@
     --amber-text: #f5a623;
     --amber-soft: #33210a;
     --gray-lamp: #555555;
-    --tier-A: #79b8ff;
-    --tier-B: #3b8ff5;
-    --tier-C: #1f5a9a;
-    --tier-D: #17406c;
-    --tier-N: #12304f;
+    /* the same ladder, polarity-flipped: OKLCH L 0.76 → 0.44, brightest =
+       strongest. Inks: canvas ink on A 9.21:1, B 6.84:1, C 4.93:1; light ink
+       on D 4.81:1 and N 6.79:1. */
+    --tier-A: #7db3ff;
+    --tier-B: #4d98ff;
+    --tier-C: #337ee3;
+    --tier-D: #1665c8;
+    --tier-N: #004ea6;
     --tier-A-ink: #0a0a0a;
     --tier-B-ink: #0a0a0a;
-    --tier-C-ink: #ededed;
+    --tier-C-ink: #0a0a0a;
     --tier-D-ink: #ededed;
     --tier-N-ink: #ededed;
     --term-ring: rgba(255, 255, 255, 0.12);
@@ -130,14 +139,17 @@
   --amber-text: #f5a623;
   --amber-soft: #33210a;
   --gray-lamp: #555555;
-  --tier-A: #79b8ff;
-  --tier-B: #3b8ff5;
-  --tier-C: #1f5a9a;
-  --tier-D: #17406c;
-  --tier-N: #12304f;
+  /* the same ladder, polarity-flipped: OKLCH L 0.76 → 0.44, brightest =
+     strongest. Inks: canvas ink on A 9.21:1, B 6.84:1, C 4.93:1; light ink
+     on D 4.81:1 and N 6.79:1. */
+  --tier-A: #7db3ff;
+  --tier-B: #4d98ff;
+  --tier-C: #337ee3;
+  --tier-D: #1665c8;
+  --tier-N: #004ea6;
   --tier-A-ink: #0a0a0a;
   --tier-B-ink: #0a0a0a;
-  --tier-C-ink: #ededed;
+  --tier-C-ink: #0a0a0a;
   --tier-D-ink: #ededed;
   --tier-N-ink: #ededed;
   --term-ring: rgba(255, 255, 255, 0.12);
@@ -696,7 +708,11 @@ li {
   max-height: 70vh;
   overflow: auto;
   tab-size: 4;
-  white-space: pre;
+  /* The transcript's longest lines outrun the 7/12 hero column; wrapping them
+     keeps every word in view with no inner scrollbar, and the odd unbroken
+     token (the %TEMP% path) may break anywhere on a narrow screen. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--term-ink);
 }
 
@@ -1459,6 +1475,13 @@ li {
     flex-wrap: wrap;
   }
 
+  /* Once the bar wraps, the status line gets a row of its own and may break
+     rather than run off the right edge, where the bar clips it. */
+  .term-status {
+    white-space: normal;
+    min-width: 0;
+  }
+
   .facts {
     grid-template-columns: repeat(2, auto);
   }
@@ -1468,11 +1491,6 @@ li {
   .outcomes .no {
     white-space: normal;
     word-break: break-word;
-  }
-
-  .term-screen {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
   }
 
   /* The diagrams keep their drawn scale and scroll inside the figure rather

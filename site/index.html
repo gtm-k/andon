@@ -86,7 +86,7 @@
           <a class="btn btn-primary" href="#install">Install</a>
           <a class="btn btn-secondary" href="#miss-rate">Read the miss rate</a>
         </div>
-        <p class="hero-note">verdicts pass · advise · block · escalate_to_human — exit codes 0 · 0 · 2 · 3. Rust, one binary, no server, no accounts.</p>
+        <p class="hero-note">verdicts pass · advise · block · escalate_to_human — exit codes 0 · 0 · 2 · 3. Rust, two binaries — andon and andon-mcp — nothing hosted, no accounts.</p>
       </div>
 
       <figure class="terminal" aria-labelledby="term-cap">
@@ -365,7 +365,7 @@
     </div>
 
     <!-- registry:begin -->
-<p class="derived">Derived from <code>registry/*.toml</code> at <code>d81ca68</code>: <strong>39 metrics</strong> in <strong>6 families</strong>, standing on <strong>20 claims</strong>. 36 of the 39 are deterministic and enter the digest compare; the other 3 are reported and never compared.</p>
+<p class="derived">Derived from <code>registry/*.toml</code>, last changed in <code>a21465b</code>: <strong>39 metrics</strong> in <strong>6 families</strong>, standing on <strong>20 claims</strong>. 36 of the 39 are deterministic and enter the digest compare; the other 3 are reported and never compared.</p>
 <figure class="tiers" aria-labelledby="tiers-cap">
   <svg class="tier-svg" viewBox="0 0 1000 60" role="img" aria-label="Claims by evidence tier: 3 at tier A, 9 at tier B, 1 at tier C, 0 at tier D, 7 at tier N." xmlns="http://www.w3.org/2000/svg">
     <rect class="seg tier-A" x="0.0" y="0" width="141.6" height="60" rx="4"/>
@@ -624,25 +624,26 @@
   <div class="container">
     <div class="section-head">
       <p class="eyebrow">install</p>
-      <h2 id="install-title">One binary. Pick a channel.</h2>
-      <p class="lead">Each command installs the same <code>andon</code> executable. No server, no account, no configuration file to write before the first measurement.</p>
+      <h2 id="install-title">Two binaries. Pick a channel.</h2>
+      <p class="lead">Two executables ship together: <code>andon</code>, the command line, and <code>andon-mcp</code>, the MCP server that <code>andon init</code> registers for an agent's harness. The shell and Homebrew lines install both; npm carries them as <code>@gtm-k/andon-cli</code> and <code>@gtm-k/andon-mcp</code>. Nothing hosted, no account, no configuration file to write before the first measurement.</p>
     </div>
 
     <div class="install-grid">
       <div class="cmd">
         <span class="cmd-label">shell</span>
-        <pre><code>curl -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-cli-installer.sh | sh</code></pre>
+        <pre><code>curl --proto '=https' --tlsv1.2 -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-mcp-installer.sh | sh</code></pre>
       </div>
       <div class="cmd">
         <span class="cmd-label">homebrew</span>
-        <pre><code>brew install gtm-k/tap/andon-cli</code></pre>
+        <pre><code>brew install gtm-k/tap/andon-cli gtm-k/tap/andon-mcp</code></pre>
       </div>
       <div class="cmd">
         <span class="cmd-label">npm</span>
         <pre><code>npx @gtm-k/andon-cli</code></pre>
       </div>
     </div>
-    <p class="install-note">The package is <code>andon-cli</code>; the command it installs is <code>andon</code>.</p>
+    <p class="install-note">Artifacts are named after the packages, <code>andon-cli</code> and <code>andon-mcp</code>; the commands they install are <code>andon</code> and <code>andon-mcp</code>.</p>
 
     <div class="cmd-then">
       <div>

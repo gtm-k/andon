@@ -55,15 +55,21 @@ def load() -> list[dict]:
     return files
 
 
-def head_oid() -> str:
+def registry_oid() -> str:
+    """The last commit that touched `registry/` — what the fragment is derived from.
+
+    Not HEAD: labelling with HEAD would relabel an otherwise identical fragment on
+    every re-splice, and would name a commit that changed nothing the page shows.
+    The registry's own last change is stable across re-splices and is the truth.
+    """
     try:
         out = subprocess.run(
-            ["git", "-C", ROOT, "rev-parse", "--short", "HEAD"],
+            ["git", "-C", ROOT, "log", "-1", "--format=%h", "--", "registry/"],
             capture_output=True,
             text=True,
             check=True,
         )
-        return out.stdout.strip()
+        return out.stdout.strip() or "working tree"
     except (OSError, subprocess.CalledProcessError):
         return "working tree"
 
@@ -76,7 +82,7 @@ def render(files: list[dict]) -> str:
     out: list[str] = []
     out.append(f"{BEGIN}\n")
     out.append(
-        f'<p class="derived">Derived from <code>registry/*.toml</code> at <code>{esc(head_oid())}</code>: '
+        f'<p class="derived">Derived from <code>registry/*.toml</code>, last changed in <code>{esc(registry_oid())}</code>: '
         f"<strong>{metric_total} metrics</strong> in <strong>{len(files)} families</strong>, standing on "
         f"<strong>{len(claims)} claims</strong>. {deterministic} of the {metric_total} are deterministic and enter the "
         f"digest compare; the other {metric_total - deterministic} are reported and never compared.</p>\n"

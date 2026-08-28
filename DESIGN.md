@@ -14,11 +14,16 @@ code, which is the voice a measurement tool should speak in; and a semantic pale
 (`block`, `advise`, `pass`) and its attestation values without inventing a colour.
 Linear's system is dark-only with an accent that would mean nothing here; Stripe's is
 gradient-led; Claude's cream-and-terracotta is an editorial register, not an
-instrument's. **One deliberate deviation:** the Vercel mesh gradient is that brand's
-signature and is not used. The single chromatic device on this site is the andon lamp
-in the hero, which takes its three colours from the semantic tokens below; the dark
-theme is derived by the spec's own polarity-flip rule (its `primary` ink band) rather
-than by inverting the light one.
+instrument's. **Deliberate deviations, each named here.** The Vercel mesh gradient is
+that brand's signature and is not used; the single chromatic device on this site is the
+andon lamp in the hero, which takes its three colours from the semantic tokens below.
+In the light theme, where the spec's values are otherwise used as written, `mute` is
+`#666666` rather than the spec's `#888888`: on the `#fafafa` canvas, `#888888` is 3.40:1,
+below WCAG AA's 4.5:1 for the 12–14px eyebrows, captions and notes that carry it, and
+`#666666` is 5.50:1. Any other departure from the spec's values is a defect, not an
+unlisted deviation. The dark theme is derived by the spec's own polarity-flip rule (its
+`primary` ink band) rather than by inverting the light one, so its tokens are Andon's
+throughout and are not accounted for token by token.
 
 **Source and licence.** Copied verbatim from
 `https://raw.githubusercontent.com/VoltAgent/awesome-design-md/main/design-md/vercel/DESIGN.md`
