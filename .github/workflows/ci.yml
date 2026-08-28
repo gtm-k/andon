@@ -60,6 +60,15 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Doc comments are read as prose and followed as links. A link from a
+      # public doc to a private item, or to a path that does not resolve, is a
+      # pointer that has already drifted; rustdoc catches both and clippy does
+      # not. `--no-deps` keeps it to this workspace's own comments.
+      - name: Docs
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       # `--no-fail-fast` so one red suite cannot abort the run and hide every
       # suite after it. This job is often the only Linux run a change gets, and
       # a suite that never executed is a silent failure for whoever needed its
