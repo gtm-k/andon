@@ -1,0 +1,59 @@
+# Andon site — GitHub Pages.
+#
+# Publishes `site/` as-is: static files, no build step, no bundler. The site
+# hard-codes no domain (PLAN E15: the custom domain is a post-flip decision, so
+# the same artifact serves the project Pages URL now and a domain later) and
+# every link inside it is relative.
+#
+# `workflow_dispatch` only. Per the Actions rule, push triggers stay off during
+# active development; the trigger is widened at the flip, inside the ledgered
+# close-out, and not before. Until then a person runs it on purpose.
+#
+# Every action is pinned by commit SHA with the tag in a trailing comment, as
+# ci.yml does and for the same reason: a tag is a mutable pointer, and this job
+# holds a token that can write the deployment.
+
+name: pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: package site/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: the site must not name a domain
+        # E15: the artifact has to be portable between the project Pages URL and
+        # a later custom domain, so a canonical URL, an og:url, or an absolute
+        # self-link is a defect here, not a nicety.
+        run: |
+          if grep -rEn 'rel="canonical"|og:url|github\.io|andon\.(dev|io|com)' site/; then
+            echo "site/ hard-codes a domain; see the comment above" >&2
+            exit 1
+          fi
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/
+
+  deploy:
+    name: deploy to github-pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
