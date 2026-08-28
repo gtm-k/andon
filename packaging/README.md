@@ -125,6 +125,35 @@ The build profile the workflow uses is `dist`, which cargo-dist hard-codes. It i
 defined in the root `Cargo.toml` as `inherits = "release"` and nothing else (ruling E70):
 the shipped and attested binary is the same profile `scripts/self-measure.sh` builds.
 
+The profile is not the whole recipe on Windows. cargo-dist also appends
+`-Ctarget-feature=+crt-static` to RUSTFLAGS for MSVC targets (`msvc-crt-static`, true by
+default and set explicitly in `dist-workspace.toml`), and RUSTFLAGS lives outside any
+profile — so an identical profile still produced a shipped `andon.exe` with the C runtime
+linked in and a self-measured one that loaded it from the system: different bytes.
+`.cargo/config.toml` pins the same flag for every build of `x86_64-pc-windows-msvc`,
+which is what makes `dist build`, CI, and `scripts/self-measure.sh` link the same runtime
+(ruling E71). Static is the side to pin: a dynamic CRT would make a stranger's install
+depend on the Visual C++ redistributable already being present. The two declarations
+must agree — dist sets RUSTFLAGS in the environment, which replaces the config table
+rather than merging with it, so turning `msvc-crt-static` off would bypass the pin for
+the release build alone and reopen the drift.
+
+Nor are profile and runtime the whole recipe. cargo unifies dependency features across
+every package built in one invocation, and dist's default is a single `cargo build
+--workspace`. With `andon-mcp` in that invocation, `andon-cli`'s dependencies compile
+with features it never asks for on its own, and the shipped `andon.exe` differs from the
+`-p andon-cli` build `scripts/self-measure.sh` measures with. `precise-builds = true` in
+`dist-workspace.toml` has dist build each app on its own, the package selection
+self-measure makes; a per-package `--target` build then matches the artifact down to
+link-time noise (the PE timestamps and the PDB GUID), which is where a determinism study
+would start.
+
+One axis is still open, and recorded rather than hidden: dist always passes `--target`,
+`scripts/self-measure.sh` does not, and that alone changes the bytes — cargo keys every
+unit's metadata hash on the compile kind, so a host-kind build and a target-kind build
+of the same recipe lay their code out differently. Closing it is a change to the
+script's build line, not to this directory, and is the next ruling.
+
 ## Late-bound
 
 | what                         | where it changes                                                 | bound by                |
