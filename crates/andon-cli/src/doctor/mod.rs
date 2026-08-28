@@ -207,7 +207,7 @@ pub struct Bundle {
     /// What this document is, for a reader who finds it detached from the
     /// command that wrote it.
     pub bundle: &'static str,
-    /// [`REDACTION_RULE`], so the reader of the issue can see the rule the file
+    /// `REDACTION_RULE`, so the reader of the issue can see the rule the file
     /// was built under without reading this module.
     pub redaction: &'static str,
     /// How many known-root path replacements the scrub made. Zero is the

@@ -49,9 +49,16 @@ cat <<'BANNER'
 ================================================================================
 BANNER
 
-cargo build --release -p andon-cli
+# Built the way `dist build` builds the shipped binary: with an explicit
+# `--target`. cargo-dist always passes one, and the rlib metadata hashes differ
+# between a build that names its target and one that does not, so a binary
+# built without `--target` is never the shipped bytes even when every profile
+# setting agrees. The same recipe on every platform keeps the self-measured
+# binary and the released one identical up to link timestamps.
+HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+cargo build --release -p andon-cli --target "$HOST_TRIPLE"
 
-ANDON="target/release/andon"
+ANDON="target/${HOST_TRIPLE}/release/andon"
 if [ ! -x "$ANDON" ] && [ ! -x "${ANDON}.exe" ]; then
     echo "ERROR: ${ANDON} was not built." >&2
     exit 1

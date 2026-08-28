@@ -56,6 +56,29 @@ fn assert_quiet_exit(args: &[&str]) {
 }
 
 #[test]
+fn the_no_argument_page_exits_zero_only_because_the_reader_left() {
+    // The one path where the closed-pipe rule changes an exit code. With no
+    // arguments the binary prints USAGE and exits 1: a reader who is present
+    // is told the invocation was wrong. With the reader gone the same run
+    // exits 0 — there is nobody left to fail for. Every other probe in this
+    // file exercises a command that exits 0 anyway, so only this one pins that
+    // the override fired rather than that nothing panicked.
+    let with_reader = Command::new(EXE)
+        .env("RUST_BACKTRACE", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("andon runs");
+    assert_eq!(
+        with_reader.status.code(),
+        Some(1),
+        "bare `andon` with a reader present prints USAGE and exits 1"
+    );
+    assert_quiet_exit(&[]);
+}
+
+#[test]
 fn the_usage_pages_exit_quietly_when_the_reader_is_gone() {
     for args in [
         &["--help"][..],
