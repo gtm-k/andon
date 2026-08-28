@@ -10,8 +10,8 @@
 //! the same shape: state it once, and bind the statement to something that
 //! cannot be edited independently.
 //!
-//! So the binary has exactly one roster — [`SHIPPED`] — and
-//! [`tests::the_roster_is_the_registry_the_binary_compiles_in`] asserts its ids
+//! So the binary has exactly one roster — [`SHIPPED`] — and the test
+//! `the_roster_is_the_registry_the_binary_compiles_in` below asserts its ids
 //! equal the `engine =` headers of the registry files those same crates compile
 //! in. An engine added to the registry and not to this table reddens; a table
 //! entry for an engine with no registry reddens. The roster cannot silently
