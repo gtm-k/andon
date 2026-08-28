@@ -11,7 +11,7 @@
           "type": "string"
         },
         "citation_ref": {
-          "description": "DOI or stable URL, checked for resolution by the P10a registry-PR gate.",
+          "description": "DOI or stable URL. The lint does not resolve it; a reviewer does (`registry/REVIEW-POLICY.md`, \"What the lint does not check\").",
           "type": [
             "string",
             "null"

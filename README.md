@@ -114,7 +114,7 @@ Three blocks to a first non-empty measurement.
 **1. Install** — one of:
 
 ```sh
-curl -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/gtm-k/andon/releases/latest/download/andon-cli-installer.sh | sh
 ```
 
 ```sh
