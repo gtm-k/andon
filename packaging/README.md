@@ -125,6 +125,19 @@ The build profile the workflow uses is `dist`, which cargo-dist hard-codes. It i
 defined in the root `Cargo.toml` as `inherits = "release"` and nothing else (ruling E70):
 the shipped and attested binary is the same profile `scripts/self-measure.sh` builds.
 
+The profile is not the whole recipe on Windows. cargo-dist also appends
+`-Ctarget-feature=+crt-static` to RUSTFLAGS for MSVC targets (`msvc-crt-static`, true by
+default and set explicitly in `dist-workspace.toml`), and RUSTFLAGS lives outside any
+profile — so an identical profile still produced a shipped `andon.exe` with the C runtime
+linked in and a self-measured one that loaded it from the system: different bytes.
+`.cargo/config.toml` pins the same flag for every build of `x86_64-pc-windows-msvc`,
+which is what makes `dist build`, CI, and `scripts/self-measure.sh` link the same runtime
+(ruling E71). Static is the side to pin: a dynamic CRT would make a stranger's install
+depend on the Visual C++ redistributable already being present. The two declarations
+must agree — dist sets RUSTFLAGS in the environment, which replaces the config table
+rather than merging with it, so turning `msvc-crt-static` off would bypass the pin for
+the release build alone and reopen the drift.
+
 ## Late-bound
 
 | what                         | where it changes                                                 | bound by                |

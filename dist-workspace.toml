@@ -39,6 +39,18 @@ hosting = "github"
 # Whether to install an updater program
 install-updater = false
 
+# ---- MSVC C runtime: static, declared rather than defaulted ---------------------------
+# dist appends `-Ctarget-feature=+crt-static` to RUSTFLAGS for every MSVC target when this
+# is true, and true is its default (cargo-dist src/build/cargo.rs). RUSTFLAGS sits outside
+# any Cargo profile, so E70's identical `[profile.dist]` still shipped an `andon.exe` that
+# linked a different C runtime than the `cargo build --release` that `scripts/self-measure.sh`
+# and CI measure with. The same flag is pinned for every build of the MSVC target in
+# `.cargo/config.toml` (ruling E71); this line states the parity here too, so it rests on
+# two declarations rather than one default. They must agree: dist puts its flags in the
+# RUSTFLAGS environment, which REPLACES the config table rather than merging with it, so
+# setting this to false would silently bypass the pin for the release build alone.
+msvc-crt-static = true
+
 # ---- npm: LATE-BOUND -------------------------------------------------------------------
 # The bare `andon` name on npm is dormant and needs a user claim or dispute (PREMORTEM A5)
 # before any artifact may embed it. Until that lands the packages publish under the scope

@@ -1,0 +1,22 @@
+# MSVC CRT parity (ruling E71; the drift E70 exists to prevent, found by the packaging gate).
+#
+# cargo-dist injects `-Ctarget-feature=+crt-static` into RUSTFLAGS for every MSVC target
+# when `msvc-crt-static` is true, which is its default (cargo-dist 0.32.0
+# src/build/cargo.rs; `dist-workspace.toml` now says so explicitly). RUSTFLAGS sits
+# outside any Cargo profile, so `[profile.dist] inherits = "release"` alone left
+# `dist build` and `cargo build --release` linking different C runtimes on Windows:
+# the shipped `andon.exe` carried the CRT statically and the one
+# `scripts/self-measure.sh` and CI build loaded it from the system — different bytes,
+# so the self-report attested a binary the release never contained.
+#
+# Pinning the same flag here makes `dist build`, CI, and `scripts/self-measure.sh`
+# link the same runtime on MSVC. An environment RUSTFLAGS replaces this table rather
+# than merging with it, which is why dist's own injection and this file must agree
+# and both name the flag. Static is the right side to pin: a dynamic CRT would make a
+# stranger's install depend on the Visual C++ redistributable already being present.
+#
+# Target-scoped on purpose. Without `--target`, cargo applies a target table's
+# rustflags to host artifacts too (proc-macros, build scripts); the full gate run
+# under this file with no `--target` was exercised before it landed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]

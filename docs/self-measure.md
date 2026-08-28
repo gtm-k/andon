@@ -35,6 +35,15 @@ The exception is self-expiring: it stops being available the moment the first
 attested release exists, because the condition it names stops being true. It is
 not a grace period anyone has to remember to end.
 
+While it is in force, the working tree's build must be built the way a release
+is built — same profile, same C runtime — or the self-report attests a binary
+the release never contains. That is a recipe held in two files cargo reads:
+`[profile.dist]` in the root `Cargo.toml` inherits `release` (ruling E70), and
+`.cargo/config.toml` pins the static C runtime cargo-dist links on
+`x86_64-pc-windows-msvc`, which RUSTFLAGS controls and no profile does (ruling
+E71). Without the second, the Windows `andon.exe` a release ships and the one
+`scripts/self-measure.sh` builds were different bytes under the same profile.
+
 Dogfood switch-on is P5b. Phases P0 through P5a carry a placeholder in CI —
 `scripts/self-measure.sh`, which announces that no measurement was performed.
 The placeholder is deliberately loud: a self-measure step that silently exits

@@ -58,5 +58,11 @@ incremental = false
 # self-report and the artifact measure different bytes. This is the one edit to a P0-owned
 # file since P0 closed — a build profile is not workspace membership, which the glob rule
 # governs. Ruled E70.
+#
+# A profile is not the whole recipe: RUSTFLAGS sits outside every profile, and cargo-dist
+# injects `-Ctarget-feature=+crt-static` there for MSVC targets. The same flag is therefore
+# pinned for every build of that target in `.cargo/config.toml`, so that on Windows a static
+# versus dynamic C runtime cannot make the shipped and the self-measured binary different
+# bytes under this identical profile. Ruled E71; the why is in that file.
 [profile.dist]
 inherits = "release"
