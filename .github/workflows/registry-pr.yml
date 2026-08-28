@@ -41,11 +41,11 @@ on:
   # Enabled at flip (Phase 10 item 6). Uncomment to make this the check every
   # registry pull request gets:
   #
-  # pull_request:
-  #   paths:
-  #     - 'registry/**'
-  #     - '.andon.toml'
-  #     - '.github/workflows/registry-pr.yml'
+  pull_request:
+    paths:
+      - 'registry/**'
+      - '.andon.toml'
+      - '.github/workflows/registry-pr.yml'
 
 permissions:
   contents: read
